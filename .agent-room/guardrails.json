@@ -1,0 +1,75 @@
+{
+  "protectedPaths": [
+    "infrastructure/**",
+    "**/*.tfstate",
+    ".github/workflows/**",
+    ".agent-room/guardrails.json",
+    ".agent-room/guardrails.md",
+    ".agent-room/hooks/**",
+    ".claude/settings.json",
+    ".env*",
+    "**/*.db",
+    "**/*.sqlite*",
+    "**/*.log",
+    "logs/**",
+    "**/*credentials*",
+    "**/*secret*",
+    "config/**/*.yaml",
+    "config/**/*.json"
+  ],
+  "requireApprovalFor": [
+    "database migrations",
+    "dependency major version bumps",
+    "changes to CI/CD pipeline",
+    "changes to authentication or authorization logic",
+    "changes to database connection logic",
+    "changes to user authentication mechanisms",
+    "modification of external API tokens/keys in code"
+  ],
+  "scopeGuidance": {
+    "maxFilesPerChange": 20,
+    "maxLinesPerChange": 500
+  },
+  "forbiddenActions": [
+    {
+      "pattern": "AKIA[0-9A-Z]{16}",
+      "type": "regex",
+      "description": "AWS access key ID"
+    },
+    {
+      "pattern": "-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----",
+      "type": "regex",
+      "description": "Private key file contents"
+    },
+    {
+      "pattern": "api[_-]?key\\s*[:=]\\s*['\"][a-zA-Z0-9]{20,}",
+      "type": "regex",
+      "description": "Hardcoded API key assignment"
+    },
+    {
+      "pattern": "xox[baprs]-[0-9a-zA-Z-]{10,48}",
+      "type": "regex",
+      "description": "Slack API token"
+    },
+    {
+      "pattern": "gh[pousr]_[A-Za-z0-9]{36,}",
+      "type": "regex",
+      "description": "GitHub personal access / app token"
+    },
+    {
+      "pattern": "[Pp]assword\\s*=\\s*['\"][^'\"]+['\"]",
+      "type": "regex",
+      "description": "Hardcoded password"
+    },
+    {
+      "pattern": "[Ss]ecret(_key)?\\s*=\\s*['\"][^'\"]+['\"]",
+      "type": "regex",
+      "description": "Hardcoded secret key"
+    },
+    {
+      "pattern": "DATABASE_URL\\s*=\\s*['\"][^'\"]+['\"]",
+      "type": "regex",
+      "description": "Hardcoded database URL"
+    }
+  ]
+}

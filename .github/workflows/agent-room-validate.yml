@@ -1,0 +1,24 @@
+name: agent-room-validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Pinned to the create-agent-room version active when this workflow was
+      # scaffolded, so CI results stay reproducible across runs. To pick up
+      # fixes from a newer release, re-run `create-agent-room init --force`
+      # (or bump the version below by hand) and commit the change.
+      - name: Validate app agent-room structure
+        run: npx --yes create-agent-room@2.1.0 validate .
+      - name: Lint session logs
+        run: npx --yes create-agent-room@2.1.0 lint-sessions .
