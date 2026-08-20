@@ -1,0 +1,8 @@
+[server]
+# Prevent Streamlit from shutting down due to inactivity.
+# On Streamlit Cloud, the maximum effective value is limited by their platform,
+# but setting it high ensures we don't self-terminate prematurely.
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false

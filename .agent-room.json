@@ -1,0 +1,13 @@
+{
+  "name": "app",
+  "tools": [
+    "claude",
+    "cursor",
+    "git"
+  ],
+  "language": "python",
+  "packageManager": "pip",
+  "defaultBranch": "main",
+  "skillPacks": [],
+  "profile": "full"
+}

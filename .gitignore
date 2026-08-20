@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+
+# Build / Logs
+build/
+dist/
+*.log
+
+# OS / Local
+.DS_Store
+fortress_history.db
+.streamlit/secrets.toml
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+logs/
+*.jsonl
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+# Tooling / caches
+.cache/
+.ipynb_checkpoints/
+# Local debug artifacts
+debug/
+tmp/
+temp/
+*.tmp
+# Local databases
+*.db
+*.sqlite
+*.sqlite3

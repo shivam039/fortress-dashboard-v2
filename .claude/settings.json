@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .agent-room/hooks/close-the-loop-check.js"
+          }
+        ]
+      }
+    ]
+  }
+}
