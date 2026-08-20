@@ -1,0 +1,286 @@
+// src/lib/api.ts — Typed API client for the Fortress FastAPI backend
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.BACKEND_URL ||
+  'http://localhost:8000';
+
+export class APIError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+    this.name = 'APIError';
+  }
+}
+
+async function request<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  const res = await fetch(url, {
+    credentials: 'include', // send httpOnly cookies
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+    ...options,
+  });
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail || body.error || detail;
+    } catch {}
+    throw new APIError(detail, res.status);
+  }
+
+  return res.json();
+}
+
+// ── Generic methods ──────────────────────────────────────────────────────────
+
+export const api = {
+  get: <T>(endpoint: string) => request<T>(endpoint),
+
+  post: <T>(endpoint: string, body: unknown) =>
+    request<T>(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  put: <T>(endpoint: string, body: unknown) =>
+    request<T>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  delete: <T>(endpoint: string) =>
+    request<T>(endpoint, { method: 'DELETE' }),
+};
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface AuthResponse {
+  token: string;
+  username: string;
+  role: string;
+  message: string;
+}
+
+export interface UserProfile {
+  username: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  account_status: string;
+  role?: string;
+  last_login_at: string | null;
+  created_at?: string;
+}
+
+export const authApi = {
+  login: (username: string, password: string) =>
+    api.post<AuthResponse>('/api/auth/login', { username, password }),
+
+  signup: (data: { username: string; password: string; full_name?: string; email?: string }) =>
+    api.post<AuthResponse>('/api/auth/signup', data),
+
+  guest: () => api.post<AuthResponse>('/api/auth/guest', {}),
+
+  me: () => api.get<UserProfile>('/api/auth/me'),
+
+  logout: () => api.post<{ message: string }>('/api/auth/logout', {}),
+};
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+export const healthApi = {
+  check: async (): Promise<boolean> => {
+    try {
+      await api.get('/api/health');
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
+// ── Scan ─────────────────────────────────────────────────────────────────────
+
+export interface ScanPayload {
+  universe: string;
+  portfolio_val: number;
+  risk_pct: number;
+  weights?: Record<string, number>;
+  enable_regime?: boolean;
+  liquidity_cr_min?: number;
+  market_cap_cr_min?: number;
+  price_min?: number;
+  broker?: string;
+}
+
+export const scanApi = {
+  getUniverses: () => api.get<string[]>('/api/universes'),
+  runScan: (payload: ScanPayload) => api.post<Record<string, unknown>[]>('/api/scan', payload),
+  getSectorPulse: (universe: string) =>
+    api.get<Record<string, unknown>[]>(`/api/sector-pulse?universe=${encodeURIComponent(universe)}`),
+};
+
+// ── Mutual Fund ──────────────────────────────────────────────────────────────
+
+export const mfApi = {
+  getAnalysis: (limit?: number) =>
+    api.get<Record<string, unknown>[]>(`/api/mf-analysis${limit ? `?limit=${limit}` : ''}`),
+
+  triggerJob: (payload: { job_type: string; force_refresh?: boolean; scheme_codes?: string[] }) =>
+    api.post<{ status: string; message: string }>('/mf/trigger-job', payload),
+};
+
+// ── Orders ───────────────────────────────────────────────────────────────────
+
+export interface OrderStats {
+  total: number;
+  executed: number;
+  pending: number;
+  rejected: number;
+}
+
+export const ordersApi = {
+  list: (filters?: Record<string, string>) => {
+    const params = new URLSearchParams();
+    if (filters) {
+      Object.entries(filters).forEach(([k, v]) => {
+        if (v && v !== 'All') params.set(k, v);
+      });
+    }
+    const qs = params.toString();
+    return api.get<Record<string, unknown>[]>(`/api/orders${qs ? `?${qs}` : ''}`);
+  },
+  create: (order: Record<string, unknown>) => api.post('/api/orders', order),
+  stats: () => api.get<OrderStats>('/api/orders/stats'),
+};
+
+// ── Brokers ──────────────────────────────────────────────────────────────────
+
+export const brokersApi = {
+  list: () => api.get<Record<string, unknown>[]>('/api/brokers'),
+  connect: (data: Record<string, string>) => api.post('/api/brokers', data),
+  disconnect: (brokerName: string) => api.delete(`/api/brokers/${encodeURIComponent(brokerName)}`),
+};
+
+// ── Commodities ──────────────────────────────────────────────────────────────
+
+export const commoditiesApi = {
+  list: () => api.get<Record<string, unknown>[]>('/api/commodities'),
+};
+
+// ── Picks ────────────────────────────────────────────────────────────────────
+
+export const picksApi = {
+  list: (status?: string) =>
+    api.get<Record<string, unknown>[]>(`/api/picks${status ? `?status=${status}` : ''}`),
+  record: (data: Record<string, unknown>) => api.post('/api/picks', data),
+  summary: () => api.get<Record<string, unknown>>('/api/picks/summary'),
+};
+
+// ── Options ────────────────────────────────────────────────────────────────
+
+export const optionsApi = {
+  expiries: (symbol: string) =>
+    api.get<string[]>(`/api/options/expiries?symbol=${encodeURIComponent(symbol)}`),
+  chain: (symbol: string, expiry: string, oiThreshold = 10000) =>
+    api.get<{
+      symbol: string;
+      expiry: string;
+      spot: number;
+      chain: Record<string, unknown>[];
+      strategies: Record<string, unknown>[];
+    }>(
+      `/api/options/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(
+        expiry
+      )}&oi_threshold=${oiThreshold}`
+    ),
+};
+
+// ── REITs & InvITs ────────────────────────────────────────────────────────────
+
+import type { InvestmentInstrument, RefreshJob, WatchlistItem, PortfolioItem } from '@/lib/types';
+
+export const reitApi = {
+  list: (opts?: { type?: string; sort_by?: string; desc?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.sort_by) params.set('sort_by', opts.sort_by);
+    if (opts?.desc !== undefined) params.set('desc', String(opts.desc));
+    const qs = params.toString();
+    return api.get<InvestmentInstrument[]>(`/api/reit-invits${qs ? `?${qs}` : ''}`);
+  },
+  detail: (symbol: string) =>
+    api.get<InvestmentInstrument>(`/api/reit-invits/${encodeURIComponent(symbol)}`),
+  refresh: (force = false) =>
+    api.post<{ status: string; message: string }>('/api/reit-invits/refresh', { force }),
+  status: () => api.get<RefreshJob>('/api/reit-invits/status'),
+};
+
+// ── US Investing ──────────────────────────────────────────────────────────────
+
+export const usInvestingApi = {
+  list: (opts?: {
+    asset_type?: string;
+    sector?: string;
+    include_inr?: boolean;
+    sort_by?: string;
+    desc?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.asset_type) params.set('asset_type', opts.asset_type);
+    if (opts?.sector) params.set('sector', opts.sector);
+    if (opts?.include_inr !== undefined) params.set('include_inr', String(opts.include_inr));
+    if (opts?.sort_by) params.set('sort_by', opts.sort_by);
+    if (opts?.desc !== undefined) params.set('desc', String(opts.desc));
+    const qs = params.toString();
+    return api.get<InvestmentInstrument[]>(`/api/us-investing${qs ? `?${qs}` : ''}`);
+  },
+  detail: (symbol: string, includeInr = true) =>
+    api.get<InvestmentInstrument>(
+      `/api/us-investing/${encodeURIComponent(symbol)}?include_inr=${includeInr}`
+    ),
+  search: (q: string) =>
+    api.get<Record<string, unknown>[]>(`/api/us-investing/search?q=${encodeURIComponent(q)}`),
+  refresh: (force = false, include_inr = true) =>
+    api.post<{ status: string; message: string }>('/api/us-investing/refresh', {
+      force,
+      include_inr,
+    }),
+  status: () => api.get<RefreshJob>('/api/us-investing/status'),
+};
+
+// ── Investments (Watchlist & Portfolio) ───────────────────────────────────────
+
+export const investmentsApi = {
+  watchlist: {
+    list: () => api.get<WatchlistItem[]>('/api/investments/watchlist'),
+    add: (item: { symbol: string; name?: string; asset_class: string; notes?: string }) =>
+      api.post<{ status: string; symbol: string }>('/api/investments/watchlist', item),
+    remove: (symbol: string) =>
+      api.delete<{ status: string; symbol: string }>(
+        `/api/investments/watchlist/${encodeURIComponent(symbol)}`
+      ),
+  },
+  portfolio: {
+    list: () => api.get<PortfolioItem[]>('/api/investments/portfolio'),
+    upsert: (item: Omit<PortfolioItem, 'id' | 'updated_at' | 'pnl_pct' | 'current_price'>) =>
+      api.post<{ status: string; symbol: string }>('/api/investments/portfolio', item),
+    remove: (symbol: string) =>
+      api.delete<{ status: string; symbol: string }>(
+        `/api/investments/portfolio/${encodeURIComponent(symbol)}`
+      ),
+  },
+  refreshStatus: (jobType?: string) => {
+    const qs = jobType ? `?job_type=${encodeURIComponent(jobType)}` : '';
+    return api.get<RefreshJob | RefreshJob[]>(`/api/investments/refresh-status${qs}`);
+  },
+};
+
