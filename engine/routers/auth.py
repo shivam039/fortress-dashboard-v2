@@ -54,8 +54,8 @@ def _set_cookie(response: Response, token: str) -> None:
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=os.environ.get("FORTRESS_SECURE_COOKIE", "false").lower() == "true",
+        samesite="none",
+        secure=os.environ.get("FORTRESS_SECURE_COOKIE", "true").lower() == "true",
         max_age=60 * 60 * 24,  # 24 hours
         path="/",
     )
