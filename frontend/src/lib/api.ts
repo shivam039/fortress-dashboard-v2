@@ -18,13 +18,22 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string> || {}),
+  };
+
+  if (typeof window !== 'undefined') {
+    const token = localStorage.getItem('fortress_token');
+    if (token && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+  }
+
   const res = await fetch(url, {
-    credentials: 'include', // send httpOnly cookies
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    credentials: 'include', // send httpOnly cookies if supported
     ...options,
+    headers,
   });
 
   if (!res.ok) {
@@ -81,17 +90,41 @@ export interface UserProfile {
 }
 
 export const authApi = {
-  login: (username: string, password: string) =>
-    api.post<AuthResponse>('/api/auth/login', { username, password }),
+  login: async (username: string, password: string) => {
+    const res = await api.post<AuthResponse>('/api/auth/login', { username, password });
+    if (typeof window !== 'undefined' && res?.token) {
+      localStorage.setItem('fortress_token', res.token);
+    }
+    return res;
+  },
 
-  signup: (data: { username: string; password: string; full_name?: string; email?: string }) =>
-    api.post<AuthResponse>('/api/auth/signup', data),
+  signup: async (data: { username: string; password: string; full_name?: string; email?: string }) => {
+    const res = await api.post<AuthResponse>('/api/auth/signup', data);
+    if (typeof window !== 'undefined' && res?.token) {
+      localStorage.setItem('fortress_token', res.token);
+    }
+    return res;
+  },
 
-  guest: () => api.post<AuthResponse>('/api/auth/guest', {}),
+  guest: async () => {
+    const res = await api.post<AuthResponse>('/api/auth/guest', {});
+    if (typeof window !== 'undefined' && res?.token) {
+      localStorage.setItem('fortress_token', res.token);
+    }
+    return res;
+  },
 
   me: () => api.get<UserProfile>('/api/auth/me'),
 
-  logout: () => api.post<{ message: string }>('/api/auth/logout', {}),
+  logout: async () => {
+    try {
+      await api.post<{ message: string }>('/api/auth/logout', {});
+    } finally {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('fortress_token');
+      }
+    }
+  },
 };
 
 // ── Health ───────────────────────────────────────────────────────────────────
