@@ -8,3 +8,5 @@ profile = "black"
 line-length = 88
 extend-exclude = ["engine/legacy"]
 
+[tool.vercel]
+entrypoint = "engine.main:app"
