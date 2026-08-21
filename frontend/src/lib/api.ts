@@ -4,6 +4,27 @@ const API_BASE =
   process.env.BACKEND_URL ||
   'http://localhost:8000';
 
+
+type ApiRecord = Record<string, unknown>;
+
+function asArray<T>(value: unknown, candidateKeys: string[] = []): T[] {
+  if (Array.isArray(value)) {
+    return value as T[];
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as ApiRecord;
+    for (const key of candidateKeys) {
+      const candidate = record[key];
+      if (Array.isArray(candidate)) {
+        return candidate as T[];
+      }
+    }
+  }
+
+  return [];
+}
+
 export class APIError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -155,10 +176,26 @@ export interface ScanPayload {
 }
 
 export const scanApi = {
-  getUniverses: () => api.get<string[]>('/api/universes'),
-  runScan: (payload: ScanPayload) => api.post<Record<string, unknown>[]>('/api/scan', payload),
-  getSectorPulse: (universe: string) =>
-    api.get<Record<string, unknown>[]>(`/api/sector-pulse?universe=${encodeURIComponent(universe)}`),
+  getUniverses: async () =>
+    asArray<string>(await api.get<unknown>('/api/universes'), [
+      'universes',
+      'data',
+      'results',
+    ]),
+  runScan: async (payload: ScanPayload) =>
+    asArray<ApiRecord>(await api.post<unknown>('/api/scan', payload), [
+      'results',
+      'data',
+      'stocks',
+      'items',
+    ]),
+  getSectorPulse: async (universe: string) =>
+    asArray<ApiRecord>(
+      await api.get<unknown>(
+        `/api/sector-pulse?universe=${encodeURIComponent(universe)}`
+      ),
+      ['sector_pulse', 'sectors', 'data', 'results', 'items']
+    ),
 };
 
 // ── Mutual Fund ──────────────────────────────────────────────────────────────

@@ -6,8 +6,8 @@ import { scanApi, type ScanPayload } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
-import SectorIntelligence from '@/components/SectorIntelligence';
-import ScoreHeatmap from '@/components/ScoreHeatmap';
+import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelligence';
+import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
 
 export default function ScreenerPage() {
   const { success, error } = useToast();
@@ -73,6 +73,8 @@ export default function ScreenerPage() {
   const momentum = results.filter(r => r.Strategy === 'Momentum Pick');
   const longTerm = results.filter(r => r.Strategy === 'Long-Term Pick');
   const actionable = results.filter(r => r.Quality_Gate_Pass === true);
+  const sectorPulseRows = sectorPulse as unknown as SectorPulse[];
+  const actionableHeatmapRows = actionable as unknown as HeatmapData[];
   const filtered = results.filter(r => r.Quality_Gate_Pass === false);
 
   return (
@@ -171,7 +173,7 @@ export default function ScreenerPage() {
       {sectorPulse.length > 0 && (
         <div className="section">
           <h3 className="section-title">🔥 Sector Intelligence & Rotation</h3>
-          <SectorIntelligence data={sectorPulse as any} />
+          <SectorIntelligence data={sectorPulseRows} />
         </div>
       )}
 
@@ -179,7 +181,7 @@ export default function ScreenerPage() {
       {actionable.length > 0 && (
         <div className="section">
           <h3 className="section-title">🗺️ Conviction Heatmap</h3>
-          <ScoreHeatmap data={actionable as any} />
+          <ScoreHeatmap data={actionableHeatmapRows} />
         </div>
       )}
 
