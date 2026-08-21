@@ -14,7 +14,7 @@ import {
   Cell,
 } from 'recharts';
 
-interface HeatmapData {
+export interface HeatmapData {
   Symbol: string;
   Score: number;
   Velocity: number;

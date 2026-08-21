@@ -13,7 +13,7 @@ import {
   Cell,
 } from 'recharts';
 
-interface SectorPulse {
+export interface SectorPulse {
   Sector: string;
   Avg_Score: number;
   Velocity: number;
