@@ -16,6 +16,15 @@ have to re-derive it from scratch by reading git history.
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-21 — Configure Vercel FastAPI entrypoint
+
+**Decision:** Declare `engine.main:app` in the `[tool.vercel]` section of
+`pyproject.toml` so Vercel can deploy the repository-root FastAPI backend.
+**Why:** Vercel's build could find the application but could not select an
+entrypoint automatically.
+**Rejected:** Moving or duplicating the FastAPI app into a default location.
+Rejected because the existing module is already the canonical backend entrypoint.
+
 ### 2026-07-10 — Final cleanup standardizes formatting and repository layout
 
 **Decision:** Added explicit formatter/linter configuration in `pyproject.toml`, ran `isort`, `black`, and `ruff` across the Python project, kept legacy modules excluded from Ruff enforcement, and moved the cron setup utility into `scripts/`.
