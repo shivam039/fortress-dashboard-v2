@@ -41,3 +41,10 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+
+# Personal Claude Code overrides (never commit — contains local notes/tokens)
+CLAUDE.local.md
+
+# Runtime-generated env file from refresh_indstocks_token.py
+.env.local
+

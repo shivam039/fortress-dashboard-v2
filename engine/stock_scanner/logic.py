@@ -19,6 +19,7 @@ _logger = logging.getLogger("fortress.scanner")
 
 # From development-db: Neon compatibility
 try:
+    import io
     import json
     from threading import Lock
 
@@ -63,9 +64,136 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _normalize_ohlcv_index(df):
+    """Strip tz and truncate to calendar date so OHLCV frames from different
+    providers (INDstocks' tz-aware IST index vs yfinance's, which varies by
+    version/period) align correctly when concatenated together by date."""
+    if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    idx = df.index
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    df = df.copy()
+    df.index = idx.normalize()
+    return df
+
+
 @lru_cache(maxsize=32)
 def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
-    """Cached market data fetch with exponential-backoff retry on transient Yahoo failures."""
+    """Cached market data fetch.
+
+    Provider priority (single-symbol calls):
+        INDstocks/INDmoney (if configured)  →  yfinance
+
+    Provider priority (batch calls, ``group_by='ticker'``, ``symbol`` a
+    tuple/list, daily interval):
+        INDstocks/INDmoney batch historical, gap-filled per-symbol from
+        yfinance for whatever INDstocks could not cover  →  yfinance grouped
+        download for the whole batch (only if the gap-fill itself fails)
+
+    INDstocks' ``/market/historical`` endpoint accepts multiple scrip codes
+    per call, so a full-universe scan can be served from INDstocks. When
+    INDstocks covers every requested symbol, its data is used outright. When
+    it covers only some of them (a symbol not in the instruments cache,
+    delisted, no candles, etc.) — which in practice is the common case, since
+    the instruments cache has no index/derivative coverage — only the
+    *missing* symbols are fetched from yfinance and merged in. Previously this
+    discarded the entire INDstocks batch and re-fetched everyone from
+    yfinance on any partial miss, which meant paying for both providers on
+    every single scan and made scans noticeably slower than necessary. If the
+    yfinance gap-fill itself fails, this falls through to the full yfinance
+    grouped download as a last resort.
+    """
+    is_batch = group_by == "ticker" or (hasattr(symbol, "__len__") and not isinstance(symbol, str))
+
+    if not is_batch:
+        # ── Single-symbol path: try INDstocks first ──────────────────────
+        try:
+            from utils.market_data_provider import get_ohlcv as _get_ohlcv
+            df = _get_ohlcv(symbol, period=period)
+            if df is not None and not df.empty:
+                # Ensure interval filtering for intraday (not supported by INDstocks
+                # daily endpoint — fall through to yfinance for intraday intervals)
+                if interval == "1d":
+                    return df
+        except Exception as _exc:
+            _logger.debug("market_data_provider.get_ohlcv failed for %s: %s", symbol, _exc)
+    elif interval == "1d":
+        # ── Batch path, daily interval: try INDstocks batch historical ───
+        symbols = list(symbol) if not isinstance(symbol, str) else [symbol]
+        try:
+            from utils.market_data_provider import get_batch_ohlcv as _get_batch_ohlcv
+
+            batch = _get_batch_ohlcv(symbols, period=period)
+            if batch and len(batch) == len(symbols):
+                combined = pd.concat(
+                    {sym: batch[sym] for sym in symbols}, axis=1
+                )
+                if not combined.empty:
+                    _logger.debug(
+                        "INDstocks batch OHLCV covered all %d symbols", len(symbols)
+                    )
+                    return combined
+            elif batch:
+                missing = [s for s in symbols if s not in batch]
+                _logger.info(
+                    "INDstocks batch OHLCV covered %d/%d symbols; gap-filling the "
+                    "remaining %d from yfinance instead of re-fetching the whole "
+                    "batch: %s",
+                    len(batch),
+                    len(symbols),
+                    len(missing),
+                    missing,
+                )
+                try:
+                    yf_missing = yf.download(
+                        missing,
+                        period=period,
+                        interval=interval,
+                        group_by="ticker",
+                        progress=False,
+                        auto_adjust=False,
+                    )
+                    # INDstocks candles carry a tz-aware IST DatetimeIndex
+                    # (see market_data_provider._candles_to_df); yfinance's
+                    # index tz varies by version/period and often isn't the
+                    # same tz object. Concatenating tz-mismatched
+                    # DatetimeIndexes along axis=1 doesn't raise — it just
+                    # silently fails to align same-calendar-day rows, so every
+                    # gap-filled column would come back all-NaN. Normalize
+                    # both sides to a plain date index before merging.
+                    frames = {sym: _normalize_ohlcv_index(batch[sym]) for sym in batch}
+                    if isinstance(yf_missing.columns, pd.MultiIndex):
+                        covered_by_yf = set(yf_missing.columns.get_level_values(0))
+                        for sym in missing:
+                            if sym in covered_by_yf:
+                                col = _normalize_ohlcv_index(yf_missing[sym].dropna(how="all"))
+                                if col is not None and not col.empty:
+                                    frames[sym] = col
+                    elif len(missing) == 1 and not yf_missing.empty:
+                        # yfinance drops the MultiIndex level when given a
+                        # single-symbol list.
+                        frames[missing[0]] = _normalize_ohlcv_index(yf_missing.dropna(how="all"))
+                    if frames:
+                        combined = pd.concat(frames, axis=1)
+                        if not combined.empty:
+                            _logger.info(
+                                "Merged batch OHLCV: %d/%d symbols covered "
+                                "(INDstocks + yfinance gap-fill)",
+                                len(frames),
+                                len(symbols),
+                            )
+                            return combined
+                except Exception as _exc:
+                    _logger.warning(
+                        "yfinance gap-fill for INDstocks-missing symbols failed: %s "
+                        "— falling back to a full yfinance batch fetch",
+                        _exc,
+                    )
+        except Exception as _exc:
+            _logger.debug("market_data_provider.get_batch_ohlcv failed: %s", _exc)
+
+    # ── Batch path OR intraday interval OR INDstocks miss → yfinance ─────
     for attempt in range(3):
         try:
             data = yf.download(
@@ -92,7 +220,25 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
 
 @lru_cache(maxsize=32)
 def _download_close_series(symbol, period="1y", interval="1d"):
-    """Download close price series with exponential-backoff retry."""
+    """Download close price series.
+
+    Provider priority (daily interval only):
+        INDstocks (if INDSTOCKS_TOKEN set)  →  yfinance
+
+    Intraday intervals always use yfinance.
+    """
+    if interval == "1d":
+        try:
+            from utils.market_data_provider import get_ohlcv as _get_ohlcv
+            df = _get_ohlcv(symbol, period=period)
+            if df is not None and not df.empty and "Close" in df.columns:
+                series = df["Close"].dropna()
+                if not series.empty:
+                    return series
+        except Exception as _exc:
+            _logger.debug("market_data_provider close series failed for %s: %s", symbol, _exc)
+
+    # yfinance fallback
     for attempt in range(3):
         try:
             bench = yf.download(
@@ -138,11 +284,81 @@ def _safe_df_to_dict(df):
 def _safe_dict_to_df(d):
     try:
         if d and isinstance(d, dict) and "columns" in d and "data" in d:
-            df = pd.read_json(json.dumps(d), orient="split")
+            df = pd.read_json(io.StringIO(json.dumps(d)), orient="split")
             return df
     except (TypeError, ValueError):
         pass
     return None
+
+
+def prefetch_metadata(symbols, max_age_hours=12):
+    """Bulk-preload fundamental/news/calendar/earnings metadata for a whole
+    scan's worth of tickers from the DB cache in one call, before the
+    per-ticker scoring loop runs.
+
+    Fundamental (market cap, debt-to-equity), sentiment (news), and context
+    (earnings calendar) — 50% of the conviction score's weight combined —
+    have no INDstocks/IndMoney equivalent; INDstocks' documented endpoints
+    only cover quotes, historical candles, instruments, and option chains,
+    not company financials or news. That data comes from yfinance regardless
+    of which provider serves OHLCV, and always will unless a different
+    fundamentals/news source is added.
+
+    What *is* fixable is that every `/api/scan` run was calling yfinance
+    live for `.info`/`.news`/`.calendar`/`.earnings_dates` — 4 requests per
+    ticker — for every single ticker, every single time, with no cross-run
+    caching and (see `_ensure_metadata_loaded`) a silent blank-on-failure
+    fallback if any of those 4 calls got rate-limited. A DB-backed cache
+    (`ticker_metadata` table, `bulk_fetch_metadata()`/
+    `upsert_ticker_metadata_cache()` in `utils/db.py`) already existed for
+    exactly this — but it was only ever wired into the legacy Streamlit UI's
+    scan loop (`stock_scanner/ui.py::_run_scan_fragment`), never into this
+    FastAPI-facing `logic.py`, so `/api/scan` and `/api/sector-pulse` (the
+    Next.js app's actual scan paths) never benefited from it.
+
+    Call this once with the full ticker list before scoring a batch. Tickers
+    with a cache entry newer than `max_age_hours` are pre-filled into the
+    in-memory caches, so `_ensure_metadata_loaded` skips its live yfinance
+    call entirely for them; everything else still fetches live as before.
+
+    Args:
+        symbols: Tickers about to be scanned.
+        max_age_hours: Maximum cache age to accept (matches the legacy UI's
+            default of 12h — fundamentals/news/earnings-calendar dates don't
+            meaningfully change within a trading day).
+    """
+    symbols = list(symbols)
+    if not symbols:
+        return
+
+    try:
+        from utils.db import bulk_fetch_metadata
+    except ImportError:
+        return
+
+    try:
+        cached = bulk_fetch_metadata(symbols, max_age_hours=max_age_hours)
+    except Exception as exc:
+        _logger.warning("prefetch_metadata: bulk_fetch_metadata failed: %s", exc)
+        return
+
+    if not cached:
+        return
+
+    with _META_LOCK:
+        for sym, row in cached.items():
+            _INFO_CACHE[sym] = row.get("info_json") or {}
+            news = row.get("news_json")
+            _NEWS_CACHE[sym] = news if isinstance(news, list) else []
+            _CAL_CACHE[sym] = _safe_dict_to_df(row.get("cal_json"))
+            _EARN_CACHE[sym] = _safe_dict_to_df(row.get("earn_json"))
+
+    _logger.info(
+        "prefetch_metadata: pre-filled %d/%d symbols from DB cache (skips live "
+        "yfinance metadata calls for those)",
+        len(cached),
+        len(symbols),
+    )
 
 
 def _ensure_metadata_loaded(symbol):
@@ -167,7 +383,7 @@ def _ensure_metadata_loaded(symbol):
             _CAL_CACHE[symbol] = cal_df
             _EARN_CACHE[symbol] = earn_df
 
-        # Upsert cleanly to Neon DB
+        # Persist so the next scan's prefetch_metadata() can skip this ticker.
         cal_dict = _safe_df_to_dict(cal_df)
         earn_dict = _safe_df_to_dict(earn_df)
 
@@ -180,7 +396,20 @@ def _ensure_metadata_loaded(symbol):
                 "earn_json": earn_dict,
             },
         )
-    except Exception:
+    except Exception as exc:
+        # Previously silent: any yfinance failure here (rate limit, network
+        # error, symbol delisted, etc.) permanently cached a blank entry for
+        # the rest of this process's uptime with zero visibility — quietly
+        # zeroing out 50% of that ticker's conviction score (fundamental +
+        # sentiment + context) with no trace in the logs. Log it so a run of
+        # bad scores is at least diagnosable.
+        _logger.warning(
+            "_ensure_metadata_loaded: yfinance metadata fetch failed for %s: %s "
+            "(fundamental/sentiment/context scores for this ticker will use "
+            "empty/default values)",
+            symbol,
+            exc,
+        )
         with _META_LOCK:
             _INFO_CACHE[symbol] = {}
             _NEWS_CACHE[symbol] = []
@@ -901,7 +1130,10 @@ def check_institutional_fortress(
         if extension_ema200_pct > 40:
             conviction -= 20
 
-        dispersion_pct = ((target_high - target_low) / price) * 100 if price > 0 else 0
+        if target_high is not None and target_low is not None and price > 0:
+            dispersion_pct = ((float(target_high) - float(target_low)) / price) * 100
+        else:
+            dispersion_pct = 0.0
         dispersion_alert = "⚠️ High Dispersion" if dispersion_pct > 30 else "✅"
         if dispersion_pct > 30:
             conviction -= 10

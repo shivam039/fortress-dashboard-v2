@@ -30,8 +30,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install -r requirements-dev.txt   # adds pytest, flake8
 
-export FORTRESS_DB_BACKEND=sqlite     # no Neon needed for dev
-streamlit run streamlit_app.py
+# Backend
+export FORTRESS_DB_BACKEND=sqlite
+export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_MPIN=<your_mpin>
+export INDSTOCKS_TOTP_SECRET=<base32_setup_key>   # enables INDstocks; optional
+uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Frontend (separate terminal)
+cd frontend && npm install && npm run dev
 ```
 
 Run tests before any commit:
@@ -76,12 +83,13 @@ from ui.utils.api import trigger_scan
 
 | Layer | What belongs here |
 |---|---|
-| `ui/views/` | Streamlit `render()` functions only — no HTTP calls, no SQL |
-| `ui/utils/api.py` | All FastAPI HTTP calls — no UI widgets here |
-| `ui/utils/scan.py` | In-process engine fallbacks — no UI widgets here |
-| `engine/*/logic.py` | Pure business logic — no Streamlit, no HTTP |
-| `engine/*/ui.py` | Engine-level Streamlit rendering (called by `ui/views/`) |
+| `frontend/src/app/` | Next.js pages and React components — no direct engine imports |
+| `engine/routers/` | FastAPI routers — thin, delegate logic to utils/services |
+| `engine/*/logic.py` | Pure business logic — no HTTP, no UI |
+| `engine/utils/market_data_provider.py` | **All price data** — the only place that selects INDstocks vs yfinance |
+| `engine/utils/indstocks_client.py` | INDstocks API calls only — do not call from routers or logic directly |
 | `engine/utils/db.py` | All database access — no business logic |
+| `ui/views/` | Legacy Streamlit renders — reference only, do not expand |
 
 ---
 

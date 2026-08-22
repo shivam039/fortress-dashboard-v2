@@ -75,14 +75,16 @@ Verdict:     🔥 HIGH / 🚀 PASS / 🟡 WATCH / ❌ FAIL / 🚨 AVOID
 
 | Input | Source | Notes |
 |---|---|---|
-| OHLCV (1y daily) | `yfinance` via `get_stock_data()` | Minimum 210 trading days required |
-| Ticker metadata | `yfinance.Ticker.info` | Analyst targets, market cap, D/E, interest coverage |
-| News | `yfinance.Ticker.news` | Last 10 items, used only for Black Swan detection |
-| Earnings dates | `yfinance.Ticker.earnings_dates` | Last reported quarter surprise % |
-| Earnings calendar | `yfinance.Ticker.calendar` | Upcoming earnings date for event risk |
-| Nifty 50 benchmark | `yfinance "^NSEI"` | Used for RS computation |
+| OHLCV (1y daily) | **INDstocks/INDmoney** via `get_stock_data()`, yfinance fallback | Minimum 210 trading days required. INDstocks is tried first (single-symbol and, since the batch-OHLCV fix, whole-universe scans too); a scan only uses INDstocks data if it covers *every* ticker in the batch, otherwise the whole scan falls back to yfinance — never mixes providers mid-scan. See `docs/market-data.md`. |
+| Ticker metadata | `yfinance.Ticker.info` | Analyst targets, market cap, D/E, interest coverage. **No INDstocks equivalent** — INDstocks' documented endpoints cover quotes/historical/instruments/option-chains only, not company fundamentals, so this stays yfinance-only regardless of the OHLCV provider. |
+| News | `yfinance.Ticker.news` | Last 10 items, used only for Black Swan detection. Same as above — yfinance-only, no INDstocks equivalent. |
+| Earnings dates | `yfinance.Ticker.earnings_dates` | Last reported quarter surprise %. yfinance-only. |
+| Earnings calendar | `yfinance.Ticker.calendar` | Upcoming earnings date for event risk. yfinance-only. |
+| Nifty 50 benchmark | `yfinance "^NSEI"` | Used for RS computation. Still yfinance even when OHLCV for the stock itself comes from INDstocks — the instruments cache `get_stock_data`'s INDstocks path uses only covers `source=equity`, not indices, so `^NSEI` never resolves to an INDstocks scrip code today. |
 
-All metadata is fetched once via `_ensure_metadata_loaded()` and cached in module-level dicts (`_INFO_CACHE`, `_NEWS_CACHE`, `_CAL_CACHE`, `_EARN_CACHE`), avoiding repeated API calls during a batch scan.
+**Weight-vs-source reality check:** `DEFAULT_SCORING_CONFIG` weights Technical 50% / Fundamental 25% / Sentiment 15% / Context 10%. Only the Technical score's price/volume inputs can come from INDstocks; Fundamental + Sentiment + Context (50% of the total weight) are yfinance-sourced unconditionally, by API availability, not by choice — there's currently nowhere else to get that data from. Moving OHLCV to INDstocks does not and cannot make the other half of the score "IndMoney-sourced" too.
+
+All metadata is fetched via `_ensure_metadata_loaded()` and cached in module-level dicts (`_INFO_CACHE`, `_NEWS_CACHE`, `_CAL_CACHE`, `_EARN_CACHE`) for the life of the process, and persisted to the `ticker_metadata` DB table (`upsert_ticker_metadata_cache`) so later scans can skip live yfinance calls for tickers with a recent-enough entry. `stock_scanner.logic.prefetch_metadata(tickers)` bulk-loads that DB cache (≤12h old by default) for a whole universe in one call before a scan's per-ticker loop runs — call sites: `/api/scan` and `/api/sector-pulse` in `engine/main.py`. This prefetch existed only in the legacy Streamlit UI (`stock_scanner/ui.py::_run_scan_fragment`) until it was ported here; before that, every FastAPI-driven scan hit yfinance live for `.info`/`.news`/`.calendar`/`.earnings_dates` — 4 requests per ticker — on every single run, and a failed fetch (e.g. yfinance rate-limiting) silently cached a blank entry for the rest of the process's uptime with no log line at all. Both gaps are fixed: failures now log a warning, and the DB cache is actually consulted.
 
 ---
 

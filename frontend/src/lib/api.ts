@@ -34,9 +34,17 @@ export class APIError extends Error {
   }
 }
 
+// Default request timeout. Without this, a `fetch()` with no AbortController
+// waits indefinitely — if the backend genuinely hangs (or the connection
+// dies silently), the UI just spins forever with no way to tell "still
+// working" apart from "actually stuck". 60s comfortably covers ordinary
+// endpoints; slow/bulk endpoints (scans) pass a longer override below.
+const DEFAULT_TIMEOUT_MS = 60_000;
+
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const headers: Record<string, string> = {
@@ -51,11 +59,29 @@ async function request<T>(
     }
   }
 
-  const res = await fetch(url, {
-    credentials: 'include', // send httpOnly cookies if supported
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      credentials: 'include', // send httpOnly cookies if supported
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new APIError(
+        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for a response. ` +
+          `The backend may still be working — check its terminal — or it may be stuck.`,
+        408
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -72,22 +98,30 @@ async function request<T>(
 // ── Generic methods ──────────────────────────────────────────────────────────
 
 export const api = {
-  get: <T>(endpoint: string) => request<T>(endpoint),
+  get: <T>(endpoint: string, timeoutMs?: number) => request<T>(endpoint, {}, timeoutMs),
 
-  post: <T>(endpoint: string, body: unknown) =>
-    request<T>(endpoint, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+  post: <T>(endpoint: string, body: unknown, timeoutMs?: number) =>
+    request<T>(
+      endpoint,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      timeoutMs
+    ),
 
-  put: <T>(endpoint: string, body: unknown) =>
-    request<T>(endpoint, {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
+  put: <T>(endpoint: string, body: unknown, timeoutMs?: number) =>
+    request<T>(
+      endpoint,
+      {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      },
+      timeoutMs
+    ),
 
-  delete: <T>(endpoint: string) =>
-    request<T>(endpoint, { method: 'DELETE' }),
+  delete: <T>(endpoint: string, timeoutMs?: number) =>
+    request<T>(endpoint, { method: 'DELETE' }, timeoutMs),
 };
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -161,6 +195,21 @@ export const healthApi = {
   },
 };
 
+// ── Market data provider status ─────────────────────────────────────────────
+
+export interface MarketDataStatus {
+  primary: string; // "indstocks" | "yfinance"
+  primary_label: string; // "INDmoney" | "Yahoo Finance"
+  fallback: string; // "yfinance" | "none"
+  auth_mode: string; // "totp" | "static_token" | "none"
+  indstocks_token_set: string;
+  universes: Record<string, number>;
+}
+
+export const marketDataApi = {
+  status: () => api.get<MarketDataStatus>('/api/market-data-status'),
+};
+
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
 export interface ScanPayload {
@@ -175,6 +224,13 @@ export interface ScanPayload {
   broker?: string;
 }
 
+// A full scan walks every ticker in a universe (up to 250 for Nifty Smallcap
+// 250) through INDstocks/yfinance data fetches plus per-ticker scoring, so it
+// legitimately takes longer than a typical API call — the default 60s
+// timeout is too tight for this specific endpoint and would misreport a
+// slow-but-working scan as "stuck".
+const SCAN_TIMEOUT_MS = 240_000; // 4 minutes
+
 export const scanApi = {
   getUniverses: async () =>
     asArray<string>(await api.get<unknown>('/api/universes'), [
@@ -183,16 +239,15 @@ export const scanApi = {
       'results',
     ]),
   runScan: async (payload: ScanPayload) =>
-    asArray<ApiRecord>(await api.post<unknown>('/api/scan', payload), [
-      'results',
-      'data',
-      'stocks',
-      'items',
-    ]),
+    asArray<ApiRecord>(
+      await api.post<unknown>('/api/scan', payload, SCAN_TIMEOUT_MS),
+      ['results', 'data', 'stocks', 'items']
+    ),
   getSectorPulse: async (universe: string) =>
     asArray<ApiRecord>(
       await api.get<unknown>(
-        `/api/sector-pulse?universe=${encodeURIComponent(universe)}`
+        `/api/sector-pulse?universe=${encodeURIComponent(universe)}`,
+        SCAN_TIMEOUT_MS
       ),
       ['sector_pulse', 'sectors', 'data', 'results', 'items']
     ),
@@ -201,8 +256,15 @@ export const scanApi = {
 // ── Mutual Fund ──────────────────────────────────────────────────────────────
 
 export const mfApi = {
+  // With no `limit`, this discovers and scores essentially the whole
+  // direct-growth mutual fund universe (hundreds to low thousands of
+  // schemes) — same reasoning as SCAN_TIMEOUT_MS above, the default 60s
+  // timeout is too tight for this endpoint.
   getAnalysis: (limit?: number) =>
-    api.get<Record<string, unknown>[]>(`/api/mf-analysis${limit ? `?limit=${limit}` : ''}`),
+    api.get<Record<string, unknown>[]>(
+      `/api/mf-analysis${limit ? `?limit=${limit}` : ''}`,
+      SCAN_TIMEOUT_MS
+    ),
 
   triggerJob: (payload: { job_type: string; force_refresh?: boolean; scheme_codes?: string[] }) =>
     api.post<{ status: string; message: string }>('/mf/trigger-job', payload),

@@ -12,6 +12,7 @@ import WatchlistButton from '@/components/WatchlistButton';
 const SORT_OPTIONS = [
   { value: 'conviction_score', label: 'Conviction Score' },
   { value: 'yield_pct', label: 'Yield %' },
+  { value: 'distributions_1y', label: 'Distribution (1Y)' },
   { value: 'returns_1y', label: '1Y Return' },
   { value: 'returns_1m', label: '1M Return' },
   { value: 'confidence_score', label: 'Confidence' },
@@ -22,10 +23,34 @@ function fmt(v: number | null | undefined, suffix = '%', decimals = 1): string {
   return `${v >= 0 ? '' : ''}${v.toFixed(decimals)}${suffix}`;
 }
 
+function fmtRupees(v: number | null | undefined, decimals = 2): string {
+  if (v === null || v === undefined) return '—';
+  return `₹${v.toFixed(decimals)}`;
+}
+
 function ReturnBadge({ value }: { value: number | null | undefined }) {
   if (value === null || value === undefined) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
   const color = value >= 0 ? 'var(--color-success)' : 'var(--color-danger)';
   return <span style={{ color, fontWeight: 600 }}>{value >= 0 ? '+' : ''}{value.toFixed(1)}%</span>;
+}
+
+// Same label vocabulary used everywhere else in this app (MF Lab, stock
+// scanner, commodities) — see utils/conviction_engine.py's `_label()`.
+const SIGNAL_COLOR: Record<string, string> = {
+  'STRONG BUY': 'var(--color-success)',
+  'BUY': 'var(--color-success)',
+  'HOLD': 'var(--color-warning)',
+  'UNDERPERFORMER': 'var(--color-warning)',
+  'AVOID': 'var(--color-danger)',
+};
+
+function SignalBadge({ label, emoji }: { label: string | null | undefined; emoji?: string | null }) {
+  if (!label) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  return (
+    <span style={{ color: SIGNAL_COLOR[label] ?? 'var(--text-secondary)', fontWeight: 600, fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
+      {emoji ? `${emoji} ` : ''}{label}
+    </span>
+  );
 }
 
 export default function ReitInvitsPage() {
@@ -89,6 +114,7 @@ export default function ReitInvitsPage() {
       ? filtered.reduce((s, i) => s + (i.conviction_score ?? 0), 0) / filtered.filter(i => i.conviction_score !== null).length
       : 0,
     topScore: filtered.length ? Math.max(...filtered.map(i => i.conviction_score ?? 0)) : 0,
+    buySignals: filtered.filter(i => i.conviction_label === 'STRONG BUY' || i.conviction_label === 'BUY').length,
   }), [filtered]);
 
   const selectedInstrument = instruments.find(i => i.symbol === selectedSymbol) ?? null;
@@ -125,6 +151,7 @@ export default function ReitInvitsPage() {
           { label: 'Avg Yield', value: isNaN(summary.avgYield) ? '—' : `${summary.avgYield.toFixed(1)}%`, icon: '💰' },
           { label: 'Avg Score', value: isNaN(summary.avgScore) ? '—' : summary.avgScore.toFixed(0), icon: '📊' },
           { label: 'Top Score', value: summary.topScore > 0 ? summary.topScore.toFixed(0) : '—', icon: '🏆' },
+          { label: 'Buy Signals', value: summary.buySignals.toString(), icon: '✅' },
         ].map(m => (
           <div key={m.label} className="metric-card">
             <span className="metric-label">{m.icon} {m.label}</span>
@@ -200,10 +227,13 @@ export default function ReitInvitsPage() {
                     <th>Type</th>
                     <th>Price ₹</th>
                     <th>Yield</th>
+                    <th>Div 1Y (₹)</th>
+                    <th>Div 3Y (₹)</th>
                     <th>1M Ret</th>
                     <th>1Y Ret</th>
                     <th>Volatility</th>
                     <th>Score</th>
+                    <th>Signal</th>
                     <th>Confidence</th>
                     <th>Quality</th>
                     <th></th>
@@ -242,6 +272,12 @@ export default function ReitInvitsPage() {
                       <td style={{ color: 'var(--color-success)', fontWeight: 600 }}>
                         {fmt(inst.yield_pct)}
                       </td>
+                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }} title={inst.distribution_count_1y ? `${inst.distribution_count_1y} payout(s) in the last year` : undefined}>
+                        {fmtRupees(inst.distributions_1y)}
+                      </td>
+                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }} title={inst.distribution_growth_3y_pct != null ? `${inst.distribution_growth_3y_pct >= 0 ? '+' : ''}${inst.distribution_growth_3y_pct.toFixed(1)}% vs. 3y ago` : undefined}>
+                        {fmtRupees(inst.distributions_3y)}
+                      </td>
                       <td><ReturnBadge value={inst.returns_1m} /></td>
                       <td><ReturnBadge value={inst.returns_1y} /></td>
                       <td style={{ color: 'var(--text-secondary)' }}>
@@ -254,6 +290,7 @@ export default function ReitInvitsPage() {
                           </span>
                         ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                       </td>
+                      <td><SignalBadge label={inst.conviction_label} emoji={inst.conviction_emoji} /></td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                         {inst.confidence_score !== null ? `${inst.confidence_score}%` : '—'}
                       </td>
@@ -303,6 +340,17 @@ export default function ReitInvitsPage() {
                 </button>
               </div>
 
+              {selectedInstrument.conviction_label && (
+                <div style={{ marginBottom: 10 }}>
+                  <SignalBadge label={selectedInstrument.conviction_label} emoji={selectedInstrument.conviction_emoji} />
+                </div>
+              )}
+              {selectedInstrument.valuation_note && (
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.4 }}>
+                  {selectedInstrument.valuation_note}
+                </div>
+              )}
+
               <ConvictionScoreCard
                 score={selectedInstrument.conviction_score}
                 confidence={selectedInstrument.confidence_score}
@@ -317,7 +365,20 @@ export default function ReitInvitsPage() {
               <h4 className="section-title" style={{ marginBottom: 12 }}>Key Metrics</h4>
               {[
                 { label: 'Price', value: selectedInstrument.price ? `₹${selectedInstrument.price.toFixed(2)}` : '—' },
-                { label: 'Distribution Yield', value: fmt(selectedInstrument.yield_pct) },
+                { label: 'Distribution Yield (TTM)', value: fmt(selectedInstrument.yield_pct) },
+                {
+                  label: 'Distributions Paid (1Y)',
+                  value: selectedInstrument.distributions_1y != null
+                    ? `${fmtRupees(selectedInstrument.distributions_1y)}${selectedInstrument.distribution_count_1y ? ` (${selectedInstrument.distribution_count_1y} payouts)` : ''}`
+                    : '—',
+                },
+                { label: 'Distributions Paid (3Y)', value: fmtRupees(selectedInstrument.distributions_3y) },
+                {
+                  label: 'Distribution Growth (vs. 3Y ago)',
+                  value: selectedInstrument.distribution_growth_3y_pct != null
+                    ? `${selectedInstrument.distribution_growth_3y_pct >= 0 ? '+' : ''}${selectedInstrument.distribution_growth_3y_pct.toFixed(1)}%`
+                    : 'Not enough history yet',
+                },
                 { label: '1M Return', value: fmt(selectedInstrument.returns_1m) },
                 { label: '3M Return', value: fmt(selectedInstrument.returns_3m) },
                 { label: '1Y Return', value: fmt(selectedInstrument.returns_1y) },

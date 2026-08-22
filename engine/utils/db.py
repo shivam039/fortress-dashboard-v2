@@ -418,63 +418,140 @@ def _ensure_ticker_metadata_neon():
         """)
 
 
+def _ensure_ticker_metadata_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_metadata (
+            symbol TEXT PRIMARY KEY,
+            info_json TEXT,
+            news_json TEXT,
+            cal_json TEXT,
+            earn_json TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 def bulk_fetch_metadata(symbols: list, max_age_hours=12):
-    if not _can_use_neon() or not symbols:
+    """Bulk-read cached ticker metadata (info/news/calendar/earnings) for
+    every symbol in `symbols` that has an entry no older than `max_age_hours`.
+
+    This is the DB-backed fallback/prefetch for `stock_scanner.logic`'s
+    per-symbol yfinance metadata calls (`.info`/`.news`/`.calendar`/
+    `.earnings_dates`) — see `stock_scanner.logic.prefetch_metadata()`, which
+    calls this before a scan's per-ticker loop so tickers with fresh cached
+    data skip the live yfinance call entirely, and tickers where the live
+    call fails mid-scan still have *something* other than a hard blank to
+    fall back to.
+
+    Works on both backends (previously Neon-only — SQLite always returned
+    `{}` immediately, which silently made this whole cache a no-op for local
+    dev and for any deployment not using Neon).
+
+    Returns:
+        Dict keyed by symbol; only symbols with a fresh-enough cached row are
+        present (never a value of ``None`` for a missing symbol).
+    """
+    if not symbols:
         return {}
 
     try:
-        engine = get_db_engine()
-        placeholders = ", ".join([f":sym_{i}" for i in range(len(symbols))])
-        params = {f"sym_{i}": sym for i, sym in enumerate(symbols)}
+        if _can_use_neon():
+            engine = get_db_engine()
+            placeholders = ", ".join([f":sym_{i}" for i in range(len(symbols))])
+            params = {f"sym_{i}": sym for i, sym in enumerate(symbols)}
 
-        query = f"""
-        SELECT symbol, info_json, news_json, cal_json, earn_json
-        FROM ticker_metadata
-        WHERE symbol IN ({placeholders}) 
-        AND updated_at >= NOW() - INTERVAL '{max_age_hours} hours'
-        """
+            query = f"""
+            SELECT symbol, info_json, news_json, cal_json, earn_json
+            FROM ticker_metadata
+            WHERE symbol IN ({placeholders})
+            AND updated_at >= NOW() - INTERVAL '{max_age_hours} hours'
+            """
 
-        with engine.connect() as conn:
-            res = conn.execute(text(query), params).fetchall()
+            with engine.connect() as conn:
+                res = conn.execute(text(query), params).fetchall()
 
-        return {
-            row[0]: {
-                "info_json": row[1] if row[1] else {},
-                "news_json": row[2] if row[2] else [],
-                "cal_json": row[3],
-                "earn_json": row[4],
+            return {
+                row[0]: {
+                    "info_json": row[1] if row[1] else {},
+                    "news_json": row[2] if row[2] else [],
+                    "cal_json": row[3],
+                    "earn_json": row[4],
+                }
+                for row in res
             }
-            for row in res
-        }
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_ticker_metadata_sqlite(conn)
+            placeholders = ", ".join([f":sym_{i}" for i in range(len(symbols))])
+            params = {f"sym_{i}": sym for i, sym in enumerate(symbols)}
+            params["cutoff"] = f"-{int(max_age_hours)} hours"
+
+            query = f"""
+            SELECT symbol, info_json, news_json, cal_json, earn_json
+            FROM ticker_metadata
+            WHERE symbol IN ({placeholders})
+            AND updated_at >= datetime('now', :cutoff)
+            """
+            rows = conn.execute(query, params).fetchall()
+
+        result = {}
+        for symbol, info_json, news_json, cal_json, earn_json in rows:
+            result[symbol] = {
+                "info_json": json.loads(info_json) if info_json else {},
+                "news_json": json.loads(news_json) if news_json else [],
+                "cal_json": json.loads(cal_json) if cal_json else None,
+                "earn_json": json.loads(earn_json) if earn_json else None,
+            }
+        return result
     except Exception as e:
         logger.error(f"Error fetching bulk metadata: {e}")
         return {}
 
 
 def upsert_ticker_metadata_cache(symbol, metadata_dict):
-    if not _can_use_neon():
-        return
+    """Persist ticker metadata (info/news/calendar/earnings) for `symbol` so
+    a later scan can read it back via `bulk_fetch_metadata()` instead of
+    hitting yfinance live again. Works on both backends (previously
+    Neon-only — see `bulk_fetch_metadata()`'s docstring)."""
+    payload = {
+        "symbol": symbol,
+        "info_json": json.dumps(metadata_dict.get("info_json", {})),
+        "news_json": json.dumps(metadata_dict.get("news_json", [])),
+        "cal_json": json.dumps(metadata_dict.get("cal_json", {})),
+        "earn_json": json.dumps(metadata_dict.get("earn_json", {})),
+    }
     try:
-        query = """
-        INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
-        VALUES (:symbol, CAST(:info_json AS JSONB), CAST(:news_json AS JSONB), CAST(:cal_json AS JSONB), CAST(:earn_json AS JSONB), NOW())
-        ON CONFLICT (symbol) DO UPDATE SET 
-            info_json = EXCLUDED.info_json,
-            news_json = EXCLUDED.news_json,
-            cal_json = EXCLUDED.cal_json,
-            earn_json = EXCLUDED.earn_json,
-            updated_at = EXCLUDED.updated_at
-        """
-        _exec(
-            query,
-            {
-                "symbol": symbol,
-                "info_json": json.dumps(metadata_dict.get("info_json", {})),
-                "news_json": json.dumps(metadata_dict.get("news_json", [])),
-                "cal_json": json.dumps(metadata_dict.get("cal_json", {})),
-                "earn_json": json.dumps(metadata_dict.get("earn_json", {})),
-            },
-        )
+        if _can_use_neon():
+            query = """
+            INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
+            VALUES (:symbol, CAST(:info_json AS JSONB), CAST(:news_json AS JSONB), CAST(:cal_json AS JSONB), CAST(:earn_json AS JSONB), NOW())
+            ON CONFLICT (symbol) DO UPDATE SET
+                info_json = EXCLUDED.info_json,
+                news_json = EXCLUDED.news_json,
+                cal_json = EXCLUDED.cal_json,
+                earn_json = EXCLUDED.earn_json,
+                updated_at = EXCLUDED.updated_at
+            """
+            _exec(query, payload)
+            return
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_ticker_metadata_sqlite(conn)
+            conn.execute(
+                """
+                INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
+                VALUES (:symbol, :info_json, :news_json, :cal_json, :earn_json, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    info_json = excluded.info_json,
+                    news_json = excluded.news_json,
+                    cal_json = excluded.cal_json,
+                    earn_json = excluded.earn_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
     except Exception as e:
         logger.error(f"Error upserting metadata for {symbol}: {e}")
 
@@ -496,29 +573,62 @@ def _ensure_ohlcv_cache_neon():
     """)
 
 
+def _ensure_ohlcv_cache_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_cache (
+            symbol       TEXT NOT NULL,
+            period       TEXT NOT NULL,
+            ohlcv_json   TEXT,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, period)
+        )
+    """)
+
+
 def fetch_ohlcv_cache(
     symbol: str, period: str = "5y", max_age_hours: int = 20
 ) -> Optional[pd.DataFrame]:
-    """Return a DataFrame from Neon cache if fresh, else None."""
-    if not _can_use_neon():
-        return None
+    """Return a DataFrame from the cache if fresh, else None.
+
+    Works on both backends. Previously SQLite always returned None here,
+    which made this whole cache a no-op for local dev (FORTRESS_DB_BACKEND=
+    sqlite, the documented default) — every mf_lab benchmark/OHLCV lookup
+    hit yfinance live every single call, same bug pattern as the
+    ticker_metadata cache that only worked on Neon before it was ported.
+    """
     try:
-        engine = get_db_engine()
-        with engine.connect() as conn:
+        import io
+
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("""
+                    SELECT ohlcv_json FROM ohlcv_cache
+                    WHERE symbol = :sym AND period = :period
+                      AND updated_at >= NOW() - INTERVAL :age_h
+                    """),
+                    {"sym": symbol, "period": period, "age_h": f"{max_age_hours} hours"},
+                ).fetchone()
+            if row and row[0]:
+                df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
+                df.index = pd.to_datetime(df.index)
+                return df
+            return None
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_ohlcv_cache_sqlite(conn)
             row = conn.execute(
-                text("""
+                """
                 SELECT ohlcv_json FROM ohlcv_cache
                 WHERE symbol = :sym AND period = :period
-                  AND updated_at >= NOW() - INTERVAL :age_h
-                """),
-                {"sym": symbol, "period": period, "age_h": f"{max_age_hours} hours"},
+                  AND updated_at >= datetime('now', :cutoff)
+                """,
+                {"sym": symbol, "period": period, "cutoff": f"-{int(max_age_hours)} hours"},
             ).fetchone()
         if row and row[0]:
-            import io
-
-            import pandas as pd
-
-            df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
+            df = pd.read_json(io.StringIO(row[0]), orient="split")
             df.index = pd.to_datetime(df.index)
             return df
     except Exception as e:
@@ -527,21 +637,40 @@ def fetch_ohlcv_cache(
 
 
 def upsert_ohlcv_cache(symbol: str, period: str, df: "pd.DataFrame"):
-    """Persist an OHLCV DataFrame into Neon for future cache hits."""
-    if not _can_use_neon() or df is None or df.empty:
+    """Persist an OHLCV DataFrame into the cache for future cache hits.
+    Works on both backends (previously Neon-only — see `fetch_ohlcv_cache`'s
+    docstring)."""
+    if df is None or df.empty:
         return
     try:
         payload = json.dumps(json.loads(df.to_json(date_format="iso", orient="split")))
-        _exec(
-            """
-            INSERT INTO ohlcv_cache (symbol, period, ohlcv_json, updated_at)
-            VALUES (:sym, :period, CAST(:payload AS JSONB), NOW())
-            ON CONFLICT (symbol, period) DO UPDATE
-              SET ohlcv_json = EXCLUDED.ohlcv_json,
-                  updated_at = EXCLUDED.updated_at
-            """,
-            {"sym": symbol, "period": period, "payload": payload},
-        )
+
+        if _can_use_neon():
+            _exec(
+                """
+                INSERT INTO ohlcv_cache (symbol, period, ohlcv_json, updated_at)
+                VALUES (:sym, :period, CAST(:payload AS JSONB), NOW())
+                ON CONFLICT (symbol, period) DO UPDATE
+                  SET ohlcv_json = EXCLUDED.ohlcv_json,
+                      updated_at = EXCLUDED.updated_at
+                """,
+                {"sym": symbol, "period": period, "payload": payload},
+            )
+            return
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_ohlcv_cache_sqlite(conn)
+            conn.execute(
+                """
+                INSERT INTO ohlcv_cache (symbol, period, ohlcv_json, updated_at)
+                VALUES (:sym, :period, :payload, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol, period) DO UPDATE SET
+                    ohlcv_json = excluded.ohlcv_json,
+                    updated_at = excluded.updated_at
+                """,
+                {"sym": symbol, "period": period, "payload": payload},
+            )
     except Exception as e:
         logger.error("ohlcv_cache upsert error for %s: %s", symbol, e)
 
@@ -984,6 +1113,7 @@ def init_db():
         _ensure_scan_history_details_neon()
         _ensure_ticker_metadata_neon()
         _ensure_ohlcv_cache_neon()
+        _ensure_reit_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
 
@@ -2333,17 +2463,62 @@ def close_all_trades():
 # ─────────────────────────────────────────────
 
 
-def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
-    """Return the latest monthly MF scan from Neon. Empty DF if stale/missing."""
-    if not _can_use_neon():
-        return pd.DataFrame()
-    try:
-        df = _read_df(
-            f"SELECT scheme_code, scheme_name, scan_date, result_json "
-            f"FROM mf_scan_results "
-            f"WHERE scan_date >= CURRENT_DATE - INTERVAL '{max_age_days} days' "
-            f"ORDER BY scan_date DESC, scheme_code"
+def _ensure_mf_scan_results_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mf_scan_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scheme_code TEXT NOT NULL,
+            scheme_name TEXT,
+            scan_date   TEXT NOT NULL DEFAULT CURRENT_DATE,
+            result_json TEXT,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scheme_code, scan_date)
         )
+    """)
+
+
+def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
+    """Return the latest monthly MF scan if one was persisted within
+    `max_age_days`. Empty DataFrame if stale/missing, which callers should
+    treat as "run a fresh scan".
+
+    This is the DB-backed "run the MF scan once a month" mechanism —
+    `/api/mf-analysis` checks this first and only runs the expensive full
+    discover-and-score pass (`run_full_mf_scan()`, which discovers and scores
+    essentially the whole direct-growth fund universe) when nothing fresh
+    enough is on file.
+
+    Works on both backends via `_read_df` (previously hard-gated to
+    `if not _can_use_neon(): return pd.DataFrame()`, so on SQLite — local
+    dev's default — this monthly cache was a complete no-op despite the
+    schema and the write side (`upsert_mf_scan_results`) already existing;
+    every scan re-ran the full discovery+scoring pass regardless of how
+    recently it had last run).
+
+    Each returned record is stamped with `last_updated` (the persisted
+    `scan_date`) so the UI can show how stale the currently-displayed scan
+    is, and a manual "Trigger Job" full refresh can be compared against it.
+    """
+    try:
+        if _can_use_neon():
+            df = _read_df(
+                "SELECT scheme_code, scheme_name, scan_date, result_json "
+                "FROM mf_scan_results "
+                "WHERE scan_date >= CURRENT_DATE - INTERVAL :age "
+                "ORDER BY scan_date DESC, scheme_code",
+                {"age": f"{int(max_age_days)} days"},
+            )
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_mf_scan_results_sqlite(conn)
+                df = pd.read_sql_query(
+                    "SELECT scheme_code, scheme_name, scan_date, result_json "
+                    "FROM mf_scan_results "
+                    "WHERE scan_date >= date('now', :cutoff) "
+                    "ORDER BY scan_date DESC, scheme_code",
+                    conn,
+                    params={"cutoff": f"-{int(max_age_days)} days"},
+                )
         if df.empty:
             return pd.DataFrame()
         rows = []
@@ -2352,6 +2527,7 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
             if isinstance(rj, str):
                 rj = json.loads(rj)
             if isinstance(rj, dict):
+                rj.setdefault("last_updated", str(row["scan_date"]))
                 rows.append(rj)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception as e:
@@ -2412,35 +2588,54 @@ def fetch_top_mf_picks(max_age_days: int = 31) -> pd.DataFrame:
 
 
 def upsert_mf_scan_results(df: pd.DataFrame):
-    """Persist a full MF scan result DataFrame into Neon (one row per scheme, monthly UPSERT)."""
-    if not _can_use_neon() or df is None or df.empty:
+    """Persist a full MF scan result DataFrame (one row per scheme, monthly
+    UPSERT keyed on scheme_code + today's date) so `fetch_mf_cached_results`
+    can serve it back without re-running the full scan.
+
+    Works on both backends (previously Neon-only — see
+    `fetch_mf_cached_results`'s docstring for why that made the "once a
+    month" scan cache a no-op on local dev)."""
+    if df is None or df.empty:
         return
-    try:
+
+    def _sanitized_records():
         for _, row in df.iterrows():
             record = row.to_dict()
             # Sanitize NaN and Infinity values (invalid in JSON/JSONB)
             sanitized = {}
             for k, v in record.items():
-                if isinstance(v, float):
-                    if math.isnan(v) or math.isinf(v):
-                        sanitized[k] = None
-                    else:
-                        sanitized[k] = v
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    sanitized[k] = None
                 else:
                     sanitized[k] = v
-            record = sanitized
-            scheme_code = str(
-                record.get("Scheme Code") or record.get("scheme_code") or "UNKNOWN"
-            )
-            scheme_name = str(record.get("Scheme") or record.get("scheme_name") or "")
-            payload = json.dumps(record, default=str)
-            _exec(
-                "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
-                "VALUES (:code, :name, CURRENT_DATE, CAST(:payload AS JSONB), NOW()) "
-                "ON CONFLICT (scheme_code, scan_date) DO UPDATE "
-                "SET result_json=EXCLUDED.result_json, scheme_name=EXCLUDED.scheme_name, updated_at=EXCLUDED.updated_at",
-                {"code": scheme_code, "name": scheme_name, "payload": payload},
-            )
+            code = str(sanitized.get("Scheme Code") or sanitized.get("scheme_code") or "UNKNOWN")
+            name = str(sanitized.get("Scheme") or sanitized.get("scheme_name") or "")
+            yield code, name, json.dumps(sanitized, default=str)
+
+    try:
+        if _can_use_neon():
+            for code, name, payload in _sanitized_records():
+                _exec(
+                    "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
+                    "VALUES (:code, :name, CURRENT_DATE, CAST(:payload AS JSONB), NOW()) "
+                    "ON CONFLICT (scheme_code, scan_date) DO UPDATE "
+                    "SET result_json=EXCLUDED.result_json, scheme_name=EXCLUDED.scheme_name, updated_at=EXCLUDED.updated_at",
+                    {"code": code, "name": name, "payload": payload},
+                )
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_mf_scan_results_sqlite(conn)
+                for code, name, payload in _sanitized_records():
+                    conn.execute(
+                        "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
+                        "VALUES (:code, :name, CURRENT_DATE, :payload, CURRENT_TIMESTAMP) "
+                        "ON CONFLICT(scheme_code, scan_date) DO UPDATE SET "
+                        "result_json = excluded.result_json, "
+                        "scheme_name = excluded.scheme_name, "
+                        "updated_at = excluded.updated_at",
+                        {"code": code, "name": name, "payload": payload},
+                    )
+
         logger.info("upsert_mf_scan_results: saved %d rows", len(df))
     except Exception as e:
         logger.error("upsert_mf_scan_results error: %s", e)
@@ -2461,23 +2656,61 @@ def _ensure_mf_nav_cache_neon():
     """)
 
 
+def _ensure_mf_nav_cache_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mf_nav_cache (
+            scheme_code TEXT PRIMARY KEY,
+            nav_json    TEXT,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 def fetch_mf_nav_cache(scheme_code: str, max_age_hours: int = 20) -> pd.DataFrame:
-    """Return cached NAV history DataFrame if fresh, else None."""
-    if not _can_use_neon():
-        return None
+    """Return cached NAV history DataFrame if fresh, else None.
+
+    Works on both backends. Previously SQLite always returned None here
+    (same no-op-on-SQLite bug as `fetch_ohlcv_cache`/the ticker_metadata
+    cache), which means a full MF scan on local dev re-downloaded NAV
+    history from mfapi.in live for every single scheme on every scan —
+    the single biggest reason MF scans are slow, since `run_full_mf_scan`
+    with no `limit` discovers essentially the whole direct-growth fund
+    universe (well into the hundreds/low thousands of schemes) and none of
+    that work was ever actually being cached locally.
+    """
     try:
-        engine = get_db_engine()
-        with engine.connect() as conn:
+        import io
+
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("""
+                        SELECT nav_json FROM mf_nav_cache
+                        WHERE scheme_code = :code
+                          AND updated_at >= NOW() - INTERVAL :age
+                    """),
+                    {"code": str(scheme_code), "age": f"{max_age_hours} hours"},
+                ).fetchone()
+            if row and row[0]:
+                df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
+                df.index = pd.to_datetime(df.index)
+                return df
+            return None
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_mf_nav_cache_sqlite(conn)
             row = conn.execute(
-                text("""
-                    SELECT nav_json FROM mf_nav_cache
-                    WHERE scheme_code = :code
-                      AND updated_at >= NOW() - INTERVAL :age
-                """),
-                {"code": str(scheme_code), "age": f"{max_age_hours} hours"},
+                """
+                SELECT nav_json FROM mf_nav_cache
+                WHERE scheme_code = :code
+                  AND updated_at >= datetime('now', :cutoff)
+                """,
+                {"code": str(scheme_code), "cutoff": f"-{int(max_age_hours)} hours"},
             ).fetchone()
         if row and row[0]:
-            df = pd.read_json(json.dumps(row[0]), orient="split")
+            df = pd.read_json(io.StringIO(row[0]), orient="split")
             df.index = pd.to_datetime(df.index)
             return df
     except Exception as e:
@@ -2486,18 +2719,36 @@ def fetch_mf_nav_cache(scheme_code: str, max_age_hours: int = 20) -> pd.DataFram
 
 
 def upsert_mf_nav_cache(scheme_code: str, df: pd.DataFrame):
-    """Persist NAV history DataFrame into Neon for future cache hits."""
-    if not _can_use_neon() or df is None or df.empty:
+    """Persist NAV history DataFrame for future cache hits. Works on both
+    backends (previously Neon-only — see `fetch_mf_nav_cache`'s docstring)."""
+    if df is None or df.empty:
         return
     try:
         payload = json.dumps(json.loads(df.to_json(date_format="iso", orient="split")))
-        _exec(
-            "INSERT INTO mf_nav_cache (scheme_code, nav_json, updated_at) "
-            "VALUES (:code, CAST(:payload AS JSONB), NOW()) "
-            "ON CONFLICT (scheme_code) DO UPDATE "
-            "SET nav_json=EXCLUDED.nav_json, updated_at=EXCLUDED.updated_at",
-            {"code": str(scheme_code), "payload": payload},
-        )
+
+        if _can_use_neon():
+            _exec(
+                "INSERT INTO mf_nav_cache (scheme_code, nav_json, updated_at) "
+                "VALUES (:code, CAST(:payload AS JSONB), NOW()) "
+                "ON CONFLICT (scheme_code) DO UPDATE "
+                "SET nav_json=EXCLUDED.nav_json, updated_at=EXCLUDED.updated_at",
+                {"code": str(scheme_code), "payload": payload},
+            )
+            return
+
+        # SQLite path
+        with _sqlite_connection() as conn:
+            _ensure_mf_nav_cache_sqlite(conn)
+            conn.execute(
+                """
+                INSERT INTO mf_nav_cache (scheme_code, nav_json, updated_at)
+                VALUES (:code, :payload, CURRENT_TIMESTAMP)
+                ON CONFLICT(scheme_code) DO UPDATE SET
+                    nav_json = excluded.nav_json,
+                    updated_at = excluded.updated_at
+                """,
+                {"code": str(scheme_code), "payload": payload},
+            )
     except Exception as e:
         logger.debug("upsert_mf_nav_cache %s: %s", scheme_code, e)
 
@@ -2856,9 +3107,113 @@ def get_all_refresh_jobs() -> list:
         return []
 
 
+def _ensure_reit_cache_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS reit_cache (
+            symbol       TEXT PRIMARY KEY,
+            payload_json JSONB,
+            updated_at   TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+
+def _ensure_reit_cache_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reit_cache (
+            symbol       TEXT PRIMARY KEY,
+            payload_json TEXT,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def fetch_reit_cache(max_age_hours: int = 4) -> list:
+    """Return cached REIT/InvIT records fresher than max_age_hours, or []
+    if there's no fresh cache. The router only uses this cache when it
+    covers the *whole* configured universe (see routers/reit_invits.py) —
+    a partial or empty result here just means "go do a live fetch".
+
+    Previously this cache didn't exist at all (`upsert_reit_cache` was a
+    literal no-op placeholder), so every request rebuilt the whole universe
+    live from yfinance — 6-11 symbols each doing an OHLCV download plus two
+    more `.info`/`.dividends` calls apiece. Combined with the route being
+    declared `async def` around that synchronous work (see
+    routers/reit_invits.py), that's what made the REIT/InvIT tab feel like
+    it "keeps loading": every visit re-did the full slow fetch, and while
+    it ran it froze request handling for the rest of the app too.
+    """
+    try:
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text("""
+                    SELECT payload_json FROM reit_cache
+                    WHERE updated_at >= NOW() - INTERVAL :age_h
+                    """),
+                    {"age_h": f"{max_age_hours} hours"},
+                ).fetchall()
+            return [r[0] for r in rows if r[0]]
+
+        with _sqlite_connection() as conn:
+            _ensure_reit_cache_sqlite(conn)
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM reit_cache
+                WHERE updated_at >= datetime('now', :cutoff)
+                """,
+                {"cutoff": f"-{int(max_age_hours)} hours"},
+            ).fetchall()
+        return [json.loads(r[0]) for r in rows if r[0]]
+    except Exception as e:
+        logger.error("reit_cache fetch error: %s", e)
+        return []
+
+
 def upsert_reit_cache(records: list):
-    """Placeholder — REIT data cached in-memory for now; add Neon persistence if needed."""
-    pass
+    """Persist scored REIT/InvIT records so they survive process restarts
+    and repeat requests don't force a live re-fetch. Works on both
+    backends. See `fetch_reit_cache` for why this mattered."""
+    if not records:
+        return
+    try:
+        if _can_use_neon():
+            for r in records:
+                symbol = r.get("symbol")
+                if not symbol:
+                    continue
+                payload = json.dumps(r, default=str)
+                _exec(
+                    """
+                    INSERT INTO reit_cache (symbol, payload_json, updated_at)
+                    VALUES (:sym, CAST(:payload AS JSONB), NOW())
+                    ON CONFLICT (symbol) DO UPDATE
+                      SET payload_json = EXCLUDED.payload_json,
+                          updated_at = EXCLUDED.updated_at
+                    """,
+                    {"sym": symbol, "payload": payload},
+                )
+            return
+
+        with _sqlite_connection() as conn:
+            _ensure_reit_cache_sqlite(conn)
+            for r in records:
+                symbol = r.get("symbol")
+                if not symbol:
+                    continue
+                payload = json.dumps(r, default=str)
+                conn.execute(
+                    """
+                    INSERT INTO reit_cache (symbol, payload_json, updated_at)
+                    VALUES (:sym, :payload, CURRENT_TIMESTAMP)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    {"sym": symbol, "payload": payload},
+                )
+    except Exception as e:
+        logger.error("reit_cache upsert error: %s", e)
 
 
 def upsert_us_cache(records: list):

@@ -216,12 +216,18 @@ a:hover { color: var(--accent-primary-hover); }
 /* ── System Status ──────────────────────────────────────────────────────────── */
 .status-bar {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 14px;
   margin: 8px 10px;
   background: var(--bg-card);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
+}
+
+.status-bar-row {
+  display: flex;
+  gap: 12px;
 }
 
 .status-dot {
@@ -234,6 +240,8 @@ a:hover { color: var(--accent-primary-hover); }
 
 .status-dot.online { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
 .status-dot.offline { background: var(--color-danger); box-shadow: 0 0 6px var(--color-danger); }
+.status-dot.indmoney { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+.status-dot.fallback { background: var(--color-warning); box-shadow: 0 0 6px var(--color-warning); }
 
 .status-label {
   font-size: 0.72rem;
@@ -503,6 +511,14 @@ select.input {
 
 .data-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+.data-table tbody tr.row-selected {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.data-table tbody tr.row-selected:hover {
+  background: rgba(59, 130, 246, 0.14);
 }
 
 /* Score badges */

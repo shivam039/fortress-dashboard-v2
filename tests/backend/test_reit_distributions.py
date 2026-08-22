@@ -1,0 +1,236 @@
+"""Tests for the REIT/InvIT distribution-history scoring additions and the
+reit_cache DB persistence layer.
+
+Context: the REIT/InvIT tab "kept loading" for two compounding reasons —
+(1) `list_reit_invits` was declared `async def` around synchronous,
+potentially slow yfinance work, which freezes uvicorn's whole event loop
+for the duration (same bug pattern already fixed elsewhere in this app for
+the scanner/sector-pulse/MF routes), and (2) `upsert_reit_cache` was a
+literal no-op placeholder, so there was no persistence layer at all — every
+request (and every dev-server restart) meant a full live re-fetch across
+the whole universe. Several of the configured tickers were also wrong
+(guessed from marketing names rather than the actual NSE trading symbol),
+which silently broke data for those specific instruments.
+
+Separately, the user asked for past 1y/3y distribution history to show up
+in the table and to factor into the conviction score, and for the universe
+to cover all currently-listed Indian REITs/InvITs. These tests cover the
+distribution-history derivation, the new scoring dimension, and the cache.
+"""
+
+import pandas as pd
+
+from engine.reit_invits.logic import (
+    WEIGHTS,
+    _fetch_distribution_history,
+    _score_universe,
+)
+from engine.reit_invits.universe import REIT_INVIT_UNIVERSE
+from engine.utils.db import fetch_reit_cache, upsert_reit_cache
+
+
+def test_weights_sum_to_one():
+    assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9
+
+
+def test_universe_tickers_are_not_the_old_wrong_guesses():
+    # These marketing-name-guessed tickers were never valid NSE symbols and
+    # silently broke data for the corresponding trust.
+    wrong = {"BROOKFIELD.NS", "NEXUSMALLS.NS", "POWERTRAN.NS", "NHAI.NS", "BHINVIT.NS"}
+    assert wrong.isdisjoint(REIT_INVIT_UNIVERSE.keys())
+
+
+def test_universe_has_at_least_the_known_listed_trusts():
+    expected = {
+        "EMBASSY.NS", "MINDSPACE.NS", "BIRET.NS", "NXST.NS", "KRT.NS",
+        "INDIGRID.NS", "PGINVIT.NS", "IRBINVIT.NS", "NHIT.NS",
+        "INDUSINVIT.NS", "RIIT.NS",
+    }
+    assert expected.issubset(REIT_INVIT_UNIVERSE.keys())
+
+
+def _fake_dividends(amount_days_ago_pairs):
+    """Build a fake yfinance-style dividends Series from a list of
+    (amount, days_ago) pairs — a plain dict can't hold repeated amounts as
+    keys, so this takes pairs instead."""
+    today = pd.Timestamp.today().normalize()
+    dates = [today - pd.Timedelta(days=d) for _, d in amount_days_ago_pairs]
+    values = [amt for amt, _ in amount_days_ago_pairs]
+    return pd.Series(values, index=pd.DatetimeIndex(dates))
+
+
+def test_fetch_distribution_history_sums_trailing_1y_and_3y(monkeypatch):
+    # Four quarterly payouts of 5 in the last year, four more of 4 the year
+    # before that (baseline for the growth calc), for a total of 8 payouts
+    # across ~2 years — well within the 3y window.
+    divs = _fake_dividends([
+        (5.0, 30), (5.0, 120), (5.0, 210), (5.0, 300),   # last ~1y
+        (4.0, 400), (4.0, 490), (4.0, 580), (4.0, 670),  # ~1-2y ago
+    ])
+
+    class _FakeTicker:
+        dividends = divs
+
+    monkeypatch.setattr(
+        "engine.reit_invits.logic.yf.Ticker",
+        lambda symbol: _FakeTicker(),
+    )
+
+    out = _fetch_distribution_history("FAKE.NS")
+    assert out["distributions_1y"] == 20.0
+    assert out["distribution_count_1y"] == 4
+    assert out["distributions_3y"] == 36.0
+
+
+def test_fetch_distribution_history_empty_series_returns_all_none(monkeypatch):
+    class _FakeTicker:
+        dividends = pd.Series(dtype=float)
+
+    monkeypatch.setattr(
+        "engine.reit_invits.logic.yf.Ticker",
+        lambda symbol: _FakeTicker(),
+    )
+
+    out = _fetch_distribution_history("NEWFUND.NS")
+    assert out == {
+        "distributions_1y": None,
+        "distributions_3y": None,
+        "distributions_3y_avg": None,
+        "distribution_count_1y": None,
+        "distribution_growth_3y_pct": None,
+    }
+
+
+def test_fetch_distribution_history_handles_exception_gracefully(monkeypatch):
+    def _raise(symbol):
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr("engine.reit_invits.logic.yf.Ticker", _raise)
+
+    out = _fetch_distribution_history("BROKEN.NS")
+    assert out["distributions_1y"] is None
+
+
+def test_score_universe_includes_distribution_growth_dimension():
+    records = [
+        {
+            "symbol": "TEST1", "price": 100, "yield_pct": 8.0,
+            "returns_1y": 15.0, "returns_1m": 2.0, "volatility_30d": 12.0,
+            "max_drawdown_1y": -5.0, "returns_3m": 5.0,
+            "distributions_1y": 8.0, "distribution_growth_3y_pct": 12.0,
+        },
+        {
+            "symbol": "TEST2", "price": 50, "yield_pct": 5.0,
+            "returns_1y": 5.0, "returns_1m": -1.0, "volatility_30d": 20.0,
+            "max_drawdown_1y": -15.0, "returns_3m": 1.0,
+            "distributions_1y": 2.5, "distribution_growth_3y_pct": -10.0,
+        },
+    ]
+    scored = _score_universe(records)
+    for r in scored:
+        assert "distribution_growth_score" in r["score_breakdown"]
+        assert 0 <= r["score_breakdown"]["distribution_growth_score"] <= 100
+    # TEST1 grew its distribution, TEST2 shrank it — TEST1 should rank higher.
+    t1 = next(r for r in scored if r["symbol"] == "TEST1")
+    t2 = next(r for r in scored if r["symbol"] == "TEST2")
+    assert t1["score_breakdown"]["distribution_growth_score"] > t2["score_breakdown"]["distribution_growth_score"]
+
+
+def test_score_universe_neutral_growth_score_for_new_listing_without_3y_history():
+    records = [
+        {
+            "symbol": "NEWFUND", "price": 100, "yield_pct": 8.0,
+            "returns_1y": 15.0, "returns_1m": 2.0, "volatility_30d": 12.0,
+            "max_drawdown_1y": -5.0, "returns_3m": 5.0,
+            "distributions_1y": 8.0, "distribution_growth_3y_pct": None,
+        },
+    ]
+    scored = _score_universe(records)
+    assert scored[0]["score_breakdown"]["distribution_growth_score"] == 50.0
+    # A missing 3y-growth figure alone shouldn't be treated as missing data
+    # for confidence purposes — it's expected for anything under 3y old.
+    assert scored[0]["confidence_score"] > 0
+
+
+def test_score_universe_assigns_conviction_label_and_emoji():
+    records = [{
+        "symbol": "TEST1", "price": 100, "yield_pct": 8.0,
+        "returns_1y": 15.0, "returns_1m": 2.0, "volatility_30d": 12.0,
+        "max_drawdown_1y": -5.0, "returns_3m": 5.0,
+    }]
+    scored = _score_universe(records)
+    assert scored[0]["conviction_label"] in {"STRONG BUY", "BUY", "HOLD", "UNDERPERFORMER", "AVOID"}
+    assert scored[0]["conviction_emoji"]
+
+
+def test_score_universe_valuation_note_reflects_nav_premium():
+    records = [
+        {"symbol": "DISCOUNT", "price": 90, "nav_premium_pct": -10.0},
+        {"symbol": "PREMIUM", "price": 130, "nav_premium_pct": 25.0},
+        {"symbol": "FAIR", "price": 100, "nav_premium_pct": 1.0},
+    ]
+    scored = _score_universe(records)
+    by_symbol = {r["symbol"]: r for r in scored}
+    assert "below NAV" in by_symbol["DISCOUNT"]["valuation_note"]
+    assert "rich premium" in by_symbol["PREMIUM"]["valuation_note"]
+    assert "fairly valued" in by_symbol["FAIR"]["valuation_note"]
+
+
+def test_score_universe_no_price_gets_null_label_not_a_crash():
+    records = [{"symbol": "NODATA", "price": None}]
+    scored = _score_universe(records)
+    assert scored[0]["conviction_label"] is None
+    assert scored[0]["valuation_note"] is None
+
+
+def _fake_reit_record(symbol="ZZTESTREIT1"):
+    return {
+        "symbol": symbol,
+        "name": "Test REIT",
+        "asset_class": "REIT",
+        "price": 350.5,
+        "conviction_score": 72.0,
+        "conviction_label": "BUY",
+        "distributions_1y": 18.5,
+        "distributions_3y": 52.0,
+    }
+
+
+def test_reit_cache_round_trip():
+    record = _fake_reit_record("ZZTESTREIT_RT")
+    upsert_reit_cache([record])
+
+    fresh = fetch_reit_cache(max_age_hours=24)
+    match = next((r for r in fresh if r.get("symbol") == "ZZTESTREIT_RT"), None)
+    assert match is not None
+    assert match["conviction_label"] == "BUY"
+    assert match["distributions_1y"] == 18.5
+
+
+def test_reit_cache_excludes_stale_rows():
+    upsert_reit_cache([_fake_reit_record("ZZTESTREIT_STALE")])
+
+    fresh = fetch_reit_cache(max_age_hours=24)
+    assert any(r.get("symbol") == "ZZTESTREIT_STALE" for r in fresh)
+
+    # A just-written row can never satisfy "updated in the future".
+    stale = fetch_reit_cache(max_age_hours=-1)
+    assert not any(r.get("symbol") == "ZZTESTREIT_STALE" for r in stale)
+
+
+def test_reit_cache_upsert_overwrites():
+    upsert_reit_cache([_fake_reit_record("ZZTESTREIT_OW")])
+    updated = _fake_reit_record("ZZTESTREIT_OW")
+    updated["conviction_score"] = 40.0
+    updated["conviction_label"] = "AVOID"
+    upsert_reit_cache([updated])
+
+    fresh = fetch_reit_cache(max_age_hours=24)
+    match = next(r for r in fresh if r.get("symbol") == "ZZTESTREIT_OW")
+    assert match["conviction_score"] == 40.0
+    assert match["conviction_label"] == "AVOID"
+
+
+def test_reit_cache_empty_list_is_a_noop():
+    # Must not raise.
+    upsert_reit_cache([])
