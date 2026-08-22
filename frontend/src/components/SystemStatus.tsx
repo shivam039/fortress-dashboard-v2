@@ -2,11 +2,12 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { healthApi, marketDataApi, MarketDataStatus, OhlcvProvider } from '@/lib/api';
+import { healthApi, marketDataApi, bhavcopyApi, MarketDataStatus, BhavcopyStatus, OhlcvProvider } from '@/lib/api';
 
 export default function SystemStatus() {
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [dataStatus, setDataStatus] = useState<MarketDataStatus | null>(null);
+  const [bhavcopyStatus, setBhavcopyStatus] = useState<BhavcopyStatus | null>(null);
   const [switching, setSwitching] = useState(false);
 
   const poll = useCallback(() => {
@@ -15,6 +16,10 @@ export default function SystemStatus() {
       .status()
       .then(setDataStatus)
       .catch(() => setDataStatus(null));
+    bhavcopyApi
+      .status()
+      .then(setBhavcopyStatus)
+      .catch(() => setBhavcopyStatus(null));
   }, []);
 
   useEffect(() => {
@@ -43,6 +48,13 @@ export default function SystemStatus() {
       setSwitching(false);
     }
   };
+
+  // ohlcv_source_label above only reflects the *preference setting* — it
+  // says "Bhav Copy" even if Bhav Copy has no data yet and every call is
+  // silently falling back. ohlcv_calls_by_source is what actually served
+  // requests since the backend started, which is the real proof.
+  const callCounts = bhavcopyStatus?.ohlcv_calls_by_source;
+  const totalCalls = callCounts ? Object.values(callCounts).reduce((a, b) => a + b, 0) : 0;
 
   return (
     <div className="status-bar">
@@ -89,6 +101,27 @@ export default function SystemStatus() {
           </button>
         </span>
       </div>
+      {totalCalls > 0 && (
+        <div className="status-bar-row">
+          <span
+            className="status-label"
+            title="How many OHLCV calls each source has actually served since the backend last restarted — the real proof of what's being used, since the label above just reflects the toggle setting."
+          >
+            Served: {(callCounts?.bhavcopy ?? 0)} Bhav Copy · {(callCounts?.indstocks ?? 0)} IndMoney · {(callCounts?.yfinance ?? 0)} Yahoo
+          </span>
+        </div>
+      )}
+      {bhavcopyStatus && bhavcopyStatus.trading_days_covered > 0 && (
+        <div className="status-bar-row">
+          <span
+            className="status-label"
+            title={`Bhav Copy history stored: ${bhavcopyStatus.earliest_date} to ${bhavcopyStatus.latest_date}`}
+          >
+            Bhav Copy history: {bhavcopyStatus.trading_days_covered} days
+            {bhavcopyStatus.backfill_in_progress ? ' (backfill running…)' : ''}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

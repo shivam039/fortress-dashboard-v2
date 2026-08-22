@@ -226,6 +226,32 @@ export const marketDataApi = {
     ),
 };
 
+// ── Bhav Copy status/backfill ────────────────────────────────────────────────
+//
+// ohlcv_calls_by_source is the concrete proof that Bhav Copy is actually
+// serving data: MarketDataStatus.ohlcv_source above just reflects the
+// *preference setting*, not what actually satisfied any given OHLCV call —
+// a "bhavcopy" preference silently falls back to indstocks/yfinance
+// per-symbol whenever Bhav Copy has no data yet (e.g. before a backfill
+// finishes). These counts are cumulative since the backend process started
+// (or the last reset).
+
+export interface BhavcopyStatus {
+  trade_date: string;
+  status: string; // "done" | "not_yet_published" | "error" | "never_attempted"
+  backfill_in_progress: boolean;
+  backfill_started_at: string | null;
+  ohlcv_calls_by_source: Record<string, number>;
+  trading_days_covered: number;
+  symbol_count: number;
+  earliest_date: string | null;
+  latest_date: string | null;
+}
+
+export const bhavcopyApi = {
+  status: () => api.get<BhavcopyStatus>('/api/bhavcopy/status'),
+};
+
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
 export interface ScanPayload {

@@ -117,6 +117,39 @@ def get_ohlcv_provider_preference() -> str:
     return value
 
 
+# Cumulative count of OHLCV calls actually SERVED by each source, since
+# process start (or the last reset). This exists because
+# provider_status()'s ohlcv_source field only reflects the configured
+# PREFERENCE, not what actually satisfied any given call — a preference of
+# "bhavcopy" silently falls through to indstocks/yfinance per-symbol
+# whenever Bhav Copy has no data yet (e.g. before a backfill has run, or
+# for a single symbol Bhav Copy doesn't cover), and that fallback is
+# invisible to anyone just reading the preference setting. These counters
+# are the concrete, checkable answer to "is Bhav Copy actually being used".
+_ohlcv_source_call_counts: dict = {"bhavcopy": 0, "indstocks": 0, "yfinance": 0}
+
+
+def get_ohlcv_source_call_counts() -> dict:
+    """Cumulative per-source OHLCV call counts since process start or the
+    last reset_ohlcv_source_call_counts() call. Surfaced via
+    GET /api/bhavcopy/status."""
+    return dict(_ohlcv_source_call_counts)
+
+
+def reset_ohlcv_source_call_counts() -> None:
+    """Zero the counters — e.g. right before a scan, so the counts that
+    follow reflect just that scan rather than everything since the process
+    started."""
+    for key in _ohlcv_source_call_counts:
+        _ohlcv_source_call_counts[key] = 0
+
+
+def _record_ohlcv_source(source: str, count: int = 1) -> None:
+    if count <= 0:
+        return
+    _ohlcv_source_call_counts[source] = _ohlcv_source_call_counts.get(source, 0) + count
+
+
 def invalidate_ohlcv_provider_preference_cache() -> None:
     """Drop the cached preference so the next get_ohlcv()/get_batch_ohlcv()
     call re-reads the DB immediately. Called by the settings POST endpoint
@@ -228,6 +261,7 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
     if preference == "bhavcopy":
         df = _ohlcv_bhavcopy(symbol, period)
         if df is not None and not df.empty:
+            _record_ohlcv_source("bhavcopy")
             return df
         logger.debug(
             "Bhav Copy has no OHLCV for %s (%s) yet, falling back", symbol, period
@@ -236,6 +270,7 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
     if _indstocks_available():
         df = _ohlcv_indstocks(symbol, period)
         if df is not None and not df.empty:
+            _record_ohlcv_source("indstocks")
             return df
         logger.warning(
             "INDstocks OHLCV failed for %s (%s), falling back to yfinance",
@@ -243,7 +278,10 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
             period,
         )
 
-    return _ohlcv_yfinance(symbol, period)
+    df = _ohlcv_yfinance(symbol, period)
+    if not df.empty:
+        _record_ohlcv_source("yfinance")
+    return df
 
 
 # Period string -> lookback in days, for the Bhav Copy tier. Deliberately a
@@ -440,6 +478,7 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
 
     if preference == "bhavcopy":
         result = _batch_ohlcv_bhavcopy(symbols, period)
+        _record_ohlcv_source("bhavcopy", count=len(result))
         remaining = [s for s in symbols if s not in result]
         if not remaining:
             return result
@@ -448,6 +487,7 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
         return result
 
     indstocks_result = _batch_ohlcv_indstocks(remaining, period)
+    _record_ohlcv_source("indstocks", count=len(indstocks_result))
     result.update(indstocks_result)
     return result
 
