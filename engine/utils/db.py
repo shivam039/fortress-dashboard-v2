@@ -1,3 +1,5 @@
+# AI agents modifying this file: see /AI_AGENT_PROTOCOL.md — log every change
+# via engine/utils/ai_audit.py:log_ai_change().
 import functools
 import json
 import logging
