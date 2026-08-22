@@ -48,6 +48,19 @@ def _reset_ohlcv_preference_cache():
     mdp.invalidate_ohlcv_provider_preference_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_ohlcv_source_call_counts():
+    """mdp._ohlcv_source_call_counts is a module-level cumulative counter
+    dict (see get_ohlcv_source_call_counts) — reset it before/after every
+    test so one test's get_ohlcv()/get_batch_ohlcv() calls don't leak into
+    the next test's assertions. Same rationale as the fixture above, and the
+    same class of bug already hit once this session with a hardcoded-key
+    SQLite dedup test (see .agent-room/anti-patterns.md)."""
+    mdp.reset_ohlcv_source_call_counts()
+    yield
+    mdp.reset_ohlcv_source_call_counts()
+
+
 # ---------------------------------------------------------------------------
 # _indstocks_available() / provider_status()
 # ---------------------------------------------------------------------------
@@ -371,6 +384,124 @@ def test_provider_status_reports_ohlcv_source_independently_of_primary(monkeypat
     # Live-price primary is untouched by the OHLCV preference.
     assert status["primary"] == "indstocks"
     assert status["primary_label"] == "INDmoney"
+
+
+# ---------------------------------------------------------------------------
+# _ohlcv_source_call_counts / get_ohlcv_source_call_counts /
+# reset_ohlcv_source_call_counts — the "real proof" counters surfaced via
+# GET /api/bhavcopy/status.ohlcv_calls_by_source. These are cumulative,
+# in-process, and independent of the *preference setting* (which
+# provider_status()["ohlcv_source"] reflects) — see the module docstring
+# note above test_provider_status_reports_ohlcv_source_independently_of_primary.
+# ---------------------------------------------------------------------------
+
+
+def test_ohlcv_source_call_counts_start_at_zero():
+    assert mdp.get_ohlcv_source_call_counts() == {"bhavcopy": 0, "indstocks": 0, "yfinance": 0}
+
+
+def test_get_ohlcv_source_call_counts_returns_a_copy():
+    counts = mdp.get_ohlcv_source_call_counts()
+    counts["bhavcopy"] = 999
+    # Mutating the returned dict must not mutate module state.
+    assert mdp.get_ohlcv_source_call_counts()["bhavcopy"] == 0
+
+
+def test_reset_ohlcv_source_call_counts_zeroes_all_keys(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
+    )
+    mdp.get_ohlcv("RELIANCE.NS", period="1y")
+    assert mdp.get_ohlcv_source_call_counts()["bhavcopy"] == 1
+
+    mdp.reset_ohlcv_source_call_counts()
+    assert mdp.get_ohlcv_source_call_counts() == {"bhavcopy": 0, "indstocks": 0, "yfinance": 0}
+
+
+def test_get_ohlcv_increments_bhavcopy_count_on_success(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
+    )
+
+    mdp.get_ohlcv("RELIANCE.NS", period="1y")
+    mdp.get_ohlcv("TCS.NS", period="1y")
+
+    counts = mdp.get_ohlcv_source_call_counts()
+    assert counts["bhavcopy"] == 2
+    assert counts["indstocks"] == 0
+    assert counts["yfinance"] == 0
+
+
+def test_get_ohlcv_increments_indstocks_count_when_bhavcopy_falls_through(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv",
+        lambda symbol, start_date=None, end_date=None: __import__("pandas").DataFrame(),
+    )
+    indstocks_df = mdp._candles_to_df(_sample_candles(2))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(mdp, "_ohlcv_indstocks", lambda symbol, period: indstocks_df)
+
+    mdp.get_ohlcv("RELIANCE.NS", period="1y")
+
+    counts = mdp.get_ohlcv_source_call_counts()
+    assert counts["bhavcopy"] == 0
+    assert counts["indstocks"] == 1
+    assert counts["yfinance"] == 0
+
+
+def test_get_ohlcv_increments_yfinance_count_as_last_resort(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "indstocks")
+
+    yfinance_df = mdp._candles_to_df(_sample_candles(2))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(mdp, "_ohlcv_yfinance", lambda symbol, period: yfinance_df)
+
+    mdp.get_ohlcv("RELIANCE.NS", period="1y")
+
+    counts = mdp.get_ohlcv_source_call_counts()
+    assert counts["bhavcopy"] == 0
+    assert counts["indstocks"] == 0
+    assert counts["yfinance"] == 1
+
+
+def test_get_ohlcv_does_not_increment_any_count_on_total_failure(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "indstocks")
+    empty_df = __import__("pandas").DataFrame()
+    monkeypatch.setattr(mdp, "_ohlcv_yfinance", lambda symbol, period: empty_df)
+
+    result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
+
+    assert result.empty
+    assert mdp.get_ohlcv_source_call_counts() == {"bhavcopy": 0, "indstocks": 0, "yfinance": 0}
+
+
+def test_get_batch_ohlcv_increments_counts_by_number_of_symbols_served(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv_batch",
+        lambda symbols, start_date=None, end_date=None: {"RELIANCE.NS": bhav_df},
+    )
+    mapping = {"TCS.NS": "NSE_11536"}
+    fake_cache = _FakeInstrumentsCache(mapping)
+    fake_client = _FakeClient({"NSE_11536": _sample_candles(4)})
+    monkeypatch.setattr("utils.instruments_cache.get_instruments_cache", lambda: fake_cache)
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
+
+    mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"], period="1y")
+
+    counts = mdp.get_ohlcv_source_call_counts()
+    # One symbol served by each tier — counts track number of symbols, not
+    # number of get_batch_ohlcv() calls.
+    assert counts["bhavcopy"] == 1
+    assert counts["indstocks"] == 1
+    assert counts["yfinance"] == 0
 
 
 def test_period_to_start_date_unknown_period_returns_none():

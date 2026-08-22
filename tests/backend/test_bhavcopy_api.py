@@ -38,6 +38,15 @@ def _reset_backfill_in_progress_flag():
     bhavcopy_router._backfill_state["started_at"] = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_ohlcv_source_call_counts():
+    import utils.market_data_provider as mdp
+
+    mdp.reset_ohlcv_source_call_counts()
+    yield
+    mdp.reset_ohlcv_source_call_counts()
+
+
 def test_get_data_provider_defaults_to_bhavcopy(monkeypatch):
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: default)
     response = client.get("/api/settings/data-provider")
@@ -128,6 +137,55 @@ def test_bhavcopy_status_includes_coverage_summary(monkeypatch):
     assert body["earliest_date"] == "2026-01-01"
     assert body["latest_date"] == "2026-06-01"
     assert body["backfill_in_progress"] is False
+
+
+# ── /api/bhavcopy/status ohlcv_calls_by_source + /api/bhavcopy/reset-stats ──
+# The "real proof" fields — distinct from the coverage summary above and
+# from ohlcv_source/ohlcv_source_label (which just reflect the preference
+# setting, see test_market_data_status_includes_ohlcv_source). These reflect
+# what actually served OHLCV calls since process start or the last
+# POST /api/bhavcopy/reset-stats.
+
+
+def test_bhavcopy_status_includes_zeroed_call_counts_by_default(monkeypatch):
+    monkeypatch.setattr("utils.db.get_bhavcopy_fetch_status", lambda trade_date: None)
+    response = client.get("/api/bhavcopy/status")
+    assert response.json()["ohlcv_calls_by_source"] == {
+        "bhavcopy": 0,
+        "indstocks": 0,
+        "yfinance": 0,
+    }
+
+
+def test_bhavcopy_status_reflects_calls_served_since_last_reset(monkeypatch):
+    import utils.market_data_provider as mdp
+
+    monkeypatch.setattr("utils.db.get_bhavcopy_fetch_status", lambda trade_date: None)
+    mdp._record_ohlcv_source("bhavcopy", count=7)
+    mdp._record_ohlcv_source("indstocks", count=2)
+
+    response = client.get("/api/bhavcopy/status")
+    counts = response.json()["ohlcv_calls_by_source"]
+    assert counts == {"bhavcopy": 7, "indstocks": 2, "yfinance": 0}
+
+
+def test_reset_stats_zeroes_the_counters(monkeypatch):
+    import utils.market_data_provider as mdp
+
+    monkeypatch.setattr("utils.db.get_bhavcopy_fetch_status", lambda trade_date: None)
+    mdp._record_ohlcv_source("bhavcopy", count=5)
+    assert client.get("/api/bhavcopy/status").json()["ohlcv_calls_by_source"]["bhavcopy"] == 5
+
+    response = client.post("/api/bhavcopy/reset-stats")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    follow_up = client.get("/api/bhavcopy/status")
+    assert follow_up.json()["ohlcv_calls_by_source"] == {
+        "bhavcopy": 0,
+        "indstocks": 0,
+        "yfinance": 0,
+    }
 
 
 # ── /api/bhavcopy/backfill ──────────────────────────────────────────────

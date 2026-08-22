@@ -59,6 +59,7 @@ def bhavcopy_refresh_status():
     import pytz
 
     from utils.db import get_bhavcopy_coverage_summary, get_bhavcopy_fetch_status
+    from utils.market_data_provider import get_ohlcv_source_call_counts
 
     today = datetime.now(pytz.timezone("Asia/Kolkata")).date().isoformat()
     status = get_bhavcopy_fetch_status(today)
@@ -68,8 +69,28 @@ def bhavcopy_refresh_status():
         "status": status or "never_attempted",
         "backfill_in_progress": _backfill_state["in_progress"],
         "backfill_started_at": _backfill_state["started_at"],
+        # Cumulative, since process start or the last POST
+        # /api/bhavcopy/reset-stats — what actually served OHLCV calls,
+        # independent of the ohlcv_provider_preference *setting* (which
+        # /api/market-data-status's ohlcv_source reflects). If bhavcopy
+        # stays at 0 here while your preference is "bhavcopy", Bhav Copy
+        # has no data yet for anything you've scanned (e.g. the backfill
+        # hasn't reached those symbols/dates) and everything is silently
+        # falling back.
+        "ohlcv_calls_by_source": get_ohlcv_source_call_counts(),
         **coverage,
     }
+
+
+@router.post("/api/bhavcopy/reset-stats")
+def reset_bhavcopy_stats():
+    """Zero the ohlcv_calls_by_source counters — call this right before a
+    scan so the counts GET /api/bhavcopy/status shows afterward reflect
+    just that scan instead of everything since the process started."""
+    from utils.market_data_provider import reset_ohlcv_source_call_counts
+
+    reset_ohlcv_source_call_counts()
+    return {"status": "ok"}
 
 
 @router.post("/api/bhavcopy/refresh", status_code=202)
