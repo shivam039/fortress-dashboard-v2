@@ -353,9 +353,113 @@ def test_backfill_bhavcopy_progress_cb_called(monkeypatch):
     # Wait, dates go backwards. So: 06 (Thu), 05 (Wed), 04 (Tue), 03 (Mon), 02 (Sun).
     # All 5 days should trigger the progress callback.
     bhavcopy_jobs.backfill_bhavcopy(days=5, start_from=date(2026, 8, 6), progress_cb=on_progress)
-    
+
     assert len(progress_calls) == 5
     assert progress_calls[-1] == (5, 5)
+
+
+def test_backfill_bhavcopy_single_fatal_error_does_not_abort_the_run(monkeypatch):
+    """A lone fatal_error day (NSE serving an HTML block page instead of a
+    zip for that one date — see run_bhavcopy_refresh_job) must not stop the
+    whole backfill: production hit exactly this, where one stubborn date
+    got retried as the first live fetch of every chunk forever, permanently
+    blocking progress on every older date behind it."""
+    import time
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    calls = []
+
+    def mock_refresh(trade_date, force=False, session=None):
+        calls.append(trade_date.isoformat())
+        if trade_date.isoformat() == "2026-08-05":
+            return {"status": "fatal_error", "trade_date": "2026-08-05", "symbol_count": 0, "error": "boom"}
+        return {"status": "done", "trade_date": trade_date.isoformat(), "symbol_count": 1, "error": None}
+
+    monkeypatch.setattr(bhavcopy_jobs, "run_bhavcopy_refresh_job", mock_refresh)
+
+    # 2026-08-06 (Thu), 08-05 (Wed, the bad one), 08-04 (Tue), 08-03 (Mon)
+    result = bhavcopy_jobs.backfill_bhavcopy(days=4, start_from=date(2026, 8, 6), max_fetches=0)
+
+    assert calls == ["2026-08-06", "2026-08-05", "2026-08-04", "2026-08-03"], (
+        "the loop must keep walking past the one bad day instead of stopping there"
+    )
+    assert result["errors"] == {"2026-08-05": "boom"}
+    assert "2026-08-06" in result["done"] and "2026-08-04" in result["done"] and "2026-08-03" in result["done"]
+
+
+def test_backfill_bhavcopy_aborts_after_consecutive_fatal_errors(monkeypatch):
+    """Unlike one bad day, a *streak* of fatal errors in a row is the real
+    signal of a sustained block and should still stop the run early rather
+    than burning through the whole chunk."""
+    import time
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    calls = []
+
+    def mock_refresh(trade_date, force=False, session=None):
+        calls.append(trade_date.isoformat())
+        return {"status": "fatal_error", "trade_date": trade_date.isoformat(), "symbol_count": 0, "error": "boom"}
+
+    monkeypatch.setattr(bhavcopy_jobs, "run_bhavcopy_refresh_job", mock_refresh)
+
+    result = bhavcopy_jobs.backfill_bhavcopy(days=300, start_from=date(2026, 8, 6), max_fetches=0)
+
+    assert len(calls) == bhavcopy_jobs._MAX_CONSECUTIVE_FATAL_ERRORS
+    assert len(result["errors"]) == bhavcopy_jobs._MAX_CONSECUTIVE_FATAL_ERRORS
+
+
+def test_refresh_job_defers_retry_of_a_recently_fatal_errored_date(monkeypatch):
+    """Once a date has fatally failed, retrying it seconds later must NOT
+    hit NSE again — this is what previously made the backfill hammer the
+    exact same blocked URL on every single chunk. It should only retry
+    after the cooldown window passes (or force=True)."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(db_mod, "get_bhavcopy_fetch_status", lambda d: "fatal_error")
+    monkeypatch.setattr(
+        db_mod,
+        "get_bhavcopy_fetch_log_entry",
+        lambda d: {
+            "status": "fatal_error",
+            # Real datetime, matching what SQLAlchemy returns for a Neon
+            # TIMESTAMPTZ column (SQLite returns a "YYYY-MM-DD HH:MM:SS"
+            # string instead — _seconds_since() handles both).
+            "fetched_at": datetime.now(timezone.utc),
+            "error_detail": "File is not a zip file",
+        },
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("fetch_bhavcopy should not be called during the cooldown window")
+
+    monkeypatch.setattr(bhavcopy_logic, "fetch_bhavcopy", _boom)
+
+    result = bhavcopy_jobs.run_bhavcopy_refresh_job(trade_date=date(2026, 6, 26))
+    assert result["status"] == "skipped_recent_fatal_error"
+
+
+def test_refresh_job_retries_a_fatal_error_date_once_cooldown_expires(monkeypatch):
+    """Symmetric to the deferral test above: once the cooldown window has
+    passed, the date should be retried like any other pending day."""
+    from datetime import datetime, timedelta, timezone
+
+    old_enough = datetime.now(timezone.utc) - timedelta(
+        seconds=bhavcopy_jobs._FATAL_ERROR_RETRY_COOLDOWN_S + 60
+    )
+    monkeypatch.setattr(db_mod, "get_bhavcopy_fetch_status", lambda d: "fatal_error")
+    monkeypatch.setattr(
+        db_mod,
+        "get_bhavcopy_fetch_log_entry",
+        lambda d: {"status": "fatal_error", "fetched_at": old_enough, "error_detail": "boom"},
+    )
+
+    sample_df = bhavcopy_logic.parse_bhavcopy_zip(_make_bhavcopy_zip(_SAMPLE_ROWS))
+    monkeypatch.setattr(bhavcopy_logic, "fetch_bhavcopy", lambda d, session=None: sample_df)
+    monkeypatch.setattr(db_mod, "record_bhavcopy_fetch", lambda *a, **k: None)
+    monkeypatch.setattr(db_mod, "upsert_bhavcopy_rows", lambda df, d: len(df))
+
+    result = bhavcopy_jobs.run_bhavcopy_refresh_job(trade_date=date(2026, 6, 26))
+    assert result["status"] == "done"
 
 
 # ── app_settings (used by the provider-preference toggle in a later phase) ──
