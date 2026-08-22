@@ -286,6 +286,22 @@ def run_scan(req: ScanRequest):
 
     results = []
 
+    # Circuit breaker: individual ticker failures were logged and skipped
+    # with no aggregate tracking, so a broad provider outage (yfinance
+    # rate-limited, network down, etc.) meant grinding through every
+    # remaining ticker in the universe one at a time — each one failing
+    # slowly — instead of surfacing the problem and stopping early. Once at
+    # least _BREAKER_MIN_SAMPLE tickers have been attempted, if the failure
+    # rate is at or above _BREAKER_FAILURE_RATE, stop scanning the rest of
+    # the universe and return whatever partial results exist along with a
+    # clear signal that the scan was aborted early, rather than a
+    # silently-shorter results list with no explanation.
+    _BREAKER_MIN_SAMPLE = 10
+    _BREAKER_FAILURE_RATE = 0.8
+    scan_attempted = 0
+    scan_failed = 0
+    circuit_breaker_tripped = False
+
     # Pre-load fundamental/news/calendar/earnings metadata for the whole
     # universe from the DB cache in one call, so tickers with a fresh-enough
     # cached entry skip a live yfinance .info/.news/.calendar/.earnings_dates
@@ -306,6 +322,7 @@ def run_scan(req: ScanRequest):
         logger.warning("Bulk market data fetch returned no rows for %s", req.universe)
 
     for ticker in tickers:
+        scan_attempted += 1
         try:
             if batch_data.empty:
                 hist = get_stock_data(
@@ -331,32 +348,76 @@ def run_scan(req: ScanRequest):
                     results.append(res)
         except Exception as e:
             logger.warning(f"Error scanning {ticker}: {e}")
+            scan_failed += 1
+
+            if (
+                scan_attempted >= _BREAKER_MIN_SAMPLE
+                and (scan_failed / scan_attempted) >= _BREAKER_FAILURE_RATE
+            ):
+                logger.error(
+                    "run_scan: circuit breaker tripped for universe=%s — "
+                    "%d/%d tickers failed (>=%.0f%% failure rate); aborting "
+                    "the remaining %d tickers instead of grinding through a "
+                    "likely provider outage",
+                    req.universe,
+                    scan_failed,
+                    scan_attempted,
+                    _BREAKER_FAILURE_RATE * 100,
+                    len(tickers) - scan_attempted,
+                )
+                circuit_breaker_tripped = True
+                break
+
+    def _score_results(raw_results):
+        """Shared scoring step for both the normal path and the
+        circuit-breaker-tripped-with-partial-results path."""
+        score_df = pd.DataFrame(raw_results)
+        scoring_config = DEFAULT_SCORING_CONFIG.copy()
+        scoring_config.update(
+            {
+                "enable_regime": req.enable_regime,
+                "liquidity_cr_min": req.liquidity_cr_min,
+                "market_cap_cr_min": req.market_cap_cr_min,
+                "price_min": req.price_min,
+                "regime": regime_data,  # ← live regime for apply_advanced_scoring
+            }
+        )
+        if req.weights:
+            scoring_config["weights"] = req.weights
+        score_df = apply_advanced_scoring(score_df, scoring_config)
+        return score_df.to_dict(orient="records")
+
+    if circuit_breaker_tripped:
+        # Score whatever partial results came through before the breaker
+        # tripped (may be zero) rather than discarding them, but always use
+        # the "aborted early" summary so a real provider outage is never
+        # confused with "nothing matched the screen" (asArray() on the
+        # frontend already handles a {results: [...]} dict same as a bare
+        # list, so this doesn't change how existing successful scans render).
+        return {
+            "results": _sanitize_json_value(_score_results(results)) if results else [],
+            "summary": (
+                f"Scan aborted early: {scan_failed}/{scan_attempted} tickers "
+                f"failed before {len(results)} results could be scored. This "
+                "usually means the market data provider is rate-limited or "
+                "unreachable right now — try again shortly."
+            ),
+            "scanned": scan_attempted,
+            "failed": scan_failed,
+            "circuit_breaker_tripped": True,
+        }
 
     if not results:
         return {
             "results": [],
             "summary": "No tickers met criteria or market data was unavailable.",
+            "scanned": scan_attempted,
+            "failed": scan_failed,
+            "circuit_breaker_tripped": False,
         }
-
-    df = pd.DataFrame(results)
-    scoring_config = DEFAULT_SCORING_CONFIG.copy()
-    scoring_config.update(
-        {
-            "enable_regime": req.enable_regime,
-            "liquidity_cr_min": req.liquidity_cr_min,
-            "market_cap_cr_min": req.market_cap_cr_min,
-            "price_min": req.price_min,
-            "regime": regime_data,  # ← live regime for apply_advanced_scoring
-        }
-    )
-    if req.weights:
-        scoring_config["weights"] = req.weights
-
-    df = apply_advanced_scoring(df, scoring_config)
 
     # Generate action links
-    records = df.to_dict(orient="records")
-    return _sanitize_json_value(records)
+    return _sanitize_json_value(_score_results(results))
 
 
 @app.get("/api/sector-pulse")

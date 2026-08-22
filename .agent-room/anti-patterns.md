@@ -21,6 +21,12 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — No circuit breaker on /api/scan — individual failures had no aggregate tracking
+
+**What happened:** `run_scan()` caught exceptions per-ticker, logged them, and moved on — but never tracked the failure rate across the whole run. A broad yfinance outage or rate-limit event meant the endpoint would grind sequentially through an entire universe (e.g. Smallcap 250, 250 tickers) with nearly every one failing slowly, and the response looked identical to a legitimate "nothing matched the screen" result — the caller had no way to tell the two apart.
+**Root cause:** Per-ticker error handling was built early (before large universes or provider outages were a real concern) and never revisited to add aggregate tracking once the ticker universes and the yfinance dependency both grew.
+**Avoid:** Any endpoint that loops over an external, rate-limited/flaky data provider across many items should track a running failure rate and define an explicit abort threshold, not just catch-log-continue per item — and the response shape should let the caller distinguish "provider is down, we gave up early" from "we tried everything and nothing matched."
+
 ### 2026-08-22 — Hardcoded auth defaults left unset in production
 
 **What happened:** `FORTRESS_JWT_SECRET` and `FORTRESS_APP_PASSWORD` both had hardcoded fallback values baked into the source (a dev JWT secret string, and the password `fortress123`). Neither was set on the Render production service, and both defaults are now public in git history — meaning production was running with a forgeable JWT secret and a publicly-known admin password.
