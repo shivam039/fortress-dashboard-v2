@@ -3340,23 +3340,42 @@ def get_bhavcopy_fetch_status(trade_date: str) -> Optional[str]:
     The daily refresh job calls this BEFORE doing any network call to NSE —
     a status of "done" means skip the fetch entirely.
     """
+    entry = get_bhavcopy_fetch_log_entry(trade_date)
+    return entry["status"] if entry else None
+
+
+def get_bhavcopy_fetch_log_entry(trade_date: str) -> Optional[Dict[str, Any]]:
+    """Return {"status", "fetched_at", "error_detail"} for trade_date
+    ("YYYY-MM-DD"), or None if no attempt has been logged yet.
+
+    Unlike get_bhavcopy_fetch_status, this also surfaces `fetched_at` so a
+    caller can apply a cooldown before retrying a "fatal_error" day instead
+    of re-requesting the exact same NSE URL on every single backfill chunk
+    (see backfill_bhavcopy's consecutive-fatal-error handling — a day that
+    genuinely 404s/blocks doesn't get less likely to fail just because we
+    ask again 90 seconds later).
+    """
     try:
         if _can_use_neon():
             engine = get_db_engine()
             with engine.connect() as conn:
                 row = conn.execute(
-                    text("SELECT status FROM bhavcopy_fetch_log WHERE trade_date = :d"),
+                    text(
+                        "SELECT status, fetched_at, error_detail FROM bhavcopy_fetch_log "
+                        "WHERE trade_date = :d"
+                    ),
                     {"d": trade_date},
                 ).fetchone()
-            return row[0] if row else None
-
-        with _sqlite_connection() as conn:
-            _ensure_bhavcopy_fetch_log_sqlite(conn)
-            row = conn.execute(
-                "SELECT status FROM bhavcopy_fetch_log WHERE trade_date = :d",
-                {"d": trade_date},
-            ).fetchone()
-        return row[0] if row else None
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_bhavcopy_fetch_log_sqlite(conn)
+                row = conn.execute(
+                    "SELECT status, fetched_at, error_detail FROM bhavcopy_fetch_log WHERE trade_date = :d",
+                    {"d": trade_date},
+                ).fetchone()
+        if not row:
+            return None
+        return {"status": row[0], "fetched_at": row[1], "error_detail": row[2]}
     except Exception as e:
         logger.error("bhavcopy_fetch_log read error for %s: %s", trade_date, e)
         return None

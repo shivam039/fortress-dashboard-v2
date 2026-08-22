@@ -21,6 +21,13 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Backfill loop permanently stuck re-hammering one blocked date
+
+**What happened:** A previous fix made the backfill abort its whole chunk the instant one date fatally failed (BadZipFile from an NSE block page). Because the loop always resumes at the oldest unprocessed date and dedup only skips `"done"` days, every subsequent chunk re-requested that exact same date first, got blocked again, and aborted — 10+ consecutive GitHub Actions chunks made zero net progress (`days_processed` stuck at 57/300). Separately, `backfill_bhavcopy`'s 1.5s pacing sleep fired even for dedup-skipped ("already fetched") days, so each chunk also burned ~2-3 minutes just re-walking already-covered ground before reaching the stuck date.
+**Root cause:** Treating "abort on the first failure" as sufficient resilience without also handling *retry placement* — a fatal-error day needs to (a) not block progress on other days, and (b) not be immediately re-attempted on the very next run. Neither was true: one bad day = the whole run stalls forever at that day, since nothing ever marks it "don't retry yet."
+**Avoid:** When a background job dedups via a status log, "already succeeded" isn't the only status worth checking before retrying — a recent, still-fresh failure on the exact same external call deserves a cooldown too, or the job just re-triggers the same failure every time it's invoked. And any unconditional per-iteration delay in a loop that also has a fast-path (skip/dedup-hit) should be scoped to only the slow path — otherwise "instantaneous" dedup hits (per the code's own comment) quietly aren't.
+
+
 ### 2026-08-22 — A test asserting "unset" against a hardcoded key can pass once and fail on rerun
 
 **What happened:** A new `test_bhavcopy_fetch_log_dedup_marker` test asserted `get_bhavcopy_fetch_status("2026-07-01") is None` as its opening line. It passed the first time this test file ran, then failed the next time the full suite ran in the same session.
