@@ -175,6 +175,24 @@ def _exec(sql: str, params: Optional[Dict[str, Any]] = None):
     retry=retry_if_exception(_should_retry_db_error),
     reraise=True,
 )
+def _exec_many(sql: str, params_list: List[Dict[str, Any]]):
+    if not params_list:
+        return
+    if _can_use_neon():
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(text(sql), params_list)
+        return
+    with _sqlite_connection() as conn:
+        conn.executemany(sql, params_list)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
 def _query(sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Execute a query and return results as list of dicts."""
     if _can_use_neon():
@@ -3422,6 +3440,20 @@ def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
     col_list = ", ".join(cols)
     written = 0
     try:
+        params_list = []
+        for _, row in df.iterrows():
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            params = {"sym": symbol, "d": trade_date}
+            params.update(
+                {c: (row.get(c) if pd.notna(row.get(c)) else None) for c in cols}
+            )
+            params_list.append(params)
+
+        if not params_list:
+            return 0
+
         if _can_use_neon():
             placeholders = ", ".join(f":{c}" for c in cols)
             update_set = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
@@ -3432,17 +3464,8 @@ def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
                     {update_set},
                     updated_at = EXCLUDED.updated_at
             """
-            for _, row in df.iterrows():
-                symbol = row.get("symbol")
-                if not symbol:
-                    continue
-                params = {"sym": symbol, "d": trade_date}
-                params.update(
-                    {c: (row.get(c) if pd.notna(row.get(c)) else None) for c in cols}
-                )
-                _exec(sql, params)
-                written += 1
-            return written
+            _exec_many(sql, params_list)
+            return len(params_list)
 
         with _sqlite_connection() as conn:
             _ensure_bhavcopy_eod_sqlite(conn)
@@ -3455,17 +3478,8 @@ def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
                     {update_set},
                     updated_at = excluded.updated_at
             """
-            for _, row in df.iterrows():
-                symbol = row.get("symbol")
-                if not symbol:
-                    continue
-                params = {"sym": symbol, "d": trade_date}
-                params.update(
-                    {c: (row.get(c) if pd.notna(row.get(c)) else None) for c in cols}
-                )
-                conn.execute(sql, params)
-                written += 1
-        return written
+            conn.executemany(sql, params_list)
+            return len(params_list)
     except Exception as e:
         logger.error("bhavcopy_eod upsert error for %s: %s", trade_date, e)
         return written
