@@ -16,6 +16,12 @@ have to re-derive it from scratch by reading git history.
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Circuit breaker for /api/scan instead of an unbounded per-ticker retry loop
+
+**Decision:** Added a failure-rate circuit breaker to `run_scan()` in `main.py`: once at least 10 tickers have been attempted, if the failure rate is ≥80%, stop scanning the rest of the universe and return whatever partial results exist, with `scanned`/`failed`/`circuit_breaker_tripped` fields and a summary that distinguishes "aborted early — provider likely down" from "nothing matched the screen." Did not add concurrency (parallel ticker fetches) in the same change.
+**Why:** A pasted review flagged that individual ticker errors were logged and skipped with no aggregate tracking, so a broad yfinance outage or rate-limit meant grinding sequentially through an entire universe (e.g. Smallcap 250) with each ticker failing slowly, and the caller had no way to tell a real outage apart from a screen that legitimately matched nothing.
+**Rejected:** Parallelizing the ticker loop (ThreadPoolExecutor) to also fix scan *speed* for large universes. Rejected for this change specifically — hitting yfinance/INDstocks concurrently needs careful worker-count tuning to avoid making rate-limiting worse, which is a bigger, riskier change than a bounded early-abort; flagged as a separate follow-up rather than bundled in.
+
 ### 2026-08-22 — Warn loudly instead of silently trusting hardcoded auth defaults
 
 **Decision:** Added startup-time `WARNING` logs in `auth_utils.py` (JWT secret) and `routers/auth.py` (admin password) whenever `FORTRESS_JWT_SECRET` / `FORTRESS_APP_PASSWORD` fall back to their hardcoded dev defaults, matching the existing pattern already used for `FORTRESS_API_KEY`. Also documented all three as required Render env vars in `DEPLOYMENT.md`, with the JWT secret added to the env var reference table for the first time (it wasn't listed there at all).
