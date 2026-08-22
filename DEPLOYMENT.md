@@ -130,11 +130,19 @@ That's the whole mechanism — no cron job, no separate refresh service, no
 webhook. The token becomes something the app manages, not something you
 hand it.
 
-**Security note:** mark `INDSTOCKS_MPIN` and `INDSTOCKS_TOTP_SECRET` as
-Render's "secret"-style env vars (hidden by default in the dashboard UI)
-rather than plain values — together they're equivalent to full API access
-to your account. Never put them in a committed `.env` file; `.env` and
-`.env.local` are already gitignored in this repo for that reason.
+**Security note:** Render doesn't have a separate "mark as secret" toggle
+for individual env vars — every value in the Environment tab is already
+masked by default (shown as dots, revealed only via the eye icon to
+someone with dashboard access), and that's the full protection Render
+offers at the per-variable level. There's nothing extra to enable for
+`INDSTOCKS_MPIN` and `INDSTOCKS_TOTP_SECRET` — just make sure only people
+who need account-equivalent access have access to this Render service's
+dashboard, since together those two values are equivalent to full API
+access to your account. (Render's separate **Secret Files** feature is for
+uploading whole plaintext files like a private key or `.env`, mounted at
+`/etc/secrets/<filename>` — not needed here for simple string values.)
+Never put them in a committed `.env` file; `.env` and `.env.local` are
+already gitignored in this repo for that reason.
 
 ### Frontend on Render (if also hosted there)
 
