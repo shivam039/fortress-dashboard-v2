@@ -274,6 +274,55 @@ def test_bhavcopy_fetch_log_dedup_marker():
     assert db_mod.get_bhavcopy_fetch_status(marker_date) == "error"
 
 
+# ── jobs.backfill_bhavcopy ──────────────────────────────────────────────
+
+
+def test_backfill_bhavcopy_chunk_limit_aborts_early(monkeypatch):
+    # Mock time.sleep to avoid waiting 1.5s per iteration in test
+    import time
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    # Mock the refresh job so it always does a "network fetch"
+    # and counts as a fetch towards max_fetches.
+    def mock_refresh(*args, **kwargs):
+        return {"status": "done", "trade_date": "2026-01-01", "error": None}
+    
+    monkeypatch.setattr(bhavcopy_jobs, "run_bhavcopy_refresh_job", mock_refresh)
+
+    # Request 300 days but limit to 5 fetches
+    result = bhavcopy_jobs.backfill_bhavcopy(days=300, start_from=date(2026, 8, 1), max_fetches=5)
+    
+    # Verify it stopped exactly after 5 fetches (len(done) == 5 since all return "done")
+    assert len(result["done"]) == 5
+    assert len(result["skipped_no_data"]) == 0
+    assert len(result["errors"]) == 0
+
+
+def test_backfill_bhavcopy_progress_cb_called(monkeypatch):
+    import time
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    
+    def mock_refresh(*args, **kwargs):
+        return {"status": "skipped", "trade_date": "2026-01-01", "error": None}
+    
+    monkeypatch.setattr(bhavcopy_jobs, "run_bhavcopy_refresh_job", mock_refresh)
+
+    progress_calls = []
+    def on_progress(processed, total):
+        progress_calls.append((processed, total))
+
+    # Request 5 days, no fetch limit
+    # Because mock_refresh returns "skipped", fetch_count stays 0.
+    # We use a Thursday so we have 2 weekdays + 2 weekend days + 1 weekday.
+    # Start: 2026-08-06 (Thursday). 5 days -> Thursday, Wednesday, Tuesday, Monday, Sunday.
+    # Wait, dates go backwards. So: 06 (Thu), 05 (Wed), 04 (Tue), 03 (Mon), 02 (Sun).
+    # All 5 days should trigger the progress callback.
+    bhavcopy_jobs.backfill_bhavcopy(days=5, start_from=date(2026, 8, 6), progress_cb=on_progress)
+    
+    assert len(progress_calls) == 5
+    assert progress_calls[-1] == (5, 5)
+
+
 # ── app_settings (used by the provider-preference toggle in a later phase) ──
 
 

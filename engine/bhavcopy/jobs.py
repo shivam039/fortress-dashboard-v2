@@ -85,12 +85,22 @@ def run_bhavcopy_refresh_job(
     return {"status": "done", "trade_date": date_str, "symbol_count": written, "error": None}
 
 
-def backfill_bhavcopy(days: int = 300, start_from: date | None = None) -> dict:
+def backfill_bhavcopy(
+    days: int = 300,
+    start_from: date | None = None,
+    max_fetches: int = 30,
+    progress_cb=None,
+) -> dict:
     """One-off backfill: walk backward from `start_from` (default: today,
     IST) over `days` calendar days, fetching and persisting each trading
     day's Bhav Copy. 404s (weekends/holidays) are skipped, not treated as
     errors. Not part of the daily schedule — run manually once when Bhav
     Copy is first activated (or to fill a known gap).
+
+    `max_fetches` limits the number of actual network calls (days not already
+    in the DB) to prevent the job from running too long and being killed by
+    deployments. `progress_cb(processed, total)` is called per day to update
+    visible state.
 
     Returns {"done": [...dates...], "skipped_no_data": [...dates...],
     "errors": {date: error_str}}.
@@ -103,6 +113,8 @@ def backfill_bhavcopy(days: int = 300, start_from: date | None = None) -> dict:
     done: list[str] = []
     skipped_no_data: list[str] = []
     errors: dict[str, str] = {}
+    
+    fetch_count = 0
 
     for offset in range(days):
         d = start_from - timedelta(days=offset)
@@ -110,9 +122,17 @@ def backfill_bhavcopy(days: int = 300, start_from: date | None = None) -> dict:
         # publishes for Sat/Sun and this keeps the backfill from wasting
         # requests we already know will 404.
         if d.weekday() >= 5:
+            if progress_cb:
+                progress_cb(offset + 1, days)
             continue
 
         result = run_bhavcopy_refresh_job(trade_date=d, force=False, session=session)
+        
+        # Only count actual network calls against the chunk limit (dedup hits
+        # are instantaneous).
+        if result["status"] != "skipped":
+            fetch_count += 1
+
         if result["status"] == "done" or result["status"] == "skipped":
             done.append(result["trade_date"])
         elif result["status"] == "not_yet_published":
@@ -122,12 +142,20 @@ def backfill_bhavcopy(days: int = 300, start_from: date | None = None) -> dict:
         else:
             errors[result["trade_date"]] = result["error"] or "unknown error"
 
+        if progress_cb:
+            progress_cb(offset + 1, days)
+
+        if max_fetches > 0 and fetch_count >= max_fetches:
+            logger.info("bhavcopy backfill chunk limit reached (%d fetches)", fetch_count)
+            break
+
         time.sleep(_BACKFILL_REQUEST_DELAY_S)
 
     logger.info(
-        "bhavcopy backfill complete: %d fetched, %d no-data days, %d errors",
+        "bhavcopy backfill complete: %d fetched/verified, %d no-data days, %d errors (chunk fetches: %d)",
         len(done),
         len(skipped_no_data),
         len(errors),
+        fetch_count,
     )
     return {"done": done, "skipped_no_data": skipped_no_data, "errors": errors}

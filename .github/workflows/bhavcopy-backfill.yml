@@ -7,9 +7,19 @@ name: NSE Bhav Copy Backfill (manual, one-off)
 # to populate history" step, or a one-off retry to fill a known gap. The
 # daily refresh (bhavcopy-refresh.yml) is a separate workflow.
 #
-# The backfill is safe to re-run: bhavcopy_fetch_log's per-day dedup means
-# an already-fetched day is skipped, not re-downloaded, so running this
-# workflow again after an interruption just resumes.
+# The backfill runs server-side in chunks (max_fetches per call, default
+# 30 — see backfill_bhavcopy() in engine/bhavcopy/jobs.py) because a single
+# call walking the full `days` range in one BackgroundTask was found to
+# reliably outlive a Render deploy and get silently killed mid-run, well
+# short of its target. This workflow drives that chunking to completion
+# automatically: it re-POSTs the same request repeatedly, waiting for each
+# chunk's background task to finish (polling GET /api/bhavcopy/status)
+# before firing the next one, until backfill_days_processed reaches
+# backfill_target_days or the safety iteration cap is hit. Safe to re-run
+# on its own too: bhavcopy_fetch_log's per-day dedup means an
+# already-fetched day is skipped near-instantly rather than re-downloaded,
+# so a day already covered by an earlier chunk/run costs nothing to pass
+# over again.
 #
 # Uses the SAME repo secrets as bhavcopy-refresh.yml — no new secrets
 # needed if that workflow is already configured:
@@ -23,12 +33,16 @@ on:
         description: 'How many calendar days to walk backward (weekends are skipped without a network call)'
         required: false
         default: '300'
+      max_fetches_per_chunk:
+        description: 'Max NSE requests per chunk (0 = no cap, not recommended for a full backfill)'
+        required: false
+        default: '30'
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
     steps:
-      - name: POST /api/bhavcopy/backfill
+      - name: Drive the chunked backfill to completion
         run: |
           if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
             echo "FORTRESS_BACKEND_URL secret is not set — nothing to call. Add it under Settings > Secrets and variables > Actions."
@@ -37,23 +51,72 @@ jobs:
 
           days="${{ github.event.inputs.days }}"
           if [ -z "$days" ]; then days="300"; fi
+          max_fetches="${{ github.event.inputs.max_fetches_per_chunk }}"
+          if [ -z "$max_fetches" ]; then max_fetches="30"; fi
 
-          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
-            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/bhavcopy/backfill" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
-            -d "{\"days\": $days}")
+          backend="${{ secrets.FORTRESS_BACKEND_URL }}"
+          api_key="${{ secrets.FORTRESS_API_KEY }}"
 
-          echo "Response body:"
-          cat /tmp/response.json
-          echo ""
-          echo "HTTP status: $http_status"
+          # Generous but bounded — each chunk is at most max_fetches NSE
+          # requests (~1.5s apart), so 30/chunk against a 300-day request
+          # needs well under 20 chunks in practice; this cap just stops a
+          # stuck run from looping forever rather than reflecting the
+          # expected count.
+          max_iterations=40
+          iteration=0
 
-          if [ "$http_status" -ge 300 ]; then
-            echo "Bhav Copy backfill request failed (HTTP $http_status)"
-            exit 1
-          fi
+          while [ "$iteration" -lt "$max_iterations" ]; do
+            iteration=$((iteration + 1))
+            echo "=== Chunk $iteration ==="
 
-          echo ""
-          echo "Backfill kicked off in the background on the server — this can take a while."
-          echo "Check progress any time with: curl -H \"X-API-Key: <key>\" \$BACKEND_URL/api/bhavcopy/status"
+            http_status=$(curl -sS -o /tmp/post_response.json -w "%{http_code}" \
+              -X POST "$backend/api/bhavcopy/backfill" \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: $api_key" \
+              -d "{\"days\": $days, \"max_fetches\": $max_fetches}")
+
+            echo "POST response:"
+            cat /tmp/post_response.json
+            echo ""
+            echo "HTTP status: $http_status"
+
+            if [ "$http_status" -ge 300 ]; then
+              echo "Bhav Copy backfill request failed (HTTP $http_status)"
+              exit 1
+            fi
+
+            # Poll until this chunk's background task finishes (or a
+            # per-chunk timeout — a single chunk should take at most a
+            # couple of minutes given the max_fetches cap).
+            waited=0
+            max_wait=300
+            in_progress="true"
+            while [ "$in_progress" = "true" ] && [ "$waited" -lt "$max_wait" ]; do
+              sleep 10
+              waited=$((waited + 10))
+              curl -sS -o /tmp/status.json \
+                -H "X-API-Key: $api_key" \
+                "$backend/api/bhavcopy/status"
+              in_progress=$(python3 -c "import json; print(str(json.load(open('/tmp/status.json')).get('backfill_in_progress', False)).lower())")
+            done
+
+            processed=$(python3 -c "import json; print(json.load(open('/tmp/status.json')).get('backfill_days_processed', 0))")
+            target=$(python3 -c "import json; print(json.load(open('/tmp/status.json')).get('backfill_target_days', 0))")
+            covered=$(python3 -c "import json; print(json.load(open('/tmp/status.json')).get('trading_days_covered', 0))")
+            earliest=$(python3 -c "import json; print(json.load(open('/tmp/status.json')).get('earliest_date', 'n/a'))")
+
+            echo "Chunk $iteration done: days_processed=$processed/$target, trading_days_covered=$covered, earliest_date=$earliest"
+
+            if [ "$in_progress" = "true" ]; then
+              echo "Chunk did not finish within ${max_wait}s — stopping here rather than overlapping requests. Re-run this workflow to continue."
+              exit 1
+            fi
+
+            if [ -n "$processed" ] && [ -n "$target" ] && [ "$target" -gt 0 ] && [ "$processed" -ge "$target" ]; then
+              echo "Backfill reached the requested $days-day range (trading_days_covered=$covered, earliest_date=$earliest). Done."
+              exit 0
+            fi
+          done
+
+          echo "Hit the $max_iterations-chunk safety cap without the server reporting completion — check GET /api/bhavcopy/status directly, and re-run this workflow if more history is still needed (already-fetched days are skipped, so it's safe to continue)."
+          exit 1

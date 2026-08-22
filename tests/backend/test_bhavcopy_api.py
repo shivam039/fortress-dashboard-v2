@@ -195,7 +195,7 @@ def test_backfill_returns_202_and_schedules_background_job(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "bhavcopy.jobs.backfill_bhavcopy",
-        lambda days=300: calls.append(days)
+        lambda days=300, **kwargs: calls.append(days)
         or {"done": ["2026-01-01"], "skipped_no_data": [], "errors": {}},
     )
 
@@ -211,7 +211,7 @@ def test_backfill_defaults_to_300_days_when_unspecified(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "bhavcopy.jobs.backfill_bhavcopy",
-        lambda days=300: calls.append(days) or {"done": [], "skipped_no_data": [], "errors": {}},
+        lambda days=300, **kwargs: calls.append(days) or {"done": [], "skipped_no_data": [], "errors": {}},
     )
     response = client.post("/api/bhavcopy/backfill", json={})
     assert response.status_code == 202
@@ -224,6 +224,26 @@ def test_backfill_rejects_out_of_range_days():
 
     response = client.post("/api/bhavcopy/backfill", json={"days": 99999})
     assert response.status_code == 400
+
+
+def test_backfill_rejects_out_of_range_max_fetches():
+    response = client.post("/api/bhavcopy/backfill", json={"max_fetches": -1})
+    assert response.status_code == 400
+
+    response = client.post("/api/bhavcopy/backfill", json={"max_fetches": 301})
+    assert response.status_code == 400
+
+
+def test_backfill_accepts_max_fetches_zero_as_no_cap(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "bhavcopy.jobs.backfill_bhavcopy",
+        lambda days=300, **kwargs: calls.append(kwargs.get("max_fetches"))
+        or {"done": [], "skipped_no_data": [], "errors": {}},
+    )
+    response = client.post("/api/bhavcopy/backfill", json={"max_fetches": 0})
+    assert response.status_code == 202
+    assert calls == [0]
 
 
 def test_backfill_rejects_a_second_concurrent_request(monkeypatch):
@@ -239,7 +259,7 @@ def test_backfill_rejects_a_second_concurrent_request(monkeypatch):
 def test_backfill_clears_in_progress_flag_even_if_the_job_raises(monkeypatch):
     import routers.bhavcopy as bhavcopy_router
 
-    def _boom(days=300):
+    def _boom(days=300, **kwargs):
         raise RuntimeError("NSE is down")
 
     monkeypatch.setattr("bhavcopy.jobs.backfill_bhavcopy", _boom)
