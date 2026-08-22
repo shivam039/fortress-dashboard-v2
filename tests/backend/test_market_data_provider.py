@@ -150,6 +150,18 @@ def _sample_candles(n=5, base_ts=1_700_000_000):
     ]
 
 
+def _full_year_bhavcopy_df(n=260):
+    """A Bhav Copy OHLCV DataFrame with enough rows to clear
+    _bhavcopy_has_sufficient_coverage's bar for a "1y" period request (~260
+    trading days expected; 260 rows clears even a 100% bar with room for
+    weekday/holiday slack in the real bdate_range comparison). Tests that
+    only care about "Bhav Copy has an answer" (not the coverage-threshold
+    behavior itself, which has its own dedicated tests below) should use
+    this instead of a handful of _sample_candles rows, which now reads as
+    "mid-backfill / insufficient" and falls through to the next tier."""
+    return mdp._candles_to_df(_sample_candles(n))[["Open", "High", "Low", "Close", "Volume"]]
+
+
 def test_get_batch_ohlcv_empty_when_unavailable():
     # No env vars set -> _indstocks_available() is False -> short-circuit.
     assert mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"]) == {}
@@ -301,7 +313,7 @@ def test_ohlcv_provider_preference_is_cached_until_invalidated(monkeypatch):
 def test_get_ohlcv_tries_bhavcopy_first_when_preferred(monkeypatch):
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
 
-    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    bhav_df = _full_year_bhavcopy_df()
     monkeypatch.setattr(
         "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
     )
@@ -313,7 +325,7 @@ def test_get_ohlcv_tries_bhavcopy_first_when_preferred(monkeypatch):
     monkeypatch.setattr(mdp, "_ohlcv_yfinance", _boom)
 
     result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
-    assert len(result) == 3
+    assert len(result) == len(bhav_df)
 
 
 def test_get_ohlcv_falls_through_to_indstocks_when_bhavcopy_has_no_data(monkeypatch):
@@ -351,7 +363,7 @@ def test_get_batch_ohlcv_bhavcopy_covers_some_indstocks_covers_rest(monkeypatch)
     monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
 
-    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    bhav_df = _full_year_bhavcopy_df()
     monkeypatch.setattr(
         "utils.db.fetch_bhavcopy_ohlcv_batch",
         lambda symbols, start_date=None, end_date=None: {"RELIANCE.NS": bhav_df},
@@ -368,7 +380,7 @@ def test_get_batch_ohlcv_bhavcopy_covers_some_indstocks_covers_rest(monkeypatch)
     result = mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"], period="1y")
 
     assert set(result.keys()) == {"RELIANCE.NS", "TCS.NS"}
-    assert len(result["RELIANCE.NS"]) == 3
+    assert len(result["RELIANCE.NS"]) == len(bhav_df)
     assert len(result["TCS.NS"]) == 4
     # INDstocks was only asked for the symbol Bhav Copy didn't cover.
     assert fake_client.calls == [["NSE_11536"]]
@@ -409,7 +421,7 @@ def test_get_ohlcv_source_call_counts_returns_a_copy():
 
 def test_reset_ohlcv_source_call_counts_zeroes_all_keys(monkeypatch):
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
-    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    bhav_df = _full_year_bhavcopy_df()
     monkeypatch.setattr(
         "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
     )
@@ -422,7 +434,7 @@ def test_reset_ohlcv_source_call_counts_zeroes_all_keys(monkeypatch):
 
 def test_get_ohlcv_increments_bhavcopy_count_on_success(monkeypatch):
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
-    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    bhav_df = _full_year_bhavcopy_df()
     monkeypatch.setattr(
         "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
     )
@@ -483,7 +495,7 @@ def test_get_batch_ohlcv_increments_counts_by_number_of_symbols_served(monkeypat
     monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
 
-    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    bhav_df = _full_year_bhavcopy_df()
     monkeypatch.setattr(
         "utils.db.fetch_bhavcopy_ohlcv_batch",
         lambda symbols, start_date=None, end_date=None: {"RELIANCE.NS": bhav_df},
@@ -502,6 +514,100 @@ def test_get_batch_ohlcv_increments_counts_by_number_of_symbols_served(monkeypat
     assert counts["bhavcopy"] == 1
     assert counts["indstocks"] == 1
     assert counts["yfinance"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _bhavcopy_has_sufficient_coverage() — the mid-backfill fall-through guard.
+#
+# Found live: right after the backfill first ran, Bhav Copy had only ~16
+# trading days of history. The old check was just "is the DataFrame
+# non-empty", so get_ohlcv()/get_batch_ohlcv() served that 16-row history
+# outright for period="1y" scan requests — which then silently failed
+# stock_scanner.logic.check_institutional_fortress's own `len(data) < 210`
+# gate for every symbol, so a full scan came back with 0 results and no
+# error anywhere in the chain. These tests pin down the fix: Bhav Copy only
+# "counts" once it covers a real fraction of the requested period's trading
+# days, otherwise the tier falls through like it would for no data at all.
+# ---------------------------------------------------------------------------
+
+
+def test_bhavcopy_coverage_accepts_a_full_years_history():
+    df = _full_year_bhavcopy_df()
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "1y") is True
+
+
+def test_bhavcopy_coverage_rejects_sixteen_days_against_a_one_year_request():
+    # The exact scenario found live: 16 trading days backfilled, period="1y".
+    df = mdp._candles_to_df(_sample_candles(16))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "1y") is False
+
+
+def test_bhavcopy_coverage_accepts_a_short_period_with_matching_short_history():
+    # A "1mo" request only expects ~22 trading days — 16 rows should clear
+    # that bar even though it fails the "1y" bar above with the same data.
+    df = mdp._candles_to_df(_sample_candles(16))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "1mo") is True
+
+
+def test_bhavcopy_coverage_accepts_unrecognised_period_with_no_bound_to_compare():
+    df = mdp._candles_to_df(_sample_candles(1))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "garbage-period") is True
+
+
+def test_get_ohlcv_falls_through_to_indstocks_when_bhavcopy_coverage_is_thin(monkeypatch):
+    """Bhav Copy returns real, non-empty data (16 rows) but not enough of
+    it for a "1y" request — must fall through to INDstocks rather than
+    serving the thin history outright, and the call must be recorded as
+    served by indstocks, not bhavcopy."""
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    thin_bhav_df = mdp._candles_to_df(_sample_candles(16))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv",
+        lambda symbol, start_date=None, end_date=None: thin_bhav_df,
+    )
+    indstocks_df = mdp._candles_to_df(_sample_candles(2))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(mdp, "_ohlcv_indstocks", lambda symbol, period: indstocks_df)
+
+    result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
+
+    assert len(result) == 2  # the INDstocks data, not the thin Bhav Copy data
+    counts = mdp.get_ohlcv_source_call_counts()
+    assert counts["bhavcopy"] == 0
+    assert counts["indstocks"] == 1
+
+
+def test_get_batch_ohlcv_rolls_thin_bhavcopy_symbol_to_indstocks(monkeypatch):
+    """Batch equivalent: one symbol has full Bhav Copy coverage, the other
+    only has thin (mid-backfill) coverage — the thin one must roll over to
+    the INDstocks tier rather than being served as-is."""
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    full_df = _full_year_bhavcopy_df()
+    thin_df = mdp._candles_to_df(_sample_candles(16))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv_batch",
+        lambda symbols, start_date=None, end_date=None: {
+            "RELIANCE.NS": full_df,
+            "TCS.NS": thin_df,
+        },
+    )
+    mapping = {"TCS.NS": "NSE_11536"}
+    fake_cache = _FakeInstrumentsCache(mapping)
+    fake_client = _FakeClient({"NSE_11536": _sample_candles(4)})
+    monkeypatch.setattr("utils.instruments_cache.get_instruments_cache", lambda: fake_cache)
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
+
+    result = mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"], period="1y")
+
+    assert len(result["RELIANCE.NS"]) == len(full_df)
+    assert len(result["TCS.NS"]) == 4  # served by INDstocks, not the thin Bhav Copy frame
+    assert fake_client.calls == [["NSE_11536"]]
+    counts = mdp.get_ohlcv_source_call_counts()
+    assert counts["bhavcopy"] == 1
+    assert counts["indstocks"] == 1
 
 
 def test_period_to_start_date_unknown_period_returns_none():
