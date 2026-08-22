@@ -34,6 +34,13 @@ def _clear_get_stock_data_cache():
     logic.get_stock_data.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_ohlcv_source_call_counts():
+    mdp_bare.reset_ohlcv_source_call_counts()
+    yield
+    mdp_bare.reset_ohlcv_source_call_counts()
+
+
 def _fake_ohlcv_df(n=3):
     idx = pd.date_range("2026-01-01", periods=n, freq="D", tz="Asia/Kolkata")
     return pd.DataFrame(
@@ -181,6 +188,75 @@ def test_batch_falls_back_to_yfinance_when_indstocks_unavailable(monkeypatch):
 
     assert yf_calls
     assert not result.empty
+
+
+def test_batch_gap_fill_records_only_the_gap_filled_symbols_as_yfinance(monkeypatch):
+    """The scanner's yfinance gap-fill calls yf.download() directly, bypassing
+    market_data_provider._ohlcv_yfinance() — found live when a scan showed
+    only "1 Yahoo" served despite gap-filling ~49 symbols. This pins down
+    the fix: the gap-fill records exactly the symbols *it* filled (not the
+    ones get_batch_ohlcv already recorded for its own tier)."""
+    symbols = ("FAKEG1.NS", "FAKEG2.NS", "FAKEG3.NS")
+
+    def fake_get_batch_ohlcv(syms, period="1y"):
+        return {syms[0]: _fake_ohlcv_df()}
+
+    def fake_yf_download(symbol, **kwargs):
+        cols = pd.MultiIndex.from_product([list(symbol), ["Open", "High", "Low", "Close", "Volume"]])
+        idx = pd.date_range("2026-01-01", periods=3, freq="D")
+        return pd.DataFrame(1.0, index=idx, columns=cols)
+
+    monkeypatch.setattr(mdp_bare, "get_batch_ohlcv", fake_get_batch_ohlcv)
+    monkeypatch.setattr(logic.yf, "download", fake_yf_download)
+
+    logic.get_stock_data(symbols, period="1y", interval="1d", group_by="ticker")
+
+    counts = mdp_bare.get_ohlcv_source_call_counts()
+    # 2 symbols (FAKEG2, FAKEG3) were gap-filled from yfinance; the first
+    # came from the (mocked) tier itself and must not be double-counted here.
+    assert counts["yfinance"] == 2
+
+
+def test_batch_full_fallback_records_all_symbols_as_yfinance(monkeypatch):
+    """The final catch-all (used when get_batch_ohlcv covers nothing at all)
+    also calls yf.download() directly — must record every symbol it serves."""
+    symbols = ("FAKEH1.NS", "FAKEH2.NS", "FAKEH3.NS")
+
+    def fake_get_batch_ohlcv(syms, period="1y"):
+        return {}
+
+    def fake_yf_download(symbol, **kwargs):
+        cols = pd.MultiIndex.from_product([list(symbol), ["Open", "High", "Low", "Close", "Volume"]])
+        idx = pd.date_range("2026-01-01", periods=2, freq="D")
+        return pd.DataFrame(1.0, index=idx, columns=cols)
+
+    monkeypatch.setattr(mdp_bare, "get_batch_ohlcv", fake_get_batch_ohlcv)
+    monkeypatch.setattr(logic.yf, "download", fake_yf_download)
+
+    logic.get_stock_data(symbols, period="1y", interval="1d", group_by="ticker")
+
+    counts = mdp_bare.get_ohlcv_source_call_counts()
+    assert counts["yfinance"] == len(symbols)
+
+
+def test_single_symbol_fallback_records_one_yfinance_call(monkeypatch):
+    def fake_get_ohlcv(symbol, period="1y"):
+        return pd.DataFrame()  # market_data_provider path comes up empty
+
+    def fake_yf_download(symbol, **kwargs):
+        idx = pd.date_range("2026-01-01", periods=2, freq="D")
+        return pd.DataFrame(
+            {"Open": [1.0] * 2, "High": [1.0] * 2, "Low": [1.0] * 2, "Close": [1.0] * 2, "Volume": [1.0] * 2},
+            index=idx,
+        )
+
+    monkeypatch.setattr(mdp_bare, "get_ohlcv", fake_get_ohlcv)
+    monkeypatch.setattr(logic.yf, "download", fake_yf_download)
+
+    logic.get_stock_data("FAKEI1.NS", period="1y", interval="1d", group_by="column")
+
+    counts = mdp_bare.get_ohlcv_source_call_counts()
+    assert counts["yfinance"] == 1
 
 
 def test_batch_falls_back_to_yfinance_when_provider_raises(monkeypatch):

@@ -150,6 +150,19 @@ def _record_ohlcv_source(source: str, count: int = 1) -> None:
     _ohlcv_source_call_counts[source] = _ohlcv_source_call_counts.get(source, 0) + count
 
 
+def record_ohlcv_served(source: str, count: int = 1) -> None:
+    """Public wrapper around _record_ohlcv_source for callers outside this
+    module. stock_scanner.logic.get_stock_data() has its own yfinance
+    gap-fill/last-resort fallback paths that call ``yf.download()``
+    directly rather than through ``get_ohlcv()``/``get_batch_ohlcv()`` (for
+    retry/merge behavior this module's own ``_ohlcv_yfinance`` doesn't have)
+    — those calls would otherwise be entirely invisible to
+    ``ohlcv_calls_by_source``/``GET /api/bhavcopy/status``, even though
+    they're a very common real path (e.g. whenever both Bhav Copy and
+    INDstocks miss a symbol)."""
+    _record_ohlcv_source(source, count=count)
+
+
 def invalidate_ohlcv_provider_preference_cache() -> None:
     """Drop the cached preference so the next get_ohlcv()/get_batch_ohlcv()
     call re-reads the DB immediately. Called by the settings POST endpoint
