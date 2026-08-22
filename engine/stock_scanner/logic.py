@@ -208,6 +208,15 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
                                 len(frames),
                                 len(symbols),
                             )
+                            # frames starts as exactly batch's own keys, so
+                            # anything beyond that count came from this
+                            # yfinance gap-fill — record only those symbols,
+                            # not the ones already counted by get_batch_ohlcv.
+                            from utils.market_data_provider import (
+                                record_ohlcv_served as _record_served,
+                            )
+
+                            _record_served("yfinance", count=len(frames) - len(batch))
                             return combined
                 except Exception as _exc:
                     _logger.warning(
@@ -232,6 +241,18 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
             if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
                 data.columns = data.columns.get_level_values(0)
             if not data.empty:
+                from utils.market_data_provider import (
+                    record_ohlcv_served as _record_served,
+                )
+
+                # `symbols` (the normalized list) is only assigned inside the
+                # interval == "1d" batch branch above — for an intraday batch
+                # or the single-symbol path, fall back to `symbol` itself
+                # (the original param: a tuple/list when is_batch, else a
+                # bare string).
+                _record_served(
+                    "yfinance", count=len(symbol) if is_batch else 1
+                )
                 return data
         except Exception as e:
             _logger.warning(
