@@ -35,6 +35,32 @@ class RefreshRequest(BaseModel):
     force: bool = False
 
 
+# If more than this fraction of a freshly-fetched frame is placeholder/error
+# data (see reit_invits/logic.py's _placeholder_record), the fetch is
+# treated as degraded rather than a real refresh.
+_DEGRADED_FRAME_THRESHOLD = 0.3
+
+
+def _is_degraded_frame(frame: List[Dict[str, Any]]) -> bool:
+    """True when a freshly-built frame is mostly placeholder/error rows —
+    e.g. build_reit_frame()'s batch timeout tripped with most or all
+    symbols still pending (yfinance is frequently rate-limited from cloud
+    IPs, Render included). Caching a degraded frame would mean every
+    REIT/InvIT row shows blank for the next _CACHE_MAX_AGE_HOURS just
+    because one live fetch hit a slow patch, instead of the next request
+    getting a chance to retry."""
+    if not frame:
+        return True
+    bad = sum(
+        1
+        for r in frame
+        if r.get("price") is None
+        or "fetch_timeout" in (r.get("risk_flags") or [])
+        or "fetch_error" in (r.get("risk_flags") or [])
+    )
+    return (bad / len(frame)) > _DEGRADED_FRAME_THRESHOLD
+
+
 def _get_or_fetch_frame() -> List[Dict[str, Any]]:
     global _cached_frame, _cache_ts
 
@@ -66,11 +92,37 @@ def _get_or_fetch_frame() -> List[Dict[str, Any]]:
         _cache_ts = datetime.now(timezone.utc).isoformat()
         return _cached_frame
 
-    # Third tier: live fetch, then persist for next time.
+    # Third tier: live fetch, then persist for next time — but only if the
+    # fetch actually succeeded for most symbols. A degraded fetch (batch
+    # timeout, provider outage) is served for this one request as a
+    # best-effort answer, but is deliberately NOT written to _cached_frame
+    # or the DB cache: doing so would overwrite any still-good previously
+    # cached data with blanks and lock every viewer into that blank result
+    # for up to _CACHE_MAX_AGE_HOURS, rather than letting the very next
+    # request retry the live fetch (which a transient rate-limit/network
+    # blip usually clears within seconds to minutes).
     from reit_invits.logic import build_reit_frame
     from utils.db import upsert_reit_cache
 
-    _cached_frame = build_reit_frame()
+    fresh_frame = build_reit_frame()
+    if _is_degraded_frame(fresh_frame):
+        bad = sum(
+            1
+            for r in fresh_frame
+            if r.get("price") is None
+            or "fetch_timeout" in (r.get("risk_flags") or [])
+            or "fetch_error" in (r.get("risk_flags") or [])
+        )
+        logger.warning(
+            "reit_cache: live fetch returned mostly placeholder/error data "
+            "(%d/%d symbols) — serving it for this request only, NOT "
+            "caching it, so the next request retries a live fetch instead "
+            "of being stuck with blank data for %dh",
+            bad, len(fresh_frame), _CACHE_MAX_AGE_HOURS,
+        )
+        return fresh_frame
+
+    _cached_frame = fresh_frame
     _cache_ts = datetime.now(timezone.utc).isoformat()
     try:
         upsert_reit_cache(_cached_frame)

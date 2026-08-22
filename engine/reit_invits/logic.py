@@ -24,6 +24,7 @@ valuation note describing where the unit trades relative to its NAV, since
 that a pure momentum/return score doesn't capture on its own.
 """
 
+import concurrent.futures
 import logging
 import math
 import time
@@ -37,6 +38,36 @@ from utils.conviction_engine import _label as _conviction_label
 from reit_invits.universe import REIT_INVIT_UNIVERSE
 
 logger = logging.getLogger("fortress.reit_invits")
+
+# How long a single yfinance call (.dividends, .info) is allowed to run
+# before this module gives up on it and moves on. yf.download() takes an
+# explicit `timeout` argument (see _fetch_history below), but Ticker.info
+# and Ticker.dividends don't expose one — internally they can retry cookie/
+# crumb negotiation with Yahoo before even reaching the actual data request,
+# so on a slow or rate-limited connection (yfinance from cloud-provider IPs,
+# including Render, is frequently throttled) a single .info call has been
+# observed taking most of a minute. Left unbounded, 2-3 such calls per
+# symbol easily blow past the whole batch's _BATCH_TIMEOUT_S before even one
+# symbol finishes — which is exactly what "N/N symbols still pending"
+# in that batch-timeout warning means: not that every symbol failed, but
+# that not even one had time to complete all its calls.
+_PER_CALL_TIMEOUT_S = 12
+
+
+def _call_with_timeout(fn, timeout_s: float = _PER_CALL_TIMEOUT_S, default=None):
+    """Run fn() with a hard wall-clock deadline. yfinance gives no timeout
+    knob for Ticker.info/.dividends, and a stalled TCP connection inside fn
+    can't be cancelled from the outside in pure Python — so, same tradeoff
+    build_reit_frame already makes at the batch level, the worker thread is
+    abandoned (not joined) rather than blocked on if it doesn't finish in
+    time."""
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(fn).result(timeout=timeout_s)
+    except Exception:
+        return default
+    finally:
+        pool.shutdown(wait=False)
 
 # ── Weight config ─────────────────────────────────────────────────────────────
 WEIGHTS = {
@@ -84,6 +115,7 @@ def _fetch_history(symbol: str, period: str = "1y") -> pd.DataFrame:
                 interval="1d",
                 progress=False,
                 auto_adjust=True,
+                timeout=_PER_CALL_TIMEOUT_S,
             )
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -112,11 +144,7 @@ def _fetch_distribution_history(symbol: str) -> dict[str, Any]:
         "distribution_count_1y": None,
         "distribution_growth_3y_pct": None,
     }
-    try:
-        divs = yf.Ticker(symbol).dividends
-    except Exception as exc:
-        logger.debug("dividends fetch %s: %s", symbol, exc)
-        return out
+    divs = _call_with_timeout(lambda: yf.Ticker(symbol).dividends)
     if divs is None or divs.empty:
         return out
 
@@ -245,8 +273,8 @@ def _compute_raw_metrics(symbol: str, meta: dict[str, Any]) -> dict[str, Any]:
     if dist.get("distributions_1y") and result["price"]:
         result["yield_pct"] = round(dist["distributions_1y"] / result["price"] * 100, 2)
 
-    try:
-        info = yf.Ticker(symbol).info
+    info = _call_with_timeout(lambda: yf.Ticker(symbol).info, default={}) or {}
+    if info:
         if result["yield_pct"] is None:
             div_yield = _safe(info.get("dividendYield") or info.get("yield"))
             if div_yield:
@@ -256,8 +284,6 @@ def _compute_raw_metrics(symbol: str, meta: dict[str, Any]) -> dict[str, Any]:
         if nav and result["price"]:
             result["nav_per_unit"] = nav
             result["nav_premium_pct"] = round((result["price"] - nav) / nav * 100, 2)
-    except Exception:
-        pass
 
     # ── Staleness check ───────────────────────────────────────────────────
     last_date = hist.index[-1]

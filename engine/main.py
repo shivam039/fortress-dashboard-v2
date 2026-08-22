@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import logging
 import traceback
 import math
+from datetime import datetime
 
 from commodities.logic import build_commodities_frame
 from fortress_config import TICKER_GROUPS
@@ -37,6 +38,8 @@ from utils.db import (
     fetch_history_data,
     fetch_mf_cached_results,
     fetch_timestamps,
+    register_scan,
+    save_scan_results,
 )
 
 
@@ -370,7 +373,9 @@ def run_scan(req: ScanRequest):
 
     def _score_results(raw_results):
         """Shared scoring step for both the normal path and the
-        circuit-breaker-tripped-with-partial-results path."""
+        circuit-breaker-tripped-with-partial-results path. Returns the
+        scored DataFrame (not a dict) so callers can both serialize it for
+        the API response and persist it to scan history unchanged."""
         score_df = pd.DataFrame(raw_results)
         scoring_config = DEFAULT_SCORING_CONFIG.copy()
         scoring_config.update(
@@ -384,8 +389,30 @@ def run_scan(req: ScanRequest):
         )
         if req.weights:
             scoring_config["weights"] = req.weights
-        score_df = apply_advanced_scoring(score_df, scoring_config)
-        return score_df.to_dict(orient="records")
+        return apply_advanced_scoring(score_df, scoring_config)
+
+    def _persist_scan_history(score_df):
+        """Save this scan's scored results to scan_history_details so the
+        frontend's Scan History page (/api/history/timestamps + /api/history/data)
+        has something to show. This was previously only wired up in the
+        legacy Streamlit UI (stock_scanner/ui.py's _save_scan) and the
+        Telegram bot script — /api/scan, which is what the actual Next.js
+        frontend calls, never called register_scan/save_scan_results at
+        all, so the Scan History page was always empty no matter what ran.
+        Best-effort: a history-write failure must never fail the scan
+        response itself, since the results are already computed."""
+        if score_df is None or score_df.empty:
+            return
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            scan_id = register_scan(
+                timestamp, universe=req.universe, scan_type="STOCK", status="Completed"
+            )
+            history_df = score_df.copy()
+            history_df["Universe"] = req.universe
+            save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
+        except Exception as e:
+            logger.warning("run_scan: failed to persist scan history: %s", e)
 
     if circuit_breaker_tripped:
         # Score whatever partial results came through before the breaker
@@ -394,8 +421,10 @@ def run_scan(req: ScanRequest):
         # confused with "nothing matched the screen" (asArray() on the
         # frontend already handles a {results: [...]} dict same as a bare
         # list, so this doesn't change how existing successful scans render).
+        score_df = _score_results(results) if results else None
+        _persist_scan_history(score_df)
         return {
-            "results": _sanitize_json_value(_score_results(results)) if results else [],
+            "results": _sanitize_json_value(score_df.to_dict(orient="records")) if score_df is not None else [],
             "summary": (
                 f"Scan aborted early: {scan_failed}/{scan_attempted} tickers "
                 f"failed before {len(results)} results could be scored. This "
@@ -417,7 +446,9 @@ def run_scan(req: ScanRequest):
         }
 
     # Generate action links
-    return _sanitize_json_value(_score_results(results))
+    score_df = _score_results(results)
+    _persist_scan_history(score_df)
+    return _sanitize_json_value(score_df.to_dict(orient="records"))
 
 
 @app.get("/api/sector-pulse")

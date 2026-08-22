@@ -2306,7 +2306,15 @@ def fetch_history_data(table_name, timestamp, scan_type=None):
     )
 
     if not scan_info.empty:
-        scan_id = scan_info.iloc[0]["scan_id"]
+        # int(...): scan_info.iloc[0]["scan_id"] comes back as numpy.int64
+        # (pandas' integer dtype), which sqlite3's parameter binding does
+        # not recognize as a native type. Passed straight through to
+        # pd.read_sql_query on a raw sqlite3 connection, it silently binds
+        # to a value that matches no rows — no exception, just an
+        # always-empty result — instead of the intended scan_id lookup, so
+        # the Scan History page could see a valid timestamp but always show
+        # zero rows of data for it.
+        scan_id = int(scan_info.iloc[0]["scan_id"])
         db_scan_type = scan_info.iloc[0].get("scan_type")
 
         if db_scan_type in ["STOCK", "OPTIONS", "COMMODITY"]:
