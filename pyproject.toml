@@ -8,5 +8,6 @@ profile = "black"
 line-length = 88
 extend-exclude = ["engine/legacy"]
 
-[tool.vercel]
-entrypoint = "engine.main:app"
+# No [tool.vercel] section here on purpose — the FastAPI backend deploys to
+# Render (see DEPLOYMENT.md §2), not Vercel. Vercel's project Root Directory
+# is set to `frontend/`, so it only ever sees and builds the Next.js app.
