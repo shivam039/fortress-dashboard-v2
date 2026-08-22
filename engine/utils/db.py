@@ -175,24 +175,6 @@ def _exec(sql: str, params: Optional[Dict[str, Any]] = None):
     retry=retry_if_exception(_should_retry_db_error),
     reraise=True,
 )
-def _exec_many(sql: str, params_list: List[Dict[str, Any]]):
-    if not params_list:
-        return
-    if _can_use_neon():
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(text(sql), params_list)
-        return
-    with _sqlite_connection() as conn:
-        conn.executemany(sql, params_list)
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
-    retry=retry_if_exception(_should_retry_db_error),
-    reraise=True,
-)
 def _query(sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Execute a query and return results as list of dicts."""
     if _can_use_neon():
@@ -3455,16 +3437,34 @@ def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
             return 0
 
         if _can_use_neon():
-            placeholders = ", ".join(f":{c}" for c in cols)
             update_set = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
-            sql = f"""
-                INSERT INTO bhavcopy_eod (symbol, trade_date, {col_list}, updated_at)
-                VALUES (:sym, :d, {placeholders}, NOW())
-                ON CONFLICT (symbol, trade_date) DO UPDATE SET
-                    {update_set},
-                    updated_at = EXCLUDED.updated_at
-            """
-            _exec_many(sql, params_list)
+            
+            # Batch into chunks of 1000 to stay safely under Postgres 65535 parameter limit
+            batch_size = 1000
+            for i in range(0, len(params_list), batch_size):
+                batch = params_list[i:i + batch_size]
+                
+                flat_params = {}
+                value_strings = []
+                for j, row_params in enumerate(batch):
+                    flat_params[f"sym_{j}"] = row_params["sym"]
+                    flat_params[f"d_{j}"] = row_params["d"]
+                    for c in cols:
+                        flat_params[f"{c}_{j}"] = row_params[c]
+                        
+                    c_placeholders = ", ".join(f":{c}_{j}" for c in cols)
+                    value_strings.append(f"(:sym_{j}, :d_{j}, {c_placeholders}, NOW())")
+                
+                values_sql = ",\n".join(value_strings)
+                sql = f"""
+                    INSERT INTO bhavcopy_eod (symbol, trade_date, {col_list}, updated_at)
+                    VALUES {values_sql}
+                    ON CONFLICT (symbol, trade_date) DO UPDATE SET
+                        {update_set},
+                        updated_at = EXCLUDED.updated_at
+                """
+                _exec(sql, flat_params)
+            
             return len(params_list)
 
         with _sqlite_connection() as conn:
