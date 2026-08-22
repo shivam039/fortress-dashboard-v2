@@ -52,6 +52,7 @@ def run_bhavcopy_refresh_job(
     """
     from bhavcopy.logic import BhavCopyFormatError, BhavCopyUnavailable, fetch_bhavcopy
     from utils.db import get_bhavcopy_fetch_status, record_bhavcopy_fetch, upsert_bhavcopy_rows
+    import zipfile
 
     trade_date = trade_date or _today_ist()
     date_str = trade_date.isoformat()
@@ -74,7 +75,11 @@ def run_bhavcopy_refresh_job(
             "symbol_count": 0,
             "error": str(exc),
         }
-    except (BhavCopyFormatError, Exception) as exc:
+    except (BhavCopyFormatError, zipfile.BadZipFile) as exc:
+        logger.error("bhavcopy refresh: %s failed fatally: %s", date_str, exc)
+        record_bhavcopy_fetch(date_str, status="fatal_error", error_detail=str(exc))
+        return {"status": "fatal_error", "trade_date": date_str, "symbol_count": 0, "error": str(exc)}
+    except Exception as exc:
         logger.error("bhavcopy refresh: %s failed: %s", date_str, exc)
         record_bhavcopy_fetch(date_str, status="error", error_detail=str(exc))
         return {"status": "error", "trade_date": date_str, "symbol_count": 0, "error": str(exc)}
@@ -133,12 +138,18 @@ def backfill_bhavcopy(
         if result["status"] != "skipped":
             fetch_count += 1
 
-        if result["status"] == "done" or result["status"] == "skipped":
+        if result["status"] == "done":
+            done.append(result["trade_date"])
+        elif result["status"] == "skipped":
             done.append(result["trade_date"])
         elif result["status"] == "not_yet_published":
             # For a past date this means "no trading that day" (holiday),
             # not "ask again later" — record it as such but don't error.
             skipped_no_data.append(result["trade_date"])
+        elif result["status"] == "fatal_error":
+            errors[result["trade_date"]] = result["error"] or "fatal error"
+            logger.error("bhavcopy backfill aborting early due to fatal error on %s", result["trade_date"])
+            break
         else:
             errors[result["trade_date"]] = result["error"] or "unknown error"
 

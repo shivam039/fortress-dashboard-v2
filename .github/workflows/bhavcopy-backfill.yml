@@ -89,7 +89,7 @@ jobs:
             # per-chunk timeout — a single chunk should take at most a
             # couple of minutes given the max_fetches cap).
             waited=0
-            max_wait=300
+            max_wait=600
             in_progress="true"
             while [ "$in_progress" = "true" ] && [ "$waited" -lt "$max_wait" ]; do
               sleep 10
