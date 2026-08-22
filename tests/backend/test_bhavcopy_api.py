@@ -27,6 +27,17 @@ def _reset_ohlcv_preference_cache():
     mdp.invalidate_ohlcv_provider_preference_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_backfill_in_progress_flag():
+    import routers.bhavcopy as bhavcopy_router
+
+    bhavcopy_router._backfill_state["in_progress"] = False
+    bhavcopy_router._backfill_state["started_at"] = None
+    yield
+    bhavcopy_router._backfill_state["in_progress"] = False
+    bhavcopy_router._backfill_state["started_at"] = None
+
+
 def test_get_data_provider_defaults_to_bhavcopy(monkeypatch):
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: default)
     response = client.get("/api/settings/data-provider")
@@ -94,3 +105,88 @@ def test_market_data_status_includes_ohlcv_source(monkeypatch):
     body = response.json()
     assert body["ohlcv_source"] == "bhavcopy"
     assert body["ohlcv_source_label"] == "NSE Bhav Copy"
+
+
+# ── /api/bhavcopy/status coverage summary ───────────────────────────────
+
+
+def test_bhavcopy_status_includes_coverage_summary(monkeypatch):
+    monkeypatch.setattr("utils.db.get_bhavcopy_fetch_status", lambda trade_date: "done")
+    monkeypatch.setattr(
+        "utils.db.get_bhavcopy_coverage_summary",
+        lambda: {
+            "trading_days_covered": 42,
+            "symbol_count": 1800,
+            "earliest_date": "2026-01-01",
+            "latest_date": "2026-06-01",
+        },
+    )
+    response = client.get("/api/bhavcopy/status")
+    body = response.json()
+    assert body["trading_days_covered"] == 42
+    assert body["symbol_count"] == 1800
+    assert body["earliest_date"] == "2026-01-01"
+    assert body["latest_date"] == "2026-06-01"
+    assert body["backfill_in_progress"] is False
+
+
+# ── /api/bhavcopy/backfill ──────────────────────────────────────────────
+
+
+def test_backfill_returns_202_and_schedules_background_job(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "bhavcopy.jobs.backfill_bhavcopy",
+        lambda days=300: calls.append(days)
+        or {"done": ["2026-01-01"], "skipped_no_data": [], "errors": {}},
+    )
+
+    response = client.post("/api/bhavcopy/backfill", json={"days": 30})
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+    # TestClient runs BackgroundTasks synchronously after the response body
+    # is built, so by the time we get here the (mocked) backfill has run.
+    assert calls == [30]
+
+
+def test_backfill_defaults_to_300_days_when_unspecified(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "bhavcopy.jobs.backfill_bhavcopy",
+        lambda days=300: calls.append(days) or {"done": [], "skipped_no_data": [], "errors": {}},
+    )
+    response = client.post("/api/bhavcopy/backfill", json={})
+    assert response.status_code == 202
+    assert calls == [300]
+
+
+def test_backfill_rejects_out_of_range_days():
+    response = client.post("/api/bhavcopy/backfill", json={"days": 0})
+    assert response.status_code == 400
+
+    response = client.post("/api/bhavcopy/backfill", json={"days": 99999})
+    assert response.status_code == 400
+
+
+def test_backfill_rejects_a_second_concurrent_request(monkeypatch):
+    import routers.bhavcopy as bhavcopy_router
+
+    bhavcopy_router._backfill_state["in_progress"] = True
+
+    response = client.post("/api/bhavcopy/backfill", json={"days": 30})
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
+
+
+def test_backfill_clears_in_progress_flag_even_if_the_job_raises(monkeypatch):
+    import routers.bhavcopy as bhavcopy_router
+
+    def _boom(days=300):
+        raise RuntimeError("NSE is down")
+
+    monkeypatch.setattr("bhavcopy.jobs.backfill_bhavcopy", _boom)
+
+    response = client.post("/api/bhavcopy/backfill", json={"days": 30})
+    assert response.status_code == 202  # the HTTP response was already sent
+    # ...but the background task's own exception must not leave the guard stuck.
+    assert bhavcopy_router._backfill_state["in_progress"] is False
