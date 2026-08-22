@@ -37,6 +37,17 @@ def _clean_indstocks_env(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_ohlcv_preference_cache():
+    """mdp._preference_cache is a module-level short-TTL cache (see
+    get_ohlcv_provider_preference) — reset it before/after every test so one
+    test's monkeypatched utils.db.get_setting doesn't leak into the next via
+    the cache outliving the monkeypatch."""
+    mdp.invalidate_ohlcv_provider_preference_cache()
+    yield
+    mdp.invalidate_ohlcv_provider_preference_cache()
+
+
 # ---------------------------------------------------------------------------
 # _indstocks_available() / provider_status()
 # ---------------------------------------------------------------------------
@@ -228,3 +239,145 @@ def test_candles_to_df_shape_and_columns():
     assert len(df) == 3
     assert df.index.name == "Date"
     assert str(df.index.tz) != "None"
+
+
+# ---------------------------------------------------------------------------
+# OHLCV/scan data-source preference toggle (Bhav Copy vs INDstocks)
+# ---------------------------------------------------------------------------
+
+
+def test_ohlcv_provider_preference_defaults_to_bhavcopy(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: default)
+    assert mdp.get_ohlcv_provider_preference() == "bhavcopy"
+
+
+def test_ohlcv_provider_preference_reads_stored_setting(monkeypatch):
+    monkeypatch.setattr(
+        "utils.db.get_setting", lambda key, default=None: "indstocks"
+    )
+    assert mdp.get_ohlcv_provider_preference() == "indstocks"
+
+
+def test_ohlcv_provider_preference_falls_back_to_default_on_bogus_value(monkeypatch):
+    # A corrupted/unexpected app_settings row shouldn't wedge the provider —
+    # fall back to the documented default rather than propagating garbage.
+    monkeypatch.setattr(
+        "utils.db.get_setting", lambda key, default=None: "not-a-real-provider"
+    )
+    assert mdp.get_ohlcv_provider_preference() == "bhavcopy"
+
+
+def test_ohlcv_provider_preference_is_cached_until_invalidated(monkeypatch):
+    calls = {"n": 0}
+
+    def _get_setting(key, default=None):
+        calls["n"] += 1
+        return "indstocks"
+
+    monkeypatch.setattr("utils.db.get_setting", _get_setting)
+
+    assert mdp.get_ohlcv_provider_preference() == "indstocks"
+    assert mdp.get_ohlcv_provider_preference() == "indstocks"
+    assert calls["n"] == 1  # second call served from the in-process cache
+
+    mdp.invalidate_ohlcv_provider_preference_cache()
+    assert mdp.get_ohlcv_provider_preference() == "indstocks"
+    assert calls["n"] == 2  # cache invalidation forces a fresh DB read
+
+
+def test_get_ohlcv_tries_bhavcopy_first_when_preferred(monkeypatch):
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv", lambda symbol, start_date=None, end_date=None: bhav_df
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("INDstocks/yfinance should not be tried when Bhav Copy has data")
+
+    monkeypatch.setattr(mdp, "_ohlcv_indstocks", _boom)
+    monkeypatch.setattr(mdp, "_ohlcv_yfinance", _boom)
+
+    result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
+    assert len(result) == 3
+
+
+def test_get_ohlcv_falls_through_to_indstocks_when_bhavcopy_has_no_data(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv",
+        lambda symbol, start_date=None, end_date=None: __import__("pandas").DataFrame(),
+    )
+
+    indstocks_df = mdp._candles_to_df(_sample_candles(2))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(mdp, "_ohlcv_indstocks", lambda symbol, period: indstocks_df)
+
+    result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
+    assert len(result) == 2
+
+
+def test_get_ohlcv_skips_bhavcopy_entirely_when_preference_is_indstocks(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "indstocks")
+
+    def _boom(*a, **k):
+        raise AssertionError("Bhav Copy tier should not be consulted at all")
+
+    monkeypatch.setattr("utils.db.fetch_bhavcopy_ohlcv", _boom)
+
+    indstocks_df = mdp._candles_to_df(_sample_candles(2))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(mdp, "_ohlcv_indstocks", lambda symbol, period: indstocks_df)
+
+    result = mdp.get_ohlcv("RELIANCE.NS", period="1y")
+    assert len(result) == 2
+
+
+def test_get_batch_ohlcv_bhavcopy_covers_some_indstocks_covers_rest(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    bhav_df = mdp._candles_to_df(_sample_candles(3))[["Open", "High", "Low", "Close", "Volume"]]
+    monkeypatch.setattr(
+        "utils.db.fetch_bhavcopy_ohlcv_batch",
+        lambda symbols, start_date=None, end_date=None: {"RELIANCE.NS": bhav_df},
+    )
+
+    mapping = {"TCS.NS": "NSE_11536"}
+    fake_cache = _FakeInstrumentsCache(mapping)
+    fake_client = _FakeClient({"NSE_11536": _sample_candles(4)})
+    monkeypatch.setattr(
+        "utils.instruments_cache.get_instruments_cache", lambda: fake_cache
+    )
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
+
+    result = mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"], period="1y")
+
+    assert set(result.keys()) == {"RELIANCE.NS", "TCS.NS"}
+    assert len(result["RELIANCE.NS"]) == 3
+    assert len(result["TCS.NS"]) == 4
+    # INDstocks was only asked for the symbol Bhav Copy didn't cover.
+    assert fake_client.calls == [["NSE_11536"]]
+
+
+def test_provider_status_reports_ohlcv_source_independently_of_primary(monkeypatch):
+    monkeypatch.setenv("INDSTOCKS_TOKEN", "fake-token")
+    monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
+
+    status = mdp.provider_status()
+    assert status["ohlcv_source"] == "bhavcopy"
+    assert status["ohlcv_source_label"] == "NSE Bhav Copy"
+    # Live-price primary is untouched by the OHLCV preference.
+    assert status["primary"] == "indstocks"
+    assert status["primary_label"] == "INDmoney"
+
+
+def test_period_to_start_date_unknown_period_returns_none():
+    assert mdp._period_to_start_date("garbage-period") is None
+
+
+def test_period_to_start_date_known_period_returns_a_date_string():
+    result = mdp._period_to_start_date("1y")
+    assert result is not None
+    assert len(result) == 10  # "YYYY-MM-DD"

@@ -21,6 +21,12 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — A test asserting "unset" against a hardcoded key can pass once and fail on rerun
+
+**What happened:** A new `test_bhavcopy_fetch_log_dedup_marker` test asserted `get_bhavcopy_fetch_status("2026-07-01") is None` as its opening line. It passed the first time this test file ran, then failed the next time the full suite ran in the same session.
+**Root cause:** This repo's SQLite backend (`FORTRESS_DB_BACKEND=sqlite`) is one real on-disk `fortress_history.db` file, shared across the whole pytest session and persisting between separate `pytest` invocations too — not a fresh `:memory:` database per test run. A hardcoded key/date a test writes to is still sitting in that file the next time the suite runs, so an "is None" / "is unset" assertion against a literal key is only true the very first time.
+**Avoid:** Any new test against a real key in this SQLite-backed suite that needs to assert "nothing here yet" should generate a run-unique key (e.g. `f"...{uuid.uuid4().hex[:8]}"`) rather than asserting initial absence for a fixed literal — or restructure the test so it only asserts on the *final* state after writes, which is deterministic regardless of what a previous run left behind.
+
 ### 2026-08-22 — "engine."-prefixed imports work locally and fail on Render — silently
 
 **What happened:** Several deferred imports inside `market_data_provider.py` (and one each in `instruments_cache.py`/`indstocks_client.py`) used the absolute form `from engine.utils.indstocks_client import get_client` instead of the bare `from utils.indstocks_client import get_client` used everywhere else in this codebase. This works from the repo root (Python resolves `engine/` as an implicit namespace package) — which is how local dev, this sandbox, and the test suite all run — but Render deploys this service with Root Directory set to `engine`, so on Render `engine` is never importable as a package at all. Every INDstocks OHLCV/LTP call on Render hit `ModuleNotFoundError: No module named 'engine'` inside a caught exception and silently fell back to yfinance, with no test catching it because the tests' own monkeypatches used the same wrong `engine.utils.X` path and so "matched" the bug rather than exposing it.
