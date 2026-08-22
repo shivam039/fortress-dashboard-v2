@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -63,6 +64,66 @@ def _indstocks_available() -> bool:
     if os.getenv("INDSTOCKS_TOKEN", "").strip():
         return True
     return _totp_creds_configured()
+
+
+# ---------------------------------------------------------------------------
+# OHLCV/scan data source preference (Bhav Copy vs INDstocks toggle)
+# ---------------------------------------------------------------------------
+#
+# This ONLY affects get_ohlcv()/get_batch_ohlcv() (historical/scan data).
+# get_ltp()/get_batch_ltp() above are untouched by this setting and always
+# go INDstocks -> yfinance: NSE Bhav Copy is an end-of-day file, it has no
+# intraday/live price to serve.
+
+_OHLCV_PREFERENCE_SETTING_KEY = "ohlcv_provider_preference"
+_OHLCV_PREFERENCE_DEFAULT = "bhavcopy"
+_OHLCV_PREFERENCE_VALID = {"bhavcopy", "indstocks"}
+
+# Short in-process TTL cache so every get_ohlcv()/get_batch_ohlcv() call
+# doesn't hit the DB just to read a setting that changes maybe once in a
+# session — same short-lived-cache shape as the REIT degraded-cache cooldown
+# in routers/reit_invits.py.
+_PREFERENCE_CACHE_TTL_S = 30
+_preference_cache: dict = {"value": None, "ts": None}
+
+
+def get_ohlcv_provider_preference() -> str:
+    """Return the active OHLCV/scan-data source: "bhavcopy" (default) or
+    "indstocks". Backed by utils.db.get_setting/set_setting (app_settings
+    table) — see engine/main.py's /api/settings/data-provider endpoints for
+    where this gets written."""
+    now = time.monotonic()
+    cached_ts = _preference_cache["ts"]
+    if cached_ts is not None and (now - cached_ts) < _PREFERENCE_CACHE_TTL_S:
+        return _preference_cache["value"]
+
+    try:
+        from utils.db import get_setting
+
+        value = get_setting(_OHLCV_PREFERENCE_SETTING_KEY, default=_OHLCV_PREFERENCE_DEFAULT)
+    except Exception as exc:
+        logger.warning(
+            "Failed to read OHLCV provider preference, defaulting to %s: %s",
+            _OHLCV_PREFERENCE_DEFAULT,
+            exc,
+        )
+        value = _OHLCV_PREFERENCE_DEFAULT
+
+    if value not in _OHLCV_PREFERENCE_VALID:
+        value = _OHLCV_PREFERENCE_DEFAULT
+
+    _preference_cache["value"] = value
+    _preference_cache["ts"] = now
+    return value
+
+
+def invalidate_ohlcv_provider_preference_cache() -> None:
+    """Drop the cached preference so the next get_ohlcv()/get_batch_ohlcv()
+    call re-reads the DB immediately. Called by the settings POST endpoint
+    right after writing a new preference, so a toggle takes effect without
+    waiting out _PREFERENCE_CACHE_TTL_S."""
+    _preference_cache["value"] = None
+    _preference_cache["ts"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -145,19 +206,33 @@ def _ltp_yfinance(symbol: str) -> Optional[float]:
 def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
     """Get historical OHLCV data for an NSE equity symbol.
 
-    Tries INDstocks first (if token is set), falls back to yfinance.
+    Tier order depends on ``get_ohlcv_provider_preference()``:
+      - ``"bhavcopy"`` (default): NSE Bhav Copy -> INDstocks -> yfinance.
+      - ``"indstocks"``: INDstocks -> yfinance (Bhav Copy not tried at all).
 
     Args:
         symbol: NSE ticker with or without ``.NS`` suffix.
         period: Time period string. Supports yfinance-style periods
                 (``"1d"``, ``"5d"``, ``"1mo"``, ``"3mo"``, ``"6mo"``,
-                ``"1y"``, ``"2y"``). Periods > 1y fall back to yfinance
-                automatically (INDstocks daily candles max 1 year).
+                ``"1y"``, ``"2y"``, ``"5y"``). Periods > 1y automatically
+                skip the INDstocks tier (daily candles max 1 year there) but
+                are supported by both Bhav Copy (however much history has
+                accumulated/been backfilled) and yfinance.
 
     Returns:
         DataFrame with columns ``["Open", "High", "Low", "Close", "Volume"]``
-        and a timezone-aware DatetimeIndex (IST). Empty DataFrame on failure.
+        and a DatetimeIndex. Empty DataFrame on failure.
     """
+    preference = get_ohlcv_provider_preference()
+
+    if preference == "bhavcopy":
+        df = _ohlcv_bhavcopy(symbol, period)
+        if df is not None and not df.empty:
+            return df
+        logger.debug(
+            "Bhav Copy has no OHLCV for %s (%s) yet, falling back", symbol, period
+        )
+
     if _indstocks_available():
         df = _ohlcv_indstocks(symbol, period)
         if df is not None and not df.empty:
@@ -169,6 +244,55 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
         )
 
     return _ohlcv_yfinance(symbol, period)
+
+
+# Period string -> lookback in days, for the Bhav Copy tier. Deliberately a
+# separate mapping from _period_to_ms below (which is INDstocks-specific and
+# caps at 1y, an INDstocks API limit that doesn't apply to Bhav Copy's own
+# accumulated history).
+_BHAVCOPY_PERIOD_TO_DAYS = {
+    "1d": 1,
+    "5d": 5,
+    "1mo": 30,
+    "3mo": 90,
+    "6mo": 180,
+    "1y": 365,
+    "2y": 730,
+    "3y": 1095,
+    "5y": 1825,
+}
+
+
+def _period_to_start_date(period: str) -> Optional[str]:
+    """Convert a period string to a "YYYY-MM-DD" start-date bound for the
+    Bhav Copy tier. Returns None for an unrecognised period string, which
+    callers should treat as "no lower bound — return everything cached"."""
+    days = _BHAVCOPY_PERIOD_TO_DAYS.get(period)
+    if days is None:
+        return None
+    start = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    return start.strftime("%Y-%m-%d")
+
+
+def _ohlcv_bhavcopy(symbol: str, period: str) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from the NSE Bhav Copy accumulation table. Returns None
+    (not an empty DataFrame) when there's nothing cached for this symbol at
+    all, matching _ohlcv_indstocks's "None means try the next tier"
+    contract — an empty-but-not-None DataFrame would be indistinguishable
+    from "genuinely no data in this date range" for a symbol we otherwise
+    do have history for.
+    """
+    try:
+        from utils.db import fetch_bhavcopy_ohlcv
+
+        start_date = _period_to_start_date(period)
+        df = fetch_bhavcopy_ohlcv(symbol, start_date=start_date)
+        if df.empty:
+            return None
+        return df
+    except Exception as exc:
+        logger.warning("Bhav Copy OHLCV error for %s: %s", symbol, exc)
+        return None
 
 
 def _period_to_ms(period: str) -> tuple[int, int] | None:
@@ -270,29 +394,74 @@ def _ohlcv_indstocks(symbol: str, period: str) -> Optional[pd.DataFrame]:
 _BATCH_CHUNK_SIZE = 5
 
 
+def _batch_ohlcv_bhavcopy(symbols: list[str], period: str) -> dict[str, pd.DataFrame]:
+    """Bhav Copy equivalent of get_batch_ohlcv — a single local DB read
+    (utils.db.fetch_bhavcopy_ohlcv_batch), not a network call, so unlike the
+    INDstocks tier there's no chunking/rate limit to worry about here."""
+    if not symbols:
+        return {}
+    try:
+        from utils.db import fetch_bhavcopy_ohlcv_batch
+
+        start_date = _period_to_start_date(period)
+        return fetch_bhavcopy_ohlcv_batch(symbols, start_date=start_date)
+    except Exception as exc:
+        logger.warning("Bhav Copy batch OHLCV error: %s", exc)
+        return {}
+
+
 def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.DataFrame]:
-    """Get daily OHLCV for multiple NSE symbols from INDstocks in a few calls.
+    """Get daily OHLCV for multiple NSE symbols.
 
-    This is the INDstocks/INDmoney equivalent of a bulk grouped download: it
-    resolves every symbol to a scrip code via the instruments cache, then
-    fetches historical candles in chunks of ``_BATCH_CHUNK_SIZE`` scrip codes
-    per request (``INDstocksClient.get_historical`` already accepts a list of
-    scrip codes in one call).
+    Tier order depends on ``get_ohlcv_provider_preference()``:
+      - ``"bhavcopy"`` (default): Bhav Copy DB read first (cheap, no network
+        call at all), then INDstocks for whatever symbols it didn't cover.
+      - ``"indstocks"``: INDstocks only (Bhav Copy not tried).
 
-    This does **not** fall back to yfinance itself — callers should treat a
+    Neither tier falls back to yfinance itself — callers should treat a
     partial or empty result as "fetch the missing symbols elsewhere" (e.g.
     via yfinance's grouped download), the same pattern ``get_batch_ltp`` uses.
 
     Args:
         symbols: NSE tickers (with or without ``.NS``).
-        period: Yfinance-style period string. Only periods INDstocks supports
-                for daily candles (``1d`` .. ``1y``) are attempted; anything
-                else returns ``{}`` immediately so the caller falls back.
+        period: Yfinance-style period string.
 
     Returns:
         Dict mapping each symbol that was successfully fetched to its OHLCV
-        DataFrame. Symbols that could not be resolved or returned no candles
-        are simply absent from the dict (not mapped to ``None``/empty).
+        DataFrame. Symbols that could not be resolved are simply absent
+        from the dict (not mapped to ``None``/empty).
+    """
+    if not symbols:
+        return {}
+
+    preference = get_ohlcv_provider_preference()
+    result: dict[str, pd.DataFrame] = {}
+    remaining = symbols
+
+    if preference == "bhavcopy":
+        result = _batch_ohlcv_bhavcopy(symbols, period)
+        remaining = [s for s in symbols if s not in result]
+        if not remaining:
+            return result
+
+    if not remaining or not _indstocks_available():
+        return result
+
+    indstocks_result = _batch_ohlcv_indstocks(remaining, period)
+    result.update(indstocks_result)
+    return result
+
+
+def _batch_ohlcv_indstocks(symbols: list[str], period: str) -> dict[str, pd.DataFrame]:
+    """INDstocks tier of get_batch_ohlcv (split out so the Bhav Copy tier
+    above can call this only for symbols it didn't already cover).
+
+    Resolves every symbol to a scrip code via the instruments cache, then
+    fetches historical candles in chunks of ``_BATCH_CHUNK_SIZE`` scrip codes
+    per request (``INDstocksClient.get_historical`` already accepts a list of
+    scrip codes in one call). Only periods INDstocks supports for daily
+    candles (``1d`` .. ``1y``) are attempted; anything else returns ``{}``
+    immediately so the caller falls back.
     """
     if not symbols or not _indstocks_available():
         return {}
@@ -451,14 +620,24 @@ def provider_status() -> dict[str, str]:
     Returns:
         Dict with keys:
             ``"primary"``: ``"indstocks"`` (INDmoney) or ``"yfinance"`` —
-                whichever is actually attempted first for new requests.
+                whichever is actually attempted first for LIVE PRICE
+                (get_ltp/get_batch_ltp) requests. Untouched by the OHLCV
+                provider toggle below — Bhav Copy has no intraday price.
             ``"fallback"``: ``"yfinance"`` or ``"none"``.
-            ``"primary_label"``: human-readable name for the primary source,
-                for direct use in UI (``"INDmoney"`` or ``"Yahoo Finance"``).
+            ``"primary_label"``: human-readable name for the live-price
+                primary source (``"INDmoney"`` or ``"Yahoo Finance"``).
             ``"auth_mode"``: ``"totp"``, ``"static_token"``, or ``"none"`` —
                 which INDstocks credential path is configured.
             ``"indstocks_token_set"``: legacy string bool, kept for callers
                 that already depend on this key.
+            ``"ohlcv_source"``: ``"bhavcopy"`` (default) or ``"indstocks"``
+                — the active OHLCV/SCAN data preference (see
+                get_ohlcv_provider_preference()), independently toggleable
+                from the live-price ``"primary"`` above via
+                POST /api/settings/data-provider.
+            ``"ohlcv_source_label"``: human-readable name for
+                ``"ohlcv_source"`` (``"NSE Bhav Copy"``, ``"INDmoney"``, or
+                ``"Yahoo Finance"``).
     """
     available = _indstocks_available()
     if os.getenv("INDSTOCKS_TOKEN", "").strip():
@@ -468,10 +647,19 @@ def provider_status() -> dict[str, str]:
     else:
         auth_mode = "none"
 
+    ohlcv_preference = get_ohlcv_provider_preference()
+    ohlcv_source_label = (
+        "NSE Bhav Copy"
+        if ohlcv_preference == "bhavcopy"
+        else ("INDmoney" if available else "Yahoo Finance")
+    )
+
     return {
         "primary": "indstocks" if available else "yfinance",
         "primary_label": "INDmoney" if available else "Yahoo Finance",
         "fallback": "yfinance" if available else "none",
         "auth_mode": auth_mode,
         "indstocks_token_set": str(available),
+        "ohlcv_source": ohlcv_preference,
+        "ohlcv_source_label": ohlcv_source_label,
     }

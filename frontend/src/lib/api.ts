@@ -198,16 +198,32 @@ export const healthApi = {
 // ── Market data provider status ─────────────────────────────────────────────
 
 export interface MarketDataStatus {
-  primary: string; // "indstocks" | "yfinance"
+  primary: string; // "indstocks" | "yfinance" — LIVE PRICE source, untouched by the OHLCV toggle below
   primary_label: string; // "INDmoney" | "Yahoo Finance"
   fallback: string; // "yfinance" | "none"
   auth_mode: string; // "totp" | "static_token" | "none"
   indstocks_token_set: string;
+  ohlcv_source: string; // "bhavcopy" (default) | "indstocks" — OHLCV/scan data source, toggleable
+  ohlcv_source_label: string; // "NSE Bhav Copy" | "INDmoney" | "Yahoo Finance"
   universes: Record<string, number>;
 }
 
+export type OhlcvProvider = 'bhavcopy' | 'indstocks';
+
 export const marketDataApi = {
   status: () => api.get<MarketDataStatus>('/api/market-data-status'),
+
+  getProvider: () =>
+    api.get<{ provider: OhlcvProvider }>('/api/settings/data-provider'),
+
+  // Switch the OHLCV/scan data source. Only affects historical/scan data —
+  // live price (the "primary"/"primary_label" fields above) always comes
+  // from INDstocks/yfinance regardless, since Bhav Copy is end-of-day only.
+  setProvider: (provider: OhlcvProvider) =>
+    api.post<{ status: string; provider: OhlcvProvider }>(
+      '/api/settings/data-provider',
+      { provider }
+    ),
 };
 
 // ── Scan ─────────────────────────────────────────────────────────────────────

@@ -1,0 +1,56 @@
+name: NSE Bhav Copy Daily Refresh
+
+# Triggers a background NSE Bhav Copy fetch on the deployed FastAPI backend
+# (POST /api/bhavcopy/refresh — see engine/routers/bhavcopy.py). This repo
+# has no OS-level cron (Render's Root Directory=engine web service has no
+# separate cron job configured); the established precedent for scheduled
+# work against the deployed backend is a GitHub Actions `schedule:` cron
+# doing an HTTP call, same shape as keepalive.yml's Streamlit pinger.
+#
+# The refresh job itself (bhavcopy.jobs.run_bhavcopy_refresh_job) already
+# checks bhavcopy_fetch_log before touching the network, so re-running this
+# workflow (a retry, or workflow_dispatch) is always safe — it's a no-op if
+# today's file is already fetched.
+#
+# Required repo secrets:
+#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+#                            (the backend requires X-API-Key on non-auth routes
+#                            whenever that env var is configured)
+
+on:
+  schedule:
+    # 13:30 UTC = 19:00 IST, weekdays — after NSE's usual Bhav Copy publish
+    # window (typically 18:30-19:30 IST). A second run at 20:30 IST catches
+    # a file that wasn't published yet at the first attempt (the job logs
+    # "not_yet_published" and simply retries, per the dedup-log design).
+    - cron: '30 13 * * 1-5'
+    - cron: '0 15 * * 1-5'
+  workflow_dispatch: # allow manual triggering, e.g. for a backfill kickoff
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/bhavcopy/refresh
+        run: |
+          if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
+            echo "FORTRESS_BACKEND_URL secret is not set — skipping (nothing to call)."
+            exit 0
+          fi
+
+          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
+            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/bhavcopy/refresh" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
+            -d '{"force": false}')
+
+          echo "Response body:"
+          cat /tmp/response.json
+          echo ""
+          echo "HTTP status: $http_status"
+
+          if [ "$http_status" -ge 300 ]; then
+            echo "Bhav Copy refresh request failed (HTTP $http_status)"
+            exit 1
+          fi

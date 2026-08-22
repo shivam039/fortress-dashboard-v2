@@ -250,6 +250,42 @@ a:hover { color: var(--accent-primary-hover); }
   align-items: center;
 }
 
+/* ── Data-provider toggle (Bhav Copy vs INDmoney, in System Status) ──────────── */
+.provider-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-toggle {
+  display: inline-flex;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.provider-toggle-btn {
+  font-size: 0.68rem;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.provider-toggle-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.provider-toggle-btn.active {
+  background: var(--color-success);
+  color: #04140a;
+  font-weight: 600;
+}
+
 /* ── Glassmorphic Card ──────────────────────────────────────────────────────── */
 .card {
   background: var(--bg-card);

@@ -1118,6 +1118,9 @@ def init_db():
         _ensure_reit_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
+        _ensure_bhavcopy_eod_neon()
+        _ensure_bhavcopy_fetch_log_neon()
+        _ensure_app_settings_neon()
 
         try:
             _exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
@@ -3229,3 +3232,445 @@ def upsert_reit_cache(records: list):
 def upsert_us_cache(records: list):
     """Placeholder — US data cached in-memory for now; add Neon persistence if needed."""
     pass
+
+
+# ─────────────────────────────────────────────
+# NSE Bhav Copy EOD price history + fetch dedup log
+# ─────────────────────────────────────────────
+#
+# bhavcopy_eod accumulates one row per (symbol, trade_date) from NSE's daily
+# EOD file — this is what lets market_data_provider.get_ohlcv() answer "last
+# N days" once enough days have accumulated (or been backfilled), unlike
+# ohlcv_cache above which stores one whole-period JSON blob per symbol and
+# can't be sliced.
+#
+# bhavcopy_fetch_log is a *separate* table from bhavcopy_eod on purpose: it's
+# the actual "don't re-fetch today's file" guard the daily refresh job
+# checks before making any network call. bhavcopy_eod's own
+# PRIMARY KEY (symbol, trade_date) upsert makes repeat writes safe, but does
+# nothing to stop a repeat job run from re-downloading and re-parsing the
+# whole market file — that's what bhavcopy_fetch_log prevents.
+
+_BHAVCOPY_EOD_COLUMNS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "turnover",
+    "deliv_qty",
+    "deliv_pct",
+]
+
+
+def _ensure_bhavcopy_eod_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS bhavcopy_eod (
+            symbol      TEXT NOT NULL,
+            trade_date  DATE NOT NULL,
+            open        DOUBLE PRECISION,
+            high        DOUBLE PRECISION,
+            low         DOUBLE PRECISION,
+            close       DOUBLE PRECISION,
+            volume      BIGINT,
+            turnover    DOUBLE PRECISION,
+            deliv_qty   BIGINT,
+            deliv_pct   DOUBLE PRECISION,
+            updated_at  TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (symbol, trade_date)
+        )
+    """)
+    _exec(
+        "CREATE INDEX IF NOT EXISTS idx_bhavcopy_eod_symbol_date "
+        "ON bhavcopy_eod (symbol, trade_date DESC)"
+    )
+
+
+def _ensure_bhavcopy_eod_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bhavcopy_eod (
+            symbol      TEXT NOT NULL,
+            trade_date  TEXT NOT NULL,
+            open        REAL,
+            high        REAL,
+            low         REAL,
+            close       REAL,
+            volume      INTEGER,
+            turnover    REAL,
+            deliv_qty   INTEGER,
+            deliv_pct   REAL,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, trade_date)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bhavcopy_eod_symbol_date "
+        "ON bhavcopy_eod (symbol, trade_date DESC)"
+    )
+
+
+def _ensure_bhavcopy_fetch_log_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS bhavcopy_fetch_log (
+            trade_date    DATE PRIMARY KEY,
+            status        TEXT NOT NULL,
+            symbol_count  INTEGER,
+            fetched_at    TIMESTAMPTZ DEFAULT NOW(),
+            error_detail  TEXT
+        )
+    """)
+
+
+def _ensure_bhavcopy_fetch_log_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bhavcopy_fetch_log (
+            trade_date    TEXT PRIMARY KEY,
+            status        TEXT NOT NULL,
+            symbol_count  INTEGER,
+            fetched_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+            error_detail  TEXT
+        )
+    """)
+
+
+def get_bhavcopy_fetch_status(trade_date: str) -> Optional[str]:
+    """Return the recorded status ('done' | 'not_yet_published' | 'error') for
+    trade_date ("YYYY-MM-DD"), or None if no attempt has been logged yet.
+
+    The daily refresh job calls this BEFORE doing any network call to NSE —
+    a status of "done" means skip the fetch entirely.
+    """
+    try:
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT status FROM bhavcopy_fetch_log WHERE trade_date = :d"),
+                    {"d": trade_date},
+                ).fetchone()
+            return row[0] if row else None
+
+        with _sqlite_connection() as conn:
+            _ensure_bhavcopy_fetch_log_sqlite(conn)
+            row = conn.execute(
+                "SELECT status FROM bhavcopy_fetch_log WHERE trade_date = :d",
+                {"d": trade_date},
+            ).fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error("bhavcopy_fetch_log read error for %s: %s", trade_date, e)
+        return None
+
+
+def record_bhavcopy_fetch(
+    trade_date: str,
+    status: str,
+    symbol_count: int = 0,
+    error_detail: Optional[str] = None,
+):
+    """Upsert today's fetch attempt outcome. Recording status='done' is what
+    makes the next job invocation skip the network call (see
+    get_bhavcopy_fetch_status). A "not_yet_published" or "error" status is
+    deliberately NOT treated as a reason to skip — the next scheduled run
+    should retry."""
+    try:
+        if _can_use_neon():
+            _exec(
+                """
+                INSERT INTO bhavcopy_fetch_log (trade_date, status, symbol_count, fetched_at, error_detail)
+                VALUES (:d, :s, :cnt, NOW(), :err)
+                ON CONFLICT (trade_date) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    symbol_count = EXCLUDED.symbol_count,
+                    fetched_at = EXCLUDED.fetched_at,
+                    error_detail = EXCLUDED.error_detail
+                """,
+                {"d": trade_date, "s": status, "cnt": symbol_count, "err": error_detail},
+            )
+            return
+
+        with _sqlite_connection() as conn:
+            _ensure_bhavcopy_fetch_log_sqlite(conn)
+            conn.execute(
+                """
+                INSERT INTO bhavcopy_fetch_log (trade_date, status, symbol_count, fetched_at, error_detail)
+                VALUES (:d, :s, :cnt, CURRENT_TIMESTAMP, :err)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    status = excluded.status,
+                    symbol_count = excluded.symbol_count,
+                    fetched_at = excluded.fetched_at,
+                    error_detail = excluded.error_detail
+                """,
+                {"d": trade_date, "s": status, "cnt": symbol_count, "err": error_detail},
+            )
+    except Exception as e:
+        logger.error("bhavcopy_fetch_log write error for %s: %s", trade_date, e)
+
+
+def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
+    """Bulk upsert one day's parsed Bhav Copy rows into bhavcopy_eod.
+
+    `df` must have a "symbol" column plus any subset of
+    `_BHAVCOPY_EOD_COLUMNS` — missing ones are written as NULL. Returns the
+    number of rows written. Idempotent: re-running for the same trade_date
+    overwrites rather than duplicating, via PRIMARY KEY (symbol, trade_date).
+    """
+    if df is None or df.empty:
+        return 0
+
+    cols = _BHAVCOPY_EOD_COLUMNS
+    col_list = ", ".join(cols)
+    written = 0
+    try:
+        if _can_use_neon():
+            placeholders = ", ".join(f":{c}" for c in cols)
+            update_set = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
+            sql = f"""
+                INSERT INTO bhavcopy_eod (symbol, trade_date, {col_list}, updated_at)
+                VALUES (:sym, :d, {placeholders}, NOW())
+                ON CONFLICT (symbol, trade_date) DO UPDATE SET
+                    {update_set},
+                    updated_at = EXCLUDED.updated_at
+            """
+            for _, row in df.iterrows():
+                symbol = row.get("symbol")
+                if not symbol:
+                    continue
+                params = {"sym": symbol, "d": trade_date}
+                params.update(
+                    {c: (row.get(c) if pd.notna(row.get(c)) else None) for c in cols}
+                )
+                _exec(sql, params)
+                written += 1
+            return written
+
+        with _sqlite_connection() as conn:
+            _ensure_bhavcopy_eod_sqlite(conn)
+            placeholders = ", ".join(f":{c}" for c in cols)
+            update_set = ", ".join(f"{c} = excluded.{c}" for c in cols)
+            sql = f"""
+                INSERT INTO bhavcopy_eod (symbol, trade_date, {col_list}, updated_at)
+                VALUES (:sym, :d, {placeholders}, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol, trade_date) DO UPDATE SET
+                    {update_set},
+                    updated_at = excluded.updated_at
+            """
+            for _, row in df.iterrows():
+                symbol = row.get("symbol")
+                if not symbol:
+                    continue
+                params = {"sym": symbol, "d": trade_date}
+                params.update(
+                    {c: (row.get(c) if pd.notna(row.get(c)) else None) for c in cols}
+                )
+                conn.execute(sql, params)
+                written += 1
+        return written
+    except Exception as e:
+        logger.error("bhavcopy_eod upsert error for %s: %s", trade_date, e)
+        return written
+
+
+def fetch_bhavcopy_ohlcv(
+    symbol: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> "pd.DataFrame":
+    """Return OHLCV history for `symbol` from bhavcopy_eod, shaped like the
+    DataFrame market_data_provider.get_ohlcv() callers already expect:
+    columns ["Open", "High", "Low", "Close", "Volume"] and a DatetimeIndex.
+
+    start_date/end_date are inclusive "YYYY-MM-DD" strings; omit either for
+    an open-ended bound. Translating a yfinance-style period string (e.g.
+    "1y") into start_date is the caller's job (market_data_provider.py), to
+    keep that domain-level concern out of this DB-access layer — see
+    _period_to_ms there for the existing period-parsing convention.
+
+    Returns an empty DataFrame if nothing is cached yet (e.g. backfill
+    hasn't run, or a recent listing with no history).
+    """
+    try:
+        where = ["symbol = :sym"]
+        params: Dict[str, Any] = {"sym": symbol}
+        if start_date:
+            where.append("trade_date >= :start_d")
+            params["start_d"] = start_date
+        if end_date:
+            where.append("trade_date <= :end_d")
+            params["end_d"] = end_date
+        where_sql = " AND ".join(where)
+
+        sql = f"""
+            SELECT trade_date, open, high, low, close, volume
+            FROM bhavcopy_eod
+            WHERE {where_sql}
+            ORDER BY trade_date ASC
+        """
+
+        if _can_use_neon():
+            df = _read_df_uncached(sql, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_bhavcopy_eod_sqlite(conn)
+                df = pd.read_sql_query(sql, conn, params=params)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        df = df.set_index("trade_date").rename(
+            columns={
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+                "volume": "Volume",
+            }
+        )
+        df.index.name = "Date"
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception as e:
+        logger.error("bhavcopy_eod fetch error for %s: %s", symbol, e)
+        return pd.DataFrame()
+
+
+def fetch_bhavcopy_ohlcv_batch(
+    symbols: List[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, "pd.DataFrame"]:
+    """Same as fetch_bhavcopy_ohlcv but for many symbols in one query,
+    for market_data_provider.get_batch_ohlcv()'s bhavcopy tier — this is a
+    single local DB read (indexed on (symbol, trade_date)), not a network
+    call, so it's cheap even for the full scan universe (~150-200 symbols)
+    in a way per-symbol INDstocks calls are not.
+
+    Returns a dict of symbol -> DataFrame, same shape as get_batch_ohlcv():
+    symbols with no cached rows are simply absent from the dict.
+    """
+    if not symbols:
+        return {}
+    try:
+        placeholders = ", ".join(f":sym{i}" for i in range(len(symbols)))
+        params: Dict[str, Any] = {f"sym{i}": s for i, s in enumerate(symbols)}
+        where = [f"symbol IN ({placeholders})"]
+        if start_date:
+            where.append("trade_date >= :start_d")
+            params["start_d"] = start_date
+        if end_date:
+            where.append("trade_date <= :end_d")
+            params["end_d"] = end_date
+        where_sql = " AND ".join(where)
+
+        sql = f"""
+            SELECT symbol, trade_date, open, high, low, close, volume
+            FROM bhavcopy_eod
+            WHERE {where_sql}
+            ORDER BY symbol ASC, trade_date ASC
+        """
+
+        if _can_use_neon():
+            df = _read_df_uncached(sql, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_bhavcopy_eod_sqlite(conn)
+                df = pd.read_sql_query(sql, conn, params=params)
+
+        if df.empty:
+            return {}
+
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        result: Dict[str, pd.DataFrame] = {}
+        for symbol, group in df.groupby("symbol"):
+            sub = group.set_index("trade_date").rename(
+                columns={
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume",
+                }
+            )
+            sub.index.name = "Date"
+            result[symbol] = sub[["Open", "High", "Low", "Close", "Volume"]]
+        return result
+    except Exception as e:
+        logger.error("bhavcopy_eod batch fetch error: %s", e)
+        return {}
+
+
+# ─────────────────────────────────────────────
+# Generic key/value app settings (single-operator tool — no per-user scope)
+# ─────────────────────────────────────────────
+
+
+def _ensure_app_settings_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT,
+            updated_at  TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+
+def _ensure_app_settings_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Read one app_settings value, or `default` if unset."""
+    try:
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT value FROM app_settings WHERE key = :k"), {"k": key}
+                ).fetchone()
+            return row[0] if row else default
+
+        with _sqlite_connection() as conn:
+            _ensure_app_settings_sqlite(conn)
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = :k", {"k": key}
+            ).fetchone()
+        return row[0] if row else default
+    except Exception as e:
+        logger.error("app_settings read error for %s: %s", key, e)
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Upsert one app_settings value."""
+    try:
+        if _can_use_neon():
+            _exec(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (:k, :v, NOW())
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+                """,
+                {"k": key, "v": value},
+            )
+            return
+
+        with _sqlite_connection() as conn:
+            _ensure_app_settings_sqlite(conn)
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (:k, :v, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value, updated_at = excluded.updated_at
+                """,
+                {"k": key, "v": value},
+            )
+    except Exception as e:
+        logger.error("app_settings write error for %s: %s", key, e)
