@@ -13,7 +13,7 @@ the module falls back silently and logs a warning.
 
 Usage::
 
-    from engine.utils.market_data_provider import get_ltp, get_ohlcv
+    from utils.market_data_provider import get_ltp, get_ohlcv
 
     price = get_ltp("RELIANCE.NS")          # float | None
     df    = get_ohlcv("RELIANCE.NS", "1y")  # pd.DataFrame with OHLCV columns
@@ -93,8 +93,8 @@ def get_ltp(symbol: str) -> Optional[float]:
 def _ltp_indstocks(symbol: str) -> Optional[float]:
     """Fetch LTP from INDstocks."""
     try:
-        from engine.utils.instruments_cache import get_instruments_cache
-        from engine.utils.indstocks_client import get_client, INDstocksError
+        from utils.instruments_cache import get_instruments_cache
+        from utils.indstocks_client import get_client, INDstocksError
 
         scrip = get_instruments_cache().get_scrip_code(symbol)
         if scrip is None:
@@ -222,8 +222,8 @@ def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
 def _ohlcv_indstocks(symbol: str, period: str) -> Optional[pd.DataFrame]:
     """Fetch OHLCV from INDstocks (daily candles)."""
     try:
-        from engine.utils.instruments_cache import get_instruments_cache
-        from engine.utils.indstocks_client import get_client
+        from utils.instruments_cache import get_instruments_cache
+        from utils.indstocks_client import get_client
 
         range_ms = _period_to_ms(period)
         if range_ms is None:
@@ -303,8 +303,8 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
         return {}
 
     try:
-        from engine.utils.instruments_cache import get_instruments_cache
-        from engine.utils.indstocks_client import get_client
+        from utils.instruments_cache import get_instruments_cache
+        from utils.indstocks_client import get_client
 
         cache = get_instruments_cache()
         sym_to_scrip: dict[str, str] = {}
@@ -412,8 +412,8 @@ def _batch_ltp_indstocks(symbols: list[str]) -> dict[str, Optional[float]]:
     """Fetch LTP for multiple symbols in one INDstocks call."""
     result: dict[str, Optional[float]] = {s: None for s in symbols}
     try:
-        from engine.utils.instruments_cache import get_instruments_cache
-        from engine.utils.indstocks_client import get_client
+        from utils.instruments_cache import get_instruments_cache
+        from utils.indstocks_client import get_client
 
         cache = get_instruments_cache()
         sym_to_scrip: dict[str, str] = {}

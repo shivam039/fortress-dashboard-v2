@@ -15,7 +15,7 @@ Writes:
 
 Usage (from repo root):
     source .venv/bin/activate
-    export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+    export INDSTOCKS_CLIENT_ID=<your_client_id>
     export INDSTOCKS_MPIN=<your_mpin>
     export INDSTOCKS_TOTP_SECRET=<your_base32_secret>
     python3 scripts/refresh_indstocks_token.py [--write-env]
@@ -58,7 +58,7 @@ def main() -> None:
         print(f"❌ Missing env vars: {', '.join(missing)}", file=sys.stderr)
         print(
             "\nSet them before running:\n"
-            "  export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0\n"
+            "  export INDSTOCKS_CLIENT_ID=<your_client_id>\n"
             "  export INDSTOCKS_MPIN=<your_mpin>\n"
             "  export INDSTOCKS_TOTP_SECRET=<base32_setup_key>",
             file=sys.stderr,

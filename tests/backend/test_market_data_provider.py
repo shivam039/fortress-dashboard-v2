@@ -144,9 +144,9 @@ def test_get_batch_ohlcv_full_coverage(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "engine.utils.instruments_cache.get_instruments_cache", lambda: fake_cache
+        "utils.instruments_cache.get_instruments_cache", lambda: fake_cache
     )
-    monkeypatch.setattr("engine.utils.indstocks_client.get_client", lambda: fake_client)
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
 
     result = mdp.get_batch_ohlcv(["RELIANCE.NS", "TCS.NS"], period="1y")
 
@@ -168,9 +168,9 @@ def test_get_batch_ohlcv_partial_coverage_omits_missing_symbols(monkeypatch):
     fake_client = _FakeClient({"NSE_2885": _sample_candles()})
 
     monkeypatch.setattr(
-        "engine.utils.instruments_cache.get_instruments_cache", lambda: fake_cache
+        "utils.instruments_cache.get_instruments_cache", lambda: fake_cache
     )
-    monkeypatch.setattr("engine.utils.indstocks_client.get_client", lambda: fake_client)
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
 
     result = mdp.get_batch_ohlcv(["RELIANCE.NS", "DELISTEDX.NS"], period="1y")
 
@@ -194,9 +194,9 @@ def test_get_batch_ohlcv_chunks_large_symbol_lists(monkeypatch):
     fake_client = _FakeClient({scrip: _sample_candles(2) for scrip in mapping.values()})
 
     monkeypatch.setattr(
-        "engine.utils.instruments_cache.get_instruments_cache", lambda: fake_cache
+        "utils.instruments_cache.get_instruments_cache", lambda: fake_cache
     )
-    monkeypatch.setattr("engine.utils.indstocks_client.get_client", lambda: fake_client)
+    monkeypatch.setattr("utils.indstocks_client.get_client", lambda: fake_client)
 
     result = mdp.get_batch_ohlcv(symbols, period="1y")
 

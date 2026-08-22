@@ -10,7 +10,7 @@ symbols (``"RELIANCE"``) to the numeric security IDs the INDstocks API needs.
 
 Typical usage::
 
-    from engine.utils.instruments_cache import get_instruments_cache
+    from utils.instruments_cache import get_instruments_cache
 
     cache = get_instruments_cache()
     sec_id = cache.get_security_id("RELIANCE")      # "2885"
@@ -77,7 +77,7 @@ class InstrumentsCache:
 
     def _download_and_cache(self, cache_file: Path) -> pd.DataFrame:
         """Download instruments CSV from INDstocks and persist to disk."""
-        from engine.utils.indstocks_client import get_client
+        from utils.indstocks_client import get_client
 
         logger.info("Downloading INDstocks instruments CSV (source=%s)...", self._source)
         try:
