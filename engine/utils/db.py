@@ -3599,6 +3599,50 @@ def fetch_bhavcopy_ohlcv_batch(
         return {}
 
 
+def get_bhavcopy_coverage_summary() -> Dict[str, Any]:
+    """Return how much Bhav Copy history is actually stored right now:
+    {"trading_days_covered": int, "symbol_count": int,
+     "earliest_date": "YYYY-MM-DD"|None, "latest_date": "YYYY-MM-DD"|None}.
+
+    Exists so a caller (e.g. GET /api/bhavcopy/status) can show real
+    progress during/after a backfill_bhavcopy() run without needing to poll
+    bhavcopy_fetch_log row-by-row for every date in the range.
+    """
+    empty = {
+        "trading_days_covered": 0,
+        "symbol_count": 0,
+        "earliest_date": None,
+        "latest_date": None,
+    }
+    try:
+        sql = """
+            SELECT COUNT(DISTINCT trade_date) AS trading_days,
+                   COUNT(DISTINCT symbol) AS symbols,
+                   MIN(trade_date) AS earliest,
+                   MAX(trade_date) AS latest
+            FROM bhavcopy_eod
+        """
+        # _query() itself branches on the backend (Neon vs SQLite) and
+        # returns [] on a missing table via the surrounding try/except below
+        # — no data yet is a completely normal state before the first
+        # refresh/backfill has ever run.
+        rows = _query(sql)
+
+        if not rows or rows[0]["trading_days"] is None:
+            return empty
+
+        row = rows[0]
+        return {
+            "trading_days_covered": int(row["trading_days"] or 0),
+            "symbol_count": int(row["symbols"] or 0),
+            "earliest_date": str(row["earliest"])[:10] if row["earliest"] else None,
+            "latest_date": str(row["latest"])[:10] if row["latest"] else None,
+        }
+    except Exception as e:
+        logger.error("bhavcopy coverage summary error: %s", e)
+        return empty
+
+
 # ─────────────────────────────────────────────
 # Generic key/value app settings (single-operator tool — no per-user scope)
 # ─────────────────────────────────────────────

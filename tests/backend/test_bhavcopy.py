@@ -237,6 +237,26 @@ def test_fetch_bhavcopy_ohlcv_returns_empty_df_for_unknown_symbol():
     assert result.empty
 
 
+def test_get_bhavcopy_coverage_summary_reflects_stored_data():
+    # Other tests in this file/session also write into bhavcopy_eod, so we
+    # can't assert an exact global row count here — instead pin dates far
+    # outside any real trading-day range (nothing else in this suite writes
+    # 1900 or 2099) so the min/max assertions are deterministic regardless
+    # of what else has been written to the shared dev DB.
+    unique_symbol = f"COVTEST{uuid.uuid4().hex[:6]}.NS"
+    row = pd.DataFrame(
+        [{"symbol": unique_symbol, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1}]
+    )
+    db_mod.upsert_bhavcopy_rows(row, "1900-01-01")
+    db_mod.upsert_bhavcopy_rows(row, "2099-12-31")
+
+    summary = db_mod.get_bhavcopy_coverage_summary()
+    assert summary["trading_days_covered"] >= 2
+    assert summary["symbol_count"] >= 1
+    assert summary["earliest_date"] == "1900-01-01"
+    assert summary["latest_date"] == "2099-12-31"
+
+
 def test_bhavcopy_fetch_log_dedup_marker():
     # SQLite-backend tests share one on-disk fortress_history.db across the
     # whole pytest session (not a fresh :memory: db per test), so a literal

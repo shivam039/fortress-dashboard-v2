@@ -1,0 +1,59 @@
+name: NSE Bhav Copy Backfill (manual, one-off)
+
+# Triggers the one-off historical Bhav Copy catch-up
+# (POST /api/bhavcopy/backfill — see engine/routers/bhavcopy.py) on the
+# deployed FastAPI backend. Deliberately workflow_dispatch ONLY — no
+# schedule: — this is not a recurring job, it's the manual "run this once
+# to populate history" step, or a one-off retry to fill a known gap. The
+# daily refresh (bhavcopy-refresh.yml) is a separate workflow.
+#
+# The backfill is safe to re-run: bhavcopy_fetch_log's per-day dedup means
+# an already-fetched day is skipped, not re-downloaded, so running this
+# workflow again after an interruption just resumes.
+#
+# Uses the SAME repo secrets as bhavcopy-refresh.yml — no new secrets
+# needed if that workflow is already configured:
+#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many calendar days to walk backward (weekends are skipped without a network call)'
+        required: false
+        default: '300'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/bhavcopy/backfill
+        run: |
+          if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
+            echo "FORTRESS_BACKEND_URL secret is not set — nothing to call. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          days="${{ github.event.inputs.days }}"
+          if [ -z "$days" ]; then days="300"; fi
+
+          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
+            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/bhavcopy/backfill" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
+            -d "{\"days\": $days}")
+
+          echo "Response body:"
+          cat /tmp/response.json
+          echo ""
+          echo "HTTP status: $http_status"
+
+          if [ "$http_status" -ge 300 ]; then
+            echo "Bhav Copy backfill request failed (HTTP $http_status)"
+            exit 1
+          fi
+
+          echo ""
+          echo "Backfill kicked off in the background on the server — this can take a while."
+          echo "Check progress any time with: curl -H \"X-API-Key: <key>\" \$BACKEND_URL/api/bhavcopy/status"
