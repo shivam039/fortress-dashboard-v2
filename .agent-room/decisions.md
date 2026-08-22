@@ -16,6 +16,12 @@ have to re-derive it from scratch by reading git history.
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Warn loudly instead of silently trusting hardcoded auth defaults
+
+**Decision:** Added startup-time `WARNING` logs in `auth_utils.py` (JWT secret) and `routers/auth.py` (admin password) whenever `FORTRESS_JWT_SECRET` / `FORTRESS_APP_PASSWORD` fall back to their hardcoded dev defaults, matching the existing pattern already used for `FORTRESS_API_KEY`. Also documented all three as required Render env vars in `DEPLOYMENT.md`, with the JWT secret added to the env var reference table for the first time (it wasn't listed there at all).
+**Why:** A pasted security review flagged that both defaults are hardcoded strings now public in this repo's git history — anyone can forge an admin JWT or log in as admin outright on any deployment that doesn't override them. Warning (not hard-failing) keeps local dev frictionless while making the production risk impossible to miss in Render's logs.
+**Rejected:** Refusing to start the app when these are unset outside local dev. Rejected for now to stay consistent with the existing `FORTRESS_API_KEY` precedent (warn, don't block) rather than introducing an inconsistent enforcement model — worth revisiting if this keeps getting missed in practice.
+
 ### 2026-08-22 — Retire the stray [tool.vercel] entrypoint; scope Vercel to frontend/ only
 
 **Decision:** Removed `[tool.vercel]` from `pyproject.toml` (which had declared `engine.main:app` as a Vercel entrypoint) and instead configured the Vercel project's Root Directory to `frontend/`, deploying only the Next.js app to Vercel.

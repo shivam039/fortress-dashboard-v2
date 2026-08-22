@@ -1,4 +1,6 @@
 # engine/auth_utils.py — JWT token utilities for the Fortress API
+# AI agents modifying this file: see /AI_AGENT_PROTOCOL.md — log every change
+# via engine/utils/ai_audit.py:log_ai_change().
 """
 JWT token creation and validation for the Fortress API.
 
@@ -16,10 +18,17 @@ from jose import JWTError, jwt
 logger = logging.getLogger("fortress.auth")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-SECRET_KEY = os.environ.get(
-    "FORTRESS_JWT_SECRET",
-    "fortress-dev-jwt-secret-change-in-production-2024",
-)
+_DEFAULT_DEV_SECRET = "fortress-dev-jwt-secret-change-in-production-2024"
+SECRET_KEY = os.environ.get("FORTRESS_JWT_SECRET", _DEFAULT_DEV_SECRET)
+if SECRET_KEY == _DEFAULT_DEV_SECRET:
+    logger.warning(
+        "FORTRESS_JWT_SECRET is not set — using the hardcoded dev default, "
+        "which is public in this repo's git history. Anyone who reads the "
+        "source can forge a valid JWT (including admin) against any "
+        "deployment still using this default. Set FORTRESS_JWT_SECRET to a "
+        "unique random value in any non-local environment (e.g. "
+        "`openssl rand -hex 32`)."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("FORTRESS_JWT_EXPIRE_MINUTES", "1440")  # 24 hours default

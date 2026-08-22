@@ -144,6 +144,33 @@ uploading whole plaintext files like a private key or `.env`, mounted at
 Never put them in a committed `.env` file; `.env` and `.env.local` are
 already gitignored in this repo for that reason.
 
+### Required security env vars on Render
+
+Three secrets in this codebase have hardcoded dev-only defaults, meant
+purely so a fresh local checkout runs with zero setup. **Those same
+defaults are public in this repo's git history**, so leaving any of them
+unset on Render is a real, exploitable vulnerability — not a
+theoretical one — because anyone who reads the source knows the exact
+fallback values. Set all three before (or immediately after) your first
+production deploy:
+
+| Variable | Why it matters if left unset |
+|---|---|
+| `FORTRESS_JWT_SECRET` | Signs every login session token. Left unset, the app signs with the hardcoded string `fortress-dev-jwt-secret-change-in-production-2024` — anyone can forge a valid JWT for any user, including `admin`, without ever logging in. Generate with `openssl rand -hex 32`. |
+| `FORTRESS_APP_PASSWORD` | The admin account's password. Left unset, it's `fortress123` — publicly known from this repo. Set this to a real password (and consider setting `FORTRESS_APP_USERNAME` to something other than `admin` too). |
+| `FORTRESS_API_KEY` | See [§6 above](#6-indstocks-market-data) — without it, every API endpoint is reachable with no authentication at all from outside your own frontend. Generate with `openssl rand -hex 32`. |
+
+The app starts and runs fine with none of these set — that's intentional,
+so local dev never needs configuration — but it logs a `WARNING` for each
+one that's missing. If you see any of these warnings in your **Render**
+logs, treat it as a live security gap, not a cosmetic note:
+
+```
+WARNING:fortress.auth:FORTRESS_JWT_SECRET is not set — using the hardcoded dev default...
+WARNING:fortress.routers.auth:FORTRESS_APP_PASSWORD is not set — the admin account falls back...
+WARNING:fortress-api:FORTRESS_API_KEY is not set — FastAPI endpoints are unauthenticated...
+```
+
 ### Frontend on Render (if also hosted there)
 
 If the Next.js frontend is a separate Render service, point it at the
@@ -402,13 +429,14 @@ curl -X POST http://localhost:8000/mf/trigger-job \
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| `FORTRESS_JWT_SECRET` | **Yes (prod)** | hardcoded dev string, public in git history — see [security note](#2-render-production-backend) | Signs all login session JWTs |
 | `FORTRESS_APP_USERNAME` | No | `admin` | Login username |
-| `FORTRESS_APP_PASSWORD` | **Yes (prod)** | `fortress123` | Login password |
+| `FORTRESS_APP_PASSWORD` | **Yes (prod)** | `fortress123`, public in git history — see [security note](#2-render-production-backend) | Login password |
 | `FORTRESS_APP_FULL_NAME` | No | `Fortress Admin` | Admin display name |
 | `FORTRESS_DB_BACKEND` | No | `neon` | `neon` or `sqlite` |
 | `DATABASE_URL` | Neon only | — | Neon PostgreSQL connection string |
 | `NEON_CONNECTION_STRING` | Neon only | — | Alternative to `DATABASE_URL` |
-| `FORTRESS_API_KEY` | No | — | API key for protected endpoints |
+| `FORTRESS_API_KEY` | **Yes (prod)** | — (unset = unauthenticated API) | API key for protected endpoints |
 | `FORTRESS_CORS_ORIGINS` | No | — | Allowed CORS origins |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | No | — | Default broadcast chat ID |

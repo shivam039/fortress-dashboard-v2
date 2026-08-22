@@ -21,6 +21,12 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Hardcoded auth defaults left unset in production
+
+**What happened:** `FORTRESS_JWT_SECRET` and `FORTRESS_APP_PASSWORD` both had hardcoded fallback values baked into the source (a dev JWT secret string, and the password `fortress123`). Neither was set on the Render production service, and both defaults are now public in git history — meaning production was running with a forgeable JWT secret and a publicly-known admin password.
+**Root cause:** Dev-convenience defaults for these two values were never followed up with a loud, unmissable warning (unlike `FORTRESS_API_KEY`, which already had one) or a "required" flag surfaced anywhere a deployer would actually see it before going live.
+**Avoid:** Any hardcoded credential/secret default meant only for local dev must (1) log a `WARNING` the moment it's actually used, not just exist as a silent fallback, and (2) be listed as required in the deployment docs' env var table — a default that's "fine for local dev" is never fine to leave undocumented as a production requirement.
+
 ### 2026-08-22 — Two Vercel projects silently competing for the same GitHub repo
 
 **What happened:** One Vercel project (`fortress-dashboard-v2`) was connected to the repo but built from the repo root, failing on every single push since the first commit — invisible in the dashboard's deployment list because the Status filter excluded "Error" by default. A second project (`frontend`) was serving the actual working site, but had been deployed manually via the Vercel CLI with no Git connection at all, so it never picked up new commits.
