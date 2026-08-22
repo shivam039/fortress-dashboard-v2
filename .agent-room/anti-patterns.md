@@ -21,6 +21,12 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Guardrails pre-commit hook never actually installed, and its own glob matching was broken
+
+**What happened:** Two compounding gaps. First, `AGENT_ROOM_GUIDE.md` had described `.git/hooks/pre-commit` as an active safety check since this repo's agent-room scaffolding was set up, but `.git/hooks/pre-commit` never actually existed on this machine — `.agent-room/hooks/guardrails-check.js` was fully written but never wired up, so no commit had ever actually been checked. Second, once installed and tested end-to-end with a real staged file (`_hook_test_secret.py` at the repo root), the hook let it through: `isPathProtected()`'s glob-to-regex translation converted `**/*secret*` into a regex that required a literal `/` character, so a protected-path pattern meant to catch files anywhere (including the repo root) only ever matched files nested in a subdirectory.
+**Root cause:** (1) `.git/hooks/` is untracked by git by design, so scaffolding a hook's *logic* in a tracked file (`.agent-room/hooks/`) doesn't install it — a separate, machine-local step was always required and got skipped. (2) The naive `pattern.split('*').join('.*')` glob translation cannot express "zero or more path segments, including none," which is exactly what a leading `**/` is supposed to mean.
+**Avoid:** When a repo's docs describe a git hook as active, verify `ls -la .git/hooks/<name>` directly rather than trusting the docs — the hook only exists if a file is actually there (git hooks are never synced by cloning/pulling). Separately, any hand-rolled glob matcher must be tested against the specific "no directory prefix" case for `**/`-style patterns, since the common human intuition (and connect-the-dots split/join implementation) both miss it.
+
 ### 2026-08-22 — No circuit breaker on /api/scan — individual failures had no aggregate tracking
 
 **What happened:** `run_scan()` caught exceptions per-ticker, logged them, and moved on — but never tracked the failure rate across the whole run. A broad yfinance outage or rate-limit event meant the endpoint would grind sequentially through an entire universe (e.g. Smallcap 250, 250 tickers) with nearly every one failing slowly, and the response looked identical to a legitimate "nothing matched the screen" result — the caller had no way to tell the two apart.

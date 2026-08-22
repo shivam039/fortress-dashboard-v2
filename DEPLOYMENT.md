@@ -28,7 +28,7 @@ source .venv/bin/activate
 export FORTRESS_DB_BACKEND=sqlite
 
 # INDstocks TOTP (recommended — auto-refreshes tokens)
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
 
@@ -310,7 +310,7 @@ The FastAPI server (`engine/main.py`) is the production backend for the Next.js 
 ```bash
 source .venv/bin/activate
 export FORTRESS_DB_BACKEND=sqlite
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
 uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
@@ -335,7 +335,7 @@ INDstocks is the primary market data source for NSE equities. yfinance is the au
 Set all three variables — the engine generates and refreshes tokens automatically:
 
 ```bash
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key_from_dashboard_qr>
 ```
