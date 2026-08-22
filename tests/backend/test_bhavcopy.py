@@ -237,6 +237,41 @@ def test_fetch_bhavcopy_ohlcv_returns_empty_df_for_unknown_symbol():
     assert result.empty
 
 
+def test_upsert_bhavcopy_rows_bulk_batch_all_rows_persist_correctly():
+    """upsert_bhavcopy_rows batches every row into a single _exec_many() call
+    (one connection/transaction for the whole DataFrame) instead of one
+    _exec() call per row — added after a real day's ~2400-symbol Bhav Copy
+    file was found taking minutes to write via the old per-row loop, each
+    row opening its own connection/transaction against Neon. This pins down
+    that the batched path still writes every row correctly, not just the
+    1-2 row cases the other tests above already cover."""
+    prefix = uuid.uuid4().hex[:6]
+    n = 25
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": f"BULK{prefix}{i}.NS",
+                "open": 100.0 + i,
+                "high": 101.0 + i,
+                "low": 99.0 + i,
+                "close": 100.5 + i,
+                "volume": 1000 + i,
+            }
+            for i in range(n)
+        ]
+    )
+
+    written = db_mod.upsert_bhavcopy_rows(df, "2026-06-03")
+    assert written == n
+
+    for i in (0, n // 2, n - 1):
+        result = db_mod.fetch_bhavcopy_ohlcv(
+            f"BULK{prefix}{i}.NS", start_date="2026-06-03", end_date="2026-06-03"
+        )
+        assert len(result) == 1
+        assert result.iloc[0]["Close"] == 100.5 + i
+
+
 def test_get_bhavcopy_coverage_summary_reflects_stored_data():
     # Other tests in this file/session also write into bhavcopy_eod, so we
     # can't assert an exact global row count here — instead pin dates far
