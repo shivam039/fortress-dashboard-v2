@@ -75,27 +75,53 @@ def _totp_env_available() -> bool:
 def _generate_totp_code() -> str:
     """Generate the current 6-digit TOTP code from INDSTOCKS_TOTP_SECRET.
 
-    Base32 secrets only contain ``A-Z`` and ``2-7``. Dashboards commonly
-    *display* the setup key in space-separated groups (e.g. ``"ABCD EFGH
-    IJKL..."``) for readability, and it's easy to copy that formatting along
-    with the secret. ``.strip()`` alone only removes leading/trailing
-    whitespace, so an internal space survives and ``pyotp`` rejects it with
-    an opaque ``"Non-base32 digit found"`` error. Strip *all* whitespace and
-    normalize case before handing it to pyotp.
+    Base32 secrets only contain ``A-Z`` and ``2-7`` — note that's *not* the
+    full alphabet: 0/1/8/9 are deliberately excluded from base32 (to avoid
+    visual confusion with O/I/B/g), so any of those four digits in the
+    configured value is a strong sign something was mistranscribed or the
+    wrong field was copied.
+
+    Dashboards commonly *display* the setup key in space-separated groups
+    (e.g. ``"ABCD EFGH IJKL..."``) for readability, and it's easy to copy
+    that formatting along with the secret. ``.strip()`` alone only removes
+    leading/trailing whitespace, so an internal space survives and
+    ``pyotp`` rejects it with an opaque ``"Non-base32 digit found"`` error.
+    Strip *all* whitespace and normalize case before handing it to pyotp.
+
+    Some dashboards instead show (or let you copy) the full QR-code
+    provisioning URI — ``otpauth://totp/...?secret=XXXX&...`` — rather than
+    just the bare secret. If that whole URI got pasted into the env var,
+    handle it directly via ``pyotp.parse_uri`` instead of failing the
+    base32 check on the surrounding "otpauth://..." text.
     """
     import re
 
     import pyotp
 
-    raw = os.environ["INDSTOCKS_TOTP_SECRET"]
+    raw = os.environ["INDSTOCKS_TOTP_SECRET"].strip()
+    if raw.lower().startswith("otpauth://"):
+        try:
+            return pyotp.parse_uri(raw).now()
+        except Exception as exc:
+            raise EnvironmentError(
+                f"INDSTOCKS_TOTP_SECRET looks like a QR-code provisioning URI "
+                f"(starts with 'otpauth://') but pyotp could not parse it: {exc}. "
+                "Either fix the URI, or set INDSTOCKS_TOTP_SECRET to just the "
+                "bare base32 secret (the value of the secret query parameter "
+                "inside that URI) instead."
+            ) from exc
+
     secret = re.sub(r"\s+", "", raw).upper()
     if not secret:
         raise EnvironmentError("INDSTOCKS_TOTP_SECRET is set but empty after stripping whitespace.")
     if not re.fullmatch(r"[A-Z2-7]+=*", secret):
+        bad_chars = sorted(set(re.sub(r"[A-Z2-7=]", "", secret)))
         raise EnvironmentError(
             "INDSTOCKS_TOTP_SECRET does not look like a valid base32 TOTP secret "
-            "(only A-Z and 2-7 are valid). Double-check you copied the setup key "
-            "exactly as shown on the INDstocks/IndMoney dashboard, with no extra "
+            "(only A-Z and 2-7 are valid — note 0/1/8/9 are never valid base32 "
+            f"digits). Invalid character(s) found: {bad_chars}. Double-check you "
+            "copied the setup key exactly as shown on the INDstocks/IndMoney "
+            "dashboard (not the Client ID or another field), with no extra "
             "characters or line breaks."
         )
     return pyotp.TOTP(secret).now()
