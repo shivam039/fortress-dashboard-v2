@@ -3423,9 +3423,9 @@ def upsert_bhavcopy_rows(df: "pd.DataFrame", trade_date: str) -> int:
     written = 0
     try:
         params_list = []
-        for _, row in df.iterrows():
+        for row in df.to_dict("records"):
             symbol = row.get("symbol")
-            if not symbol:
+            if not symbol or pd.isna(symbol):
                 continue
             params = {"sym": symbol, "d": trade_date}
             params.update(

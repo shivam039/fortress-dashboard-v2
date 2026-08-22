@@ -144,6 +144,9 @@ def backfill_bhavcopy(
 
         if progress_cb:
             progress_cb(offset + 1, days)
+            
+        import gc
+        gc.collect()
 
         if max_fetches > 0 and fetch_count >= max_fetches:
             logger.info("bhavcopy backfill chunk limit reached (%d fetches)", fetch_count)
