@@ -110,6 +110,15 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logger = logging.getLogger("fortress-api")
 
+# Optional startup diagnostics for deployment debugging.
+# Enable by setting environment variable FORTRESS_LOG_STARTUP=1 (or 'true').
+# This avoids leaving noisy logs enabled by default while providing
+# an easy way to confirm working directory and import paths on Render.
+if os.environ.get("FORTRESS_LOG_STARTUP", "").strip().lower() in ("1", "true", "yes"):
+    logger.info("Startup diagnostics: CWD=%s", os.getcwd())
+    # Log only the first 20 sys.path entries to avoid overly large logs
+    logger.info("Startup diagnostics: sys.path (first 20)=%s", sys.path[:20])
+
 # API key auth — set FORTRESS_API_KEY env var to enable. Unset = local dev (no auth).
 _FORTRESS_API_KEY = os.environ.get("FORTRESS_API_KEY", "")
 if not _FORTRESS_API_KEY:
