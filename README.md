@@ -83,7 +83,7 @@ source .venv/bin/activate
 export FORTRESS_DB_BACKEND=sqlite     # local SQLite; set DATABASE_URL for Neon
 
 # INDstocks market data — TOTP auto-refresh (recommended)
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
 

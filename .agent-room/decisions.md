@@ -16,6 +16,16 @@ have to re-derive it from scratch by reading git history.
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Wire up the pre-commit guardrails hook; fail-fast on default JWT secret in prod-like environments; CI build check; placeholder client ID in docs
+
+**Decision:** Four related fixes from a second pasted review (which turned out to be reviewing public `main`, one commit behind this repo's local history):
+1. Installed `.git/hooks/pre-commit` on the user's machine to actually call the pre-existing (but never wired up) `.agent-room/hooks/guardrails-check.js`. While testing it end-to-end, found and fixed a real bug in `isPathProtected()`: its glob translation required a literal `/` for any `**/`-prefixed pattern (e.g. `**/*secret*`), so it silently never matched protected files sitting at the repo root — only ones nested in a subdirectory. Rewrote the glob-to-regex translation to treat `**/` as an optional path prefix.
+2. `engine/auth_utils.py` now hard-fails at import time (`RuntimeError`) if `FORTRESS_JWT_SECRET` is unset/default AND `FORTRESS_DB_BACKEND` is not explicitly `sqlite`/`local` — i.e. anything that isn't opted into local dev is treated as production-like and refuses to start with a forgeable, publicly-known JWT secret. Local dev and the test suite are unaffected (both already set `FORTRESS_DB_BACKEND=sqlite`).
+3. Added `.github/workflows/ci.yml`: backend `pytest tests/backend` and frontend `npm run lint` + `npm run build` on every push/PR to `main`. The repo previously only had `agent-room-validate.yml` (structure/session-log linting) — no actual test/build gate existed.
+4. Replaced the real-looking `INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0` example in `README.md`/`DEPLOYMENT.md` (4 occurrences) with `<your_client_id>`, matching the placeholder style already used for `INDSTOCKS_MPIN`/`INDSTOCKS_TOTP_SECRET` on the same lines.
+**Why:** The review flagged (2)-(4) as still-open gaps, and separately the user asked to finally wire up the pre-commit hook the docs had described as active since well before this session (a previously-logged anti-pattern/gap). (2) upgrades the prior warn-only stance (see the previous "Warn loudly..." entry) now that the review raised it a second time — a warning in a scrolling Render log is easy to miss, a refusal to boot is not.
+**Rejected:** Fail-fast unconditionally (regardless of `FORTRESS_DB_BACKEND`). Rejected because it would break the documented local-dev flow for anyone who forgets to export `FORTRESS_DB_BACKEND=sqlite` — conditioning on the existing local/dev signal keeps local dev frictionless while closing the real production gap.
+
 ### 2026-08-22 — Circuit breaker for /api/scan instead of an unbounded per-ticker retry loop
 
 **Decision:** Added a failure-rate circuit breaker to `run_scan()` in `main.py`: once at least 10 tickers have been attempted, if the failure rate is ≥80%, stop scanning the rest of the universe and return whatever partial results exist, with `scanned`/`failed`/`circuit_breaker_tripped` fields and a summary that distinguishes "aborted early — provider likely down" from "nothing matched the screen." Did not add concurrency (parallel ticker fetches) in the same change.

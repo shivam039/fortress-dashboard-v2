@@ -227,12 +227,33 @@ function isPathProtected(filePath, protectedPattern) {
   const normalized = filePath.replace(/\\/g, '/');
   const pattern = protectedPattern.replace(/\\/g, '/');
 
-  // Handle glob patterns
+  // Handle glob patterns. Translates a small, deliberate glob subset:
+  //   **/  -> zero or more path segments, INCLUDING none at all, so a
+  //           pattern like "**/*secret*" still matches a root-level file
+  //           (e.g. "my_secret.py"), not just one nested in a directory.
+  //           The naive "split on every '*' and join with .*" approach this
+  //           replaced could not express "zero segments" and silently never
+  //           matched protected root-level files.
+  //   **   -> match across path separators anywhere else in the pattern
+  //   *    -> match within a single path segment only (no "/")
   if (pattern.includes('*')) {
-    const regexPattern = pattern
-      .split('*')
-      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-      .join('.*');
+    let regexPattern = '';
+    let i = 0;
+    while (i < pattern.length) {
+      if (pattern.startsWith('**/', i)) {
+        regexPattern += '(?:.*/)?';
+        i += 3;
+      } else if (pattern.startsWith('**', i)) {
+        regexPattern += '.*';
+        i += 2;
+      } else if (pattern[i] === '*') {
+        regexPattern += '[^/]*';
+        i += 1;
+      } else {
+        regexPattern += pattern[i].replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+        i += 1;
+      }
+    }
     return new RegExp(`^${regexPattern}$`).test(normalized);
   }
 
