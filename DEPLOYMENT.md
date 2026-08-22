@@ -1,70 +1,154 @@
-# Deployment Guide — Fortress Dashboard
+# Deployment Guide — Fortress 95 Pro
 
-> This guide covers every supported deployment target: Streamlit Cloud (recommended), Docker / self-hosted VPS, and local development.
+> Primary deployment is **FastAPI backend + Next.js frontend**.
+> The legacy Streamlit app (`streamlit_app.py`) still works but is not the active UI.
 
 ---
 
 ## Table of Contents
 
-1. [Streamlit Cloud (Recommended)](#1-streamlit-cloud-recommended)
-2. [Docker / Self-hosted](#2-docker--self-hosted)
-3. [Database Setup (Neon Postgres)](#3-database-setup-neon-postgres)
-4. [FastAPI Backend](#4-fastapi-backend)
-5. [Telegram Scheduler](#5-telegram-scheduler)
-6. [Environment Variables Reference](#6-environment-variables-reference)
-7. [Health Checks](#7-health-checks)
+1. [Local Development](#1-local-development)
+2. [Render (Production Backend)](#2-render-production-backend)
+3. [Docker / Self-hosted](#3-docker--self-hosted)
+4. [Database Setup (Neon Postgres)](#4-database-setup-neon-postgres)
+5. [FastAPI Backend](#5-fastapi-backend)
+6. [INDstocks Market Data](#6-indstocks-market-data)
+7. [Telegram Scheduler](#7-telegram-scheduler)
+8. [Environment Variables Reference](#8-environment-variables-reference)
+9. [Health Checks](#9-health-checks)
 
 ---
 
-## 1. Streamlit Cloud (Recommended)
+## 1. Local Development
 
-Streamlit Cloud can run the entire app — including the in-process scan engine — without a separate FastAPI process. FastAPI is only needed for long-running MF background jobs; the Streamlit app falls back to an in-process thread when FastAPI is unreachable.
-
-### Steps
-
-**1.1  Push to GitHub**
+### Backend
 
 ```bash
-git remote add origin https://github.com/your-org/fortress-dashboard
-git push -u origin main
+source .venv/bin/activate
+export FORTRESS_DB_BACKEND=sqlite
+
+# INDstocks TOTP (recommended — auto-refreshes tokens)
+export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_MPIN=<your_mpin>
+export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
+
+uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**1.2  Create a new app on [share.streamlit.io](https://share.streamlit.io)**
+#### Running without any INDstocks credentials at all
 
-- Repository: `your-org/fortress-dashboard`
-- Branch: `main`
-- Main file: `streamlit_app.py`
+You don't need an INDstocks/IndMoney account to run the backend locally.
+Every market-data call is gated behind a config check
+(`market_data_provider._indstocks_available()`) *before* anything tries to
+build an INDstocks client — so if none of `INDSTOCKS_TOKEN`,
+`INDSTOCKS_CLIENT_ID`/`INDSTOCKS_MPIN`/`INDSTOCKS_TOTP_SECRET` are set, that
+check is simply `False` and the app never attempts to construct a client at
+all. Nothing crashes, nothing blocks on startup — every price/OHLCV/quote
+call just goes straight to yfinance instead:
 
-**1.3  Set Secrets**
-
-In the Streamlit Cloud app settings → **Secrets**, paste:
-
-```toml
-[connections.neon]
-url = "postgresql://user:pass@host/dbname?sslmode=require&channel_binding=require"
+```bash
+source .venv/bin/activate
+export FORTRESS_DB_BACKEND=sqlite
+uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**1.4  Set Environment Variables**
+You'll see `INDstocks LTP/OHLCV ... falling back to yfinance`-style log
+lines (or just yfinance calls directly, with no INDstocks log lines at
+all) instead of an error — that's expected. `GET /api/health` still returns
+`200 OK`, and `provider_status()` (see [§9](#9-health-checks)) reports
+`"primary": "yfinance"`. This is the right mode for local UI/UX work, tests,
+or anything that doesn't depend on INDstocks-specific data quality —
+switch on the TOTP trio only when you actually need it.
 
-In the app settings → **Advanced** → **Secrets** (or use the Secrets UI for env vars):
+### Frontend
 
-```toml
-FORTRESS_APP_USERNAME = "admin"
-FORTRESS_APP_PASSWORD = "yourStrongPassword"
-FORTRESS_DB_BACKEND = "neon"
-TELEGRAM_BOT_TOKEN = "your-bot-token"
-TELEGRAM_CHAT_ID = "677141544"
+```bash
+cd frontend
+npm install
+npm run dev     # http://localhost:3000
 ```
 
-**1.5  Deploy**
+### Backend API docs
 
-Click **Deploy**. The app will start in ~60 seconds.
-
-> **Note:** Streamlit Cloud sleeps inactive apps after ~1 week of inactivity. The built-in keep-alive scheduler (`engine/scripts/scheduler.py`) pings the app to prevent sleeping.
+```
+http://localhost:8000/docs
+```
 
 ---
 
-## 2. Docker / Self-hosted
+## 2. Render (Production Backend)
+
+This is how the FastAPI backend (`engine/main.py`) is actually deployed for
+this project — as a Render **Web Service**, either from the repo directly
+(native Python runtime) or from `engine/Dockerfile`.
+
+### Creating the service
+
+1. Render dashboard → **New** → **Web Service** → connect this repo.
+2. If deploying natively (no Docker): set **Root Directory** to `engine`,
+   **Build Command** to `pip install -r requirements.txt`, and **Start
+   Command** to `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+   - Render assigns the port dynamically via the `PORT` env var (default
+     `10000`) — the app **must** bind to `$PORT`, not a hardcoded port.
+     Render says it can *usually* auto-detect a fixed port instead, but
+     that's not guaranteed, and a failed auto-detect fails the whole
+     deploy — reading `$PORT` explicitly is the reliable path.
+   - `engine/Dockerfile` hardcodes `--port 7860` (it was written for
+     Hugging Face Spaces, a different host with its own convention) — if
+     you deploy that Dockerfile as-is on Render, change its `CMD` to
+     `uvicorn main:app --host 0.0.0.0 --port $PORT` first, or Render's
+     auto-detection has to correctly find port 7860 for the deploy to work.
+3. Set the environment variables below in the service's **Environment**
+   tab, not in a committed file.
+
+### Managing the INDstocks token on Render
+
+This is the part that's easy to get stuck on: locally you run
+`refresh_indstocks_token.py` and manually paste a fresh `INDSTOCKS_TOKEN`
+before starting the server — but that token expires every 24 hours, and
+there's no one sitting at a terminal on Render to repeat that daily.
+
+Use the **TOTP trio** instead of the static token — it's not a fallback
+for Render, it's the mode built for exactly this:
+
+| Variable | Where to get it |
+|---|---|
+| `INDSTOCKS_CLIENT_ID` | Static client ID from the INDstocks/IndMoney developer dashboard |
+| `INDSTOCKS_MPIN` | Your account MPIN |
+| `INDSTOCKS_TOTP_SECRET` | The base32 setup key shown once under the TOTP QR code when you enabled API TOTP auth (same "can't scan? enter this key" flow as any authenticator app) |
+
+Add all three as environment variables on the Render service (**Environment**
+tab → **Add Environment Variable**) and **do not** set `INDSTOCKS_TOKEN**
+there at all. With the trio present, `engine/utils/indstocks_client.py`:
+
+- generates a fresh token itself on process startup (so every Render
+  deploy/restart starts already authenticated — no manual step), and
+- auto-refreshes on any `403 TokenException` mid-run and retries the
+  request once, entirely inside the running process.
+
+That's the whole mechanism — no cron job, no separate refresh service, no
+webhook. The token becomes something the app manages, not something you
+hand it.
+
+**Security note:** mark `INDSTOCKS_MPIN` and `INDSTOCKS_TOTP_SECRET` as
+Render's "secret"-style env vars (hidden by default in the dashboard UI)
+rather than plain values — together they're equivalent to full API access
+to your account. Never put them in a committed `.env` file; `.env` and
+`.env.local` are already gitignored in this repo for that reason.
+
+### Frontend on Render (if also hosted there)
+
+If the Next.js frontend is a separate Render service, point it at the
+backend with:
+
+```
+NEXT_PUBLIC_API_URL=https://<your-backend>.onrender.com
+BACKEND_URL=https://<your-backend>.onrender.com
+```
+
+---
+
+## 3. Docker / Self-hosted
 
 ### Prerequisites
 
@@ -91,7 +175,9 @@ CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.add
 
 ### FastAPI Backend
 
-The engine already ships with a `Dockerfile` in `engine/`:
+The engine already ships with a `Dockerfile` in `engine/` (written for
+Hugging Face Spaces — hardcodes port 7860; adjust `CMD` to use `$PORT` if
+deploying this image to a host like Render that assigns its own port):
 
 ```bash
 cd engine
@@ -102,7 +188,7 @@ docker run -p 8000:7860 \
   fortress-api
 ```
 
-### Docker Compose (both services)
+### Docker Compose (API + frontend)
 
 ```yaml
 # docker-compose.yml
@@ -115,18 +201,18 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       FORTRESS_DB_BACKEND: neon
+      # INDstocks TOTP auto-refresh
+      INDSTOCKS_CLIENT_ID: ${INDSTOCKS_CLIENT_ID}
+      INDSTOCKS_MPIN: ${INDSTOCKS_MPIN}
+      INDSTOCKS_TOTP_SECRET: ${INDSTOCKS_TOTP_SECRET}
     restart: unless-stopped
 
-  app:
+  frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.streamlit
-    ports: ["8501:8501"]
+      context: ./frontend
+    ports: ["3000:3000"]
     environment:
-      FORTRESS_API_URL: http://api:8000
-      FORTRESS_APP_PASSWORD: ${FORTRESS_APP_PASSWORD}
-      FORTRESS_DB_BACKEND: neon
-      DATABASE_URL: ${DATABASE_URL}
+      NEXT_PUBLIC_API_URL: http://api:8000
     depends_on: [api]
     restart: unless-stopped
 ```
@@ -139,7 +225,7 @@ docker compose up -d
 
 ---
 
-## 3. Database Setup (Neon Postgres)
+## 4. Database Setup (Neon Postgres)
 
 Fortress supports two database backends:
 
@@ -168,9 +254,11 @@ A `fortress_history.db` file is created at the repository root. This file is git
 
 ---
 
-## 4. FastAPI Backend
+## 5. FastAPI Backend
 
-The FastAPI server (`engine/main.py`) provides:
+The FastAPI server (`engine/main.py`) is the production backend for the Next.js UI.
+
+### Key endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -185,21 +273,91 @@ The FastAPI server (`engine/main.py`) provides:
 ### Running locally
 
 ```bash
-python3 engine/main.py
-# Starts on http://127.0.0.1:8000 by default
+source .venv/bin/activate
+export FORTRESS_DB_BACKEND=sqlite
+export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_MPIN=<your_mpin>
+export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
+uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### The Streamlit app works without FastAPI
+Or without any INDstocks vars at all to run yfinance-only — see
+[§1](#1-local-development).
 
-If FastAPI is unreachable, `ui/utils/api.py` detects the `ConnectionError` and the relevant views fall back to running the engine **in-process** inside Streamlit. This means:
+### Market data
 
-- Stock scans run in-process (no separate server needed)
-- MF jobs run in a background daemon thread
-- Only features that *require* a persistent server process (e.g., server-push notifications) are unavailable
+All price data flows through `engine/utils/market_data_provider.py`. Do not call
+yfinance or `INDstocksClient` directly from routers or scanner logic.
 
 ---
 
-## 5. Telegram Scheduler
+## 6. INDstocks Market Data
+
+INDstocks is the primary market data source for NSE equities. yfinance is the automatic fallback.
+
+### TOTP auto-refresh (recommended — required on Render, see §2)
+
+Set all three variables — the engine generates and refreshes tokens automatically:
+
+```bash
+export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_MPIN=<your_mpin>
+export INDSTOCKS_TOTP_SECRET=<base32_setup_key_from_dashboard_qr>
+```
+
+### Static token (fallback, local dev only)
+
+Tokens expire every 24 hours. Refresh with:
+
+```bash
+python3 scripts/refresh_indstocks_token.py --write-env
+source .env.local
+```
+
+This mode is fine for a local terminal you restart daily, but doesn't work
+unattended — there's no one to re-run the script on a server. Use the TOTP
+trio for anything long-running (Render, Docker, any always-on process).
+
+### No INDstocks account yet
+
+Set none of the above. Market data falls back to yfinance for everything —
+see [§1](#1-local-development) for details on exactly why that's safe (no
+crash, no manual flag needed).
+
+### Instruments cache
+
+The NSE equity instruments CSV is downloaded once per calendar day and cached in `/tmp/fortress_instruments/`.
+Use `instruments_cache.get_scrip_code("RELIANCE.NS")` → `"NSE_2885"` for symbol lookups.
+
+### Credential safety — what does and doesn't get logged
+
+Audited `engine/main.py` and `engine/utils/indstocks_client.py` for this:
+
+- `main.py` never references `INDSTOCKS_MPIN`, `INDSTOCKS_TOTP_SECRET`, or
+  `INDSTOCKS_TOKEN` directly, and its global exception-handling middleware
+  (`catch_exceptions_middleware`) logs full tracebacks **server-side only**
+  — an HTTP client only ever sees a generic `{"error": "...", "error_id":
+  "..."}`, never a traceback or exception message.
+- `provider_status()` (the function backing the `/api/market-data/status`
+  endpoint the frontend's `SystemStatus` badge polls) only returns booleans
+  and labels (`"auth_mode": "totp"`, `"indstocks_token_set": "True"`) —
+  never the token, MPIN, or TOTP secret value itself.
+- `indstocks_client.py`'s own log lines (`"Requesting new INDstocks token
+  via TOTP..."`, `"403 TokenException — attempting auto-refresh..."`,
+  `"Token refresh failed: %s"`) never interpolate the MPIN, TOTP code, or
+  token — only status/outcome strings, or (on a failed refresh) the
+  *response* INDstocks itself sent back, not what we sent it.
+- The one residual, low-probability risk: if INDstocks' own `/generate/token`
+  endpoint ever echoed the submitted MPIN/TOTP code back inside an error
+  message (well-designed auth APIs don't, but it's not something this repo
+  controls), that response text would end up in the server-side log stream
+  (e.g. Render's log viewer) via the "Token refresh failed" log line. This
+  isn't client-exposed and a TOTP code is only valid for ~30 seconds, but
+  it's worth knowing it's the one spot that isn't fully redacted.
+
+---
+
+## 7. Telegram Scheduler
 
 The built-in scheduler (`engine/scripts/scheduler.py`) runs two background threads:
 
@@ -230,26 +388,48 @@ curl -X POST http://localhost:8000/mf/trigger-job \
 
 ---
 
-## 6. Environment Variables Reference
+## 8. Environment Variables Reference
+
+### Core
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `FORTRESS_APP_USERNAME` | No | `admin` | Login username |
 | `FORTRESS_APP_PASSWORD` | **Yes (prod)** | `fortress123` | Login password |
 | `FORTRESS_APP_FULL_NAME` | No | `Fortress Admin` | Admin display name |
-| `FORTRESS_APP_EMAIL` | No | `admin@fortress.local` | Admin email |
-| `FORTRESS_APP_PHONE` | No | `+91 99999 99999` | Admin phone |
-| `FORTRESS_APP_STATUS` | No | `Active` | Admin account status |
 | `FORTRESS_DB_BACKEND` | No | `neon` | `neon` or `sqlite` |
 | `DATABASE_URL` | Neon only | — | Neon PostgreSQL connection string |
 | `NEON_CONNECTION_STRING` | Neon only | — | Alternative to `DATABASE_URL` |
-| `FORTRESS_API_URL` | No | `http://127.0.0.1:8000` | FastAPI backend URL |
+| `FORTRESS_API_KEY` | No | — | API key for protected endpoints |
+| `FORTRESS_CORS_ORIGINS` | No | — | Allowed CORS origins |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | No | — | Default broadcast chat ID |
+| `PORT` | Render only | `10000` | Set automatically by Render — bind your server to this, don't hardcode a port |
+
+### INDstocks Market Data
+
+| Variable | Mode | Description |
+|---|---|---|
+| `INDSTOCKS_CLIENT_ID` | TOTP | Static client ID from dashboard |
+| `INDSTOCKS_MPIN` | TOTP | Account MPIN |
+| `INDSTOCKS_TOTP_SECRET` | TOTP | Base32 setup key from TOTP QR code |
+| `INDSTOCKS_TOKEN` | Static | Access token — expires every 24 h |
+
+Set the TOTP trio for automatic token management — required for any
+always-on deployment (Render, Docker) since there's no one to manually
+refresh a static token daily. Without any INDstocks vars, market data falls
+back to yfinance; see [§6](#6-indstocks-market-data).
+
+### Frontend
+
+| Variable | Description |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | FastAPI base URL (defaults to `http://localhost:8000`) |
+| `BACKEND_URL` | Server-side API URL |
 
 ---
 
-## 7. Health Checks
+## 9. Health Checks
 
 ### Streamlit
 
@@ -263,6 +443,14 @@ GET http://localhost:8501/_stcore/health
 ```
 GET http://localhost:8000/health
 → {"status": "ok"}
+```
+
+### INDstocks provider
+
+```python
+from engine.utils.market_data_provider import provider_status
+print(provider_status())
+# {"primary": "indstocks", "fallback": "yfinance", "indstocks_token_set": "True"}
 ```
 
 ### Database

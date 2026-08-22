@@ -8,6 +8,19 @@ interface DataTableProps {
   columns?: string[];
   emptyMessage?: string;
   maxRows?: number;
+  // Called with the actual row object (after this table's own internal
+  // sort is applied) plus its on-screen index. Callers must not try to
+  // re-derive "which row was clicked" from DOM position or an index into
+  // their own unsorted data array — this table sorts internally on column
+  // click, so on-screen row order can diverge from the order `data` was
+  // passed in, and a position-based lookup silently resolves to the wrong
+  // row once the user sorts.
+  onRowClick?: (row: Record<string, unknown>, index: number) => void;
+  // Identifies the currently-selected row so it can be highlighted even
+  // after a sort changes its on-screen position. Compared against
+  // `rowKey(row, index)` for each row.
+  selectedRowKey?: string | null;
+  rowKey?: (row: Record<string, unknown>, index: number) => string;
 }
 
 function formatCell(value: unknown): string {
@@ -53,7 +66,7 @@ function getScoreClass(value: unknown): string {
   return '';
 }
 
-export default function DataTable({ data, columns, emptyMessage, maxRows }: DataTableProps) {
+export default function DataTable({ data, columns, emptyMessage, maxRows, onRowClick, selectedRowKey, rowKey }: DataTableProps) {
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -119,8 +132,16 @@ export default function DataTable({ data, columns, emptyMessage, maxRows }: Data
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
-            <tr key={i}>
+          {rows.map((row, i) => {
+            const key = rowKey ? rowKey(row, i) : String(i);
+            const isSelected = selectedRowKey != null && key === selectedRowKey;
+            return (
+            <tr
+              key={key}
+              className={onRowClick ? (isSelected ? 'row-selected' : 'row-clickable') : undefined}
+              style={onRowClick ? { cursor: 'pointer' } : undefined}
+              onClick={onRowClick ? () => onRowClick(row, i) : undefined}
+            >
               {cols.map(col => (
                 <td key={col}>
                   {isTrustedHtml(row[col]) ? (
@@ -137,7 +158,8 @@ export default function DataTable({ data, columns, emptyMessage, maxRows }: Data
                 </td>
               ))}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

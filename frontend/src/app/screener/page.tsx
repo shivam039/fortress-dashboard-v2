@@ -26,6 +26,7 @@ export default function ScreenerPage() {
   const [sectorPulse, setSectorPulse] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   useEffect(() => {
     scanApi.getUniverses().then(u => {
@@ -33,6 +34,22 @@ export default function ScreenerPage() {
       if (u.length > 0) setUniverse(u[0]);
     }).catch(() => {});
   }, []);
+
+  // A scan of a large universe can genuinely take a while — a static spinner
+  // with no other signal looks identical whether it's 3s or 3min in, so
+  // there's no way to tell "still working" from "actually stuck". Counting
+  // up gives a visible heartbeat: as long as the number keeps climbing, the
+  // request is still in flight (not frozen), and it also makes clear how
+  // long a completed/failed scan actually took.
+  useEffect(() => {
+    if (!loading) {
+      setElapsedSec(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setElapsedSec(Math.round((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
 
   const runScan = useCallback(async () => {
     setLoading(true);
@@ -154,12 +171,18 @@ export default function ScreenerPage() {
           {loading ? (
             <>
               <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} />
-              Scanning…
+              Scanning… {elapsedSec}s
             </>
           ) : (
             '🔍 Run Screener'
           )}
         </button>
+        {loading && elapsedSec >= 15 && (
+          <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '8px', textAlign: 'center' }}>
+            Still working — larger universes (Midcap 150, Smallcap 250) can take a couple of minutes.
+            The counter above only keeps climbing while the request is actually still in flight.
+          </p>
+        )}
       </div>
 
       {results.length === 0 && !loading && (

@@ -20,3 +20,5 @@ uvicorn[standard]
 pydantic
 python-multipart
 python-jose[cryptography]
+pyotp
+lxml

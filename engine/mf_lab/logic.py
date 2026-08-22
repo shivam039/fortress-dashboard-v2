@@ -50,7 +50,11 @@ def _retry(op, name: str, retries: int = 2, base_delay: float = 0.5):
 
 
 def classify_category(name: str) -> tuple[str, str]:
-    nm = (name or "").lower()
+    # Real AMC scheme names frequently use hyphens where the keywords below
+    # use a space ("Multi-Asset Allocation Fund", "Flexi-Cap Fund",
+    # "Small-Cap Fund") — normalizing hyphens to spaces lets every keyword
+    # match both forms instead of silently missing the hyphenated one.
+    nm = (name or "").lower().replace("-", " ")
 
     # Debt Subcategories
     if any(k in nm for k in ["liquid"]):
@@ -79,8 +83,13 @@ def classify_category(name: str) -> tuple[str, str]:
         eq_sub = "Mid Cap"
     elif any(k in nm for k in ["large cap", "largecap", "bluechip", "top 100"]):
         eq_sub = "Large Cap"
-    elif any(k in nm for k in ["flexi", "multi cap", "multicap"]):
-        eq_sub = "Flexi/Multi Cap"
+    # Flexi Cap (min 65% equity, no cap-size mandate) and Multi Cap (min 25%
+    # each across large/mid/small) are distinct SEBI categories with
+    # different mandates — they were previously lumped into one bucket.
+    elif any(k in nm for k in ["flexi cap", "flexicap", "flexi"]):
+        eq_sub = "Flexi Cap"
+    elif any(k in nm for k in ["multi cap", "multicap"]):
+        eq_sub = "Multi Cap"
     elif any(k in nm for k in ["focused"]):
         eq_sub = "Focused"
     elif any(k in nm for k in ["value", "contra"]):
@@ -92,21 +101,62 @@ def classify_category(name: str) -> tuple[str, str]:
     else:
         eq_sub = "Sectoral/General Equity"
 
-    # Hybrid Subcategories
+    # Hybrid Subcategories — SEBI defines several distinct hybrid categories
+    # by equity allocation band; these were previously collapsed into
+    # "General Hybrid" whenever a scheme name didn't literally contain
+    # "aggressive hybrid" or "conservative hybrid", which most real AMC
+    # names don't spell out verbatim (e.g. "Equity & Debt Fund", "Balanced
+    # Fund", "Multi-Asset Allocation Fund").
     if any(k in nm for k in ["arbitrage"]):
         hy_sub = "Arbitrage"
+    elif any(k in nm for k in ["equity savings"]):
+        hy_sub = "Equity Savings"
     elif any(k in nm for k in ["balanced advantage", "dynamic asset", "baa"]):
         hy_sub = "Balanced Advantage"
-    elif any(k in nm for k in ["aggressive hybrid", "equity hybrid"]):
-        hy_sub = "Aggressive Hybrid"
-    elif any(k in nm for k in ["conservative hybrid", "debt hybrid"]):
+    elif any(k in nm for k in ["balanced hybrid"]):
+        hy_sub = "Balanced Hybrid"
+    elif any(k in nm for k in ["conservative hybrid", "debt hybrid", "conservative"]):
         hy_sub = "Conservative Hybrid"
     elif any(k in nm for k in ["multi asset"]):
         hy_sub = "Multi Asset"
+    elif any(
+        k in nm
+        for k in [
+            "aggressive hybrid",
+            "equity hybrid",
+            "equity & debt",
+            "equity and debt",
+            "balanced",
+        ]
+    ):
+        # SEBI's 2018 recategorization folded plain "Balanced Fund" naming
+        # into Aggressive Hybrid (65-80% equity) — most surviving schemes
+        # with just "Balanced" in the name are legacy holdovers of that.
+        hy_sub = "Aggressive Hybrid"
     else:
         hy_sub = "General Hybrid"
 
-    # Determine Primary Cat
+    # Determine Primary Cat. Hybrid signals are checked first: a name like
+    # "XYZ Debt Hybrid Fund" or "XYZ Conservative Hybrid Fund" contains
+    # "debt" too, and would otherwise get short-circuited into Debt before
+    # its (unambiguous) "hybrid" signal is ever considered. No pure debt or
+    # equity fund name contains these hybrid keywords, so checking them
+    # first cannot misclassify a real debt/equity fund as Hybrid.
+    if any(
+        k in nm
+        for k in [
+            "hybrid",
+            "balanced",
+            "conservative",
+            "asset allocation",
+            "arbitrage",
+            "advantage",
+            "equity savings",
+            "equity & debt",
+            "equity and debt",
+        ]
+    ):
+        return ("Hybrid", hy_sub)
     if any(
         k in nm
         for k in [
@@ -122,11 +172,6 @@ def classify_category(name: str) -> tuple[str, str]:
         ]
     ):
         return ("Debt", sub)
-    if any(
-        k in nm
-        for k in ["hybrid", "balanced", "asset allocation", "arbitrage", "advantage"]
-    ):
-        return ("Hybrid", hy_sub)
 
     return ("Equity", eq_sub)
 
@@ -398,45 +443,85 @@ def discover_all_funds(limit: Optional[int] = None) -> List[str]:
 
 def _bulk_preseed_nav_cache(codes: List[str]) -> Dict[str, pd.DataFrame]:
     """
-    Single SQL query to pull ALL non-stale NAV rows from Neon in one shot.
-    Avoids N×SELECT inside threads and cuts cold-start latency dramatically.
+    Single SQL query to pull ALL non-stale NAV rows in one shot, instead of
+    one SELECT per fund inside the thread pool. Avoids N×SELECT and cuts
+    cold-start latency dramatically.
+
+    Works on both backends. This previously returned `{}` immediately on
+    SQLite (`if not _can_use_neon(): return {}`) — meaning on local dev
+    (FORTRESS_DB_BACKEND=sqlite) this pre-seed step was a complete no-op,
+    and combined with `fetch_mf_nav_cache`/`upsert_mf_nav_cache` also being
+    Neon-only until now, every single MF scan re-downloaded NAV history from
+    mfapi.in live for every discovered fund — the main reason MF scans are
+    slow, since `run_full_mf_scan()` with no `limit` discovers essentially
+    the whole direct-growth fund universe, not just a handful.
     """
     if not codes:
         return {}
     try:
-        from sqlalchemy import text as sa_text
-        from utils.db import _can_use_neon, get_db_engine
+        import io
+        import json as _json
 
-        if not _can_use_neon():
-            return {}
+        from utils.db import _can_use_neon
 
-        engine = get_db_engine()
-        placeholders = ", ".join([f":c{i}" for i in range(len(codes))])
-        params = {f"c{i}": c for i, c in enumerate(codes)}
+        cache: Dict[str, pd.DataFrame] = {}
 
-        with engine.connect() as conn:
-            rows = conn.execute(
-                sa_text(f"""
+        if _can_use_neon():
+            from sqlalchemy import text as sa_text
+            from utils.db import get_db_engine
+
+            engine = get_db_engine()
+            placeholders = ", ".join([f":c{i}" for i in range(len(codes))])
+            params = {f"c{i}": c for i, c in enumerate(codes)}
+
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    sa_text(f"""
+                        SELECT scheme_code, nav_json
+                        FROM mf_nav_cache
+                        WHERE scheme_code IN ({placeholders})
+                          AND updated_at >= NOW() - INTERVAL '20 hours'
+                    """),
+                    params,
+                ).fetchall()
+
+            for r in rows:
+                try:
+                    df = pd.read_json(io.StringIO(_json.dumps(r[1])), orient="split")
+                    df.index = pd.to_datetime(df.index)
+                    cache[r[0]] = df
+                except Exception:
+                    pass
+        else:
+            from utils.db import _ensure_mf_nav_cache_sqlite, _sqlite_connection
+
+            placeholders = ", ".join([f":c{i}" for i in range(len(codes))])
+            params = {f"c{i}": c for i, c in enumerate(codes)}
+
+            with _sqlite_connection() as conn:
+                _ensure_mf_nav_cache_sqlite(conn)
+                rows = conn.execute(
+                    f"""
                     SELECT scheme_code, nav_json
                     FROM mf_nav_cache
                     WHERE scheme_code IN ({placeholders})
-                      AND updated_at >= NOW() - INTERVAL '20 hours'
-                """),
-                params,
-            ).fetchall()
+                      AND updated_at >= datetime('now', '-20 hours')
+                    """,
+                    params,
+                ).fetchall()
 
-        cache: Dict[str, pd.DataFrame] = {}
-        import json as _json
+            for scheme_code, nav_json in rows:
+                if not nav_json:
+                    continue
+                try:
+                    df = pd.read_json(io.StringIO(nav_json), orient="split")
+                    df.index = pd.to_datetime(df.index)
+                    cache[scheme_code] = df
+                except Exception:
+                    pass
 
-        for r in rows:
-            try:
-                df = pd.read_json(_json.dumps(r[1]), orient="split")
-                df.index = pd.to_datetime(df.index)
-                cache[r[0]] = df
-            except Exception:
-                pass
         logger.info(
-            "_bulk_preseed_nav_cache: preloaded %d/%d funds from Neon",
+            "_bulk_preseed_nav_cache: preloaded %d/%d funds from cache",
             len(cache),
             len(codes),
         )

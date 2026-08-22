@@ -26,20 +26,63 @@ from stock_scanner.logic import (
     apply_advanced_scoring,
     check_institutional_fortress,
     get_stock_data,
+    prefetch_metadata,
 )
 from options_algo.logic import fetch_option_chain, get_available_expiries, scan_strategies
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
-from utils.db import fetch_history_data, fetch_timestamps
+from utils.db import (
+    fetch_history_data,
+    fetch_mf_cached_results,
+    fetch_timestamps,
+)
+
+
+import numpy as np
 
 
 def _sanitize_json_value(value):
-    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+    if value is None:
         return None
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+        
+    if isinstance(value, bool):
+        return value
+        
+    if isinstance(value, (float, int)):
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+        return value
+        
+    try:
+        import numpy as np
+        if isinstance(value, np.floating):
+            if np.isnan(value) or np.isinf(value):
+                return None
+            return float(value)
+        if isinstance(value, np.integer):
+            return int(value)
+    except Exception:
+        pass
+
     if isinstance(value, dict):
-        return {k: _sanitize_json_value(v) for k, v in value.items()}
-    if isinstance(value, list):
+        return {str(k): _sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
         return [_sanitize_json_value(v) for v in value]
+        
+    # Catch any remaining float-like objects
+    try:
+        if math.isnan(float(value)) or math.isinf(float(value)):
+            return None
+    except Exception:
+        pass
+
     return value
 
 def generate_action_link(row, broker_choice):
@@ -59,6 +102,7 @@ def generate_action_link(row, broker_choice):
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logger = logging.getLogger("fortress-api")
 
 # API key auth — set FORTRESS_API_KEY env var to enable. Unset = local dev (no auth).
@@ -191,8 +235,37 @@ def get_universes():
     return list(TICKER_GROUPS.keys())
 
 
+@app.get("/api/market-data-status")
+def get_market_data_status():
+    """Report which market data provider is actually active right now.
+
+    Surfaces `market_data_provider.provider_status()` over HTTP so the
+    frontend can show the live data source (e.g. an "INDmoney" badge) instead
+    of just assuming the docs are accurate. Also reports the stock universe
+    sizes currently configured, since universes are scanned through the same
+    provider chain.
+    """
+    from utils.market_data_provider import provider_status
+
+    status = provider_status()
+    return {
+        **status,
+        "universes": {name: len(tickers) for name, tickers in TICKER_GROUPS.items()},
+    }
+
+
 @app.post("/api/scan")
-async def run_scan(req: ScanRequest):
+def run_scan(req: ScanRequest):
+    # Plain `def`, not `async def`: everything in this handler (INDstocks/
+    # yfinance network calls, pandas/pandas_ta scoring) is synchronous
+    # blocking work. Declaring it `async def` with no `await` inside would
+    # run it directly on uvicorn's single event-loop thread, freezing the
+    # ENTIRE server — including unrelated requests like /api/health and the
+    # frontend's status polling — for the whole scan duration, which is
+    # exactly why a slow scan can look like the whole app hung rather than
+    # just "still scanning". A plain `def` route is run by FastAPI in its
+    # threadpool instead, so the event loop stays free to serve other
+    # requests concurrently while a scan is in flight.
     from stock_scanner.pulse import get_current_regime
 
     tickers = TICKER_GROUPS.get(req.universe)
@@ -210,6 +283,16 @@ async def run_scan(req: ScanRequest):
         regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
 
     results = []
+
+    # Pre-load fundamental/news/calendar/earnings metadata for the whole
+    # universe from the DB cache in one call, so tickers with a fresh-enough
+    # cached entry skip a live yfinance .info/.news/.calendar/.earnings_dates
+    # call in the loop below entirely. This doesn't change *where* that data
+    # ultimately comes from (INDstocks has no fundamentals/news endpoint —
+    # it always was and still is yfinance) but it cuts how often the loop
+    # actually has to hit yfinance live, and previously wasn't wired up here
+    # at all (only the legacy Streamlit UI did this).
+    prefetch_metadata(tickers)
 
     # Keep the existing yfinance-based implementation, but make it resilient:
     # if the bulk download fails or returns partial data, fall back to per-symbol
@@ -270,17 +353,21 @@ async def run_scan(req: ScanRequest):
     df = apply_advanced_scoring(df, scoring_config)
 
     # Generate action links
-    df["Actions"] = df.apply(lambda row: generate_action_link(row, req.broker), axis=1)
-
-    return df.to_dict(orient="records")
+    records = df.to_dict(orient="records")
+    return _sanitize_json_value(records)
 
 
 @app.get("/api/sector-pulse")
-async def get_sector_pulse(universe: str = "Nifty 50"):
+def get_sector_pulse(universe: str = "Nifty 50"):
+    # Same reasoning as /api/scan above: purely synchronous blocking work,
+    # so plain `def` lets FastAPI offload it to a worker thread instead of
+    # blocking the event loop.
     # This logic replicates the "Sector Intelligence" from legacy ui.py
     tickers = TICKER_GROUPS.get(universe, [])
     if not tickers:
         raise HTTPException(status_code=404, detail="Universe not found")
+
+    prefetch_metadata(tickers)
 
     batch_data = get_stock_data(
         tuple(tickers), period="1y", interval="1d", group_by="ticker"
@@ -354,16 +441,55 @@ async def get_sector_pulse(universe: str = "Nifty 50"):
     sector_stats["On_the_Rise"] = sector_stats.apply(check_rise, axis=1)
     sector_stats["On_the_Fall"] = sector_stats.apply(check_fall, axis=1)
 
-    return sector_stats.to_dict(orient="records")
+    records = sector_stats.to_dict(orient="records")
+    return _sanitize_json_value(records)
 
 
 @app.get("/api/mf-analysis")
-async def get_mf_analysis(limit: Optional[int] = Query(None)):
-    df = run_full_mf_scan(limit=limit)
+def get_mf_analysis(
+    limit: Optional[int] = Query(None),
+    force_refresh: bool = Query(
+        False,
+        description=(
+            "Skip the monthly scan cache and run a fresh full discover-and-score "
+            "pass. Use sparingly — this hits mfapi.in live for the whole fund "
+            "universe. The 'Trigger Job' / Full Recalculation flow is the "
+            "normal way to force a refresh."
+        ),
+    ),
+):
+    # Same reasoning as /api/scan above: purely synchronous blocking work,
+    # so plain `def` lets FastAPI offload it to a worker thread instead of
+    # blocking the event loop.
+    #
+    # The MF universe (hundreds to low thousands of direct-growth schemes)
+    # doesn't meaningfully change day to day, so this is a "run once a
+    # month" scan, not a "run on every page load" one: check the persisted
+    # monthly scan first (mf_scan_results, via fetch_mf_cached_results) and
+    # only fall through to a full discover-and-score pass when nothing
+    # fresh enough is on file. run_full_mf_scan() already persists its
+    # result at the end, so the next request within the freshness window
+    # serves from cache instead of re-scanning.
+    df = pd.DataFrame() if force_refresh else fetch_mf_cached_results(max_age_days=31)
+    cache_hit = not df.empty
+    if not cache_hit:
+        df = run_full_mf_scan(limit=limit)
+    elif limit:
+        df = df.head(limit)
+
+    logger.info(
+        "mf-analysis: %s (%d funds)",
+        "served from monthly cache" if cache_hit else "ran a fresh full scan",
+        len(df),
+    )
+
     records = df.replace([float("inf"), float("-inf")], pd.NA).to_dict(orient="records")
     records = _sanitize_json_value(records)
 
     # ── Phase 5: Enrich with transparent conviction scores (additive, backward-compat) ──
+    # Re-run even on cached data: this is cheap (percentile ranking within
+    # the current record set, no network), and keeps conviction_score_v2/
+    # risk flags/confidence consistent with whatever `records` actually is.
     try:
         from mf_lab.logic import enrich_mf_records_with_conviction
         records = enrich_mf_records_with_conviction(records)
@@ -418,7 +544,8 @@ async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
 @app.get("/api/commodities")
 async def get_commodities():
     df = build_commodities_frame()
-    return df.to_dict(orient="records")
+    records = df.to_dict(orient="records")
+    return _sanitize_json_value(records)
 
 
 @app.get("/api/options/expiries")
@@ -454,7 +581,8 @@ def get_history_timestamps():
 @app.get("/api/history/data")
 def get_history_data(timestamp: str, scan_type: Optional[str] = None):
     df = fetch_history_data("scan_mf", timestamp, scan_type=scan_type)
-    return df.to_dict(orient="records") if not df.empty else []
+    records = df.to_dict(orient="records") if not df.empty else []
+    return _sanitize_json_value(records)
 
 
 app.include_router(mf_router)

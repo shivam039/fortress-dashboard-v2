@@ -1,38 +1,79 @@
-# CLAUDE.md — app
+# Fortress 95 Pro
 
-This file is read automatically by Claude Code. The actual guidance lives in
-[`AGENTS.md`](AGENTS.md) and [`.agent-room/`](.agent-room/) — read those
-first, this file only adds Claude Code-specific mechanics.
+Quantitative trading dashboard for Indian markets (NSE focus).
+Next.js 16 frontend + FastAPI backend. **Primary UI is Next.js.**
+Legacy Streamlit code in `ui/` and `engine/legacy/` is reference only — do not expand it.
 
-## Skills
+## Stack
 
-The skills in `.agent-room/skills/` are mirrored into `.claude/skills/` so
-Claude Code can discover and invoke them (`/brainstorming`,
-`/writing-plans`, `/test-driven-development`, `/systematic-debugging`,
-`/verification-before-completion`, `/closing-the-loop`).
+- **Frontend**: Next.js 16 (App Router), React 19, TypeScript, Recharts, lucide-react
+- **Backend**: FastAPI, Python 3.9+, pandas, yfinance (being replaced as primary)
+- **Database**: SQLite (local, `FORTRESS_DB_BACKEND=sqlite`) / Neon Postgres (`DATABASE_URL`)
+- **Market data**: INDmoney / INDstocks (primary, when `INDSTOCKS_CLIENT_ID` + `INDSTOCKS_MPIN` + `INDSTOCKS_TOTP_SECRET`, or a static `INDSTOCKS_TOKEN`, are set) → yfinance (fallback) → cache
 
-`.agent-room/skills/` is the source of truth. If you edit a skill, re-run
-`npx create-agent-room sync` to refresh the `.claude/skills/` copies — don't
-edit the `.claude/skills/` copies directly, they'll be overwritten.
+## Key Directories
 
-## Closing-the-loop hook
+- `frontend/src/app/` — Next.js pages (screener, mf-lab, options, etc.)
+- `frontend/src/components/` — Shared UI components
+- `engine/` — FastAPI app + all analysis logic
+- `engine/stock_scanner/` — Conviction scoring (main logic)
+- `engine/utils/` — DB, brokers, market data helpers
+- `engine/utils/indstocks_client.py` — INDstocks REST client (rate-limited, retries)
+- `engine/utils/instruments_cache.py` — Daily NSE instruments CSV cache + symbol→ID lookup
+- `engine/utils/market_data_provider.py` — Provider abstraction (INDstocks → yfinance)
+- `engine/routers/` — FastAPI routers for frontend
+- `tests/` — Backend + frontend tests
 
-A `Stop` hook is wired up in `.claude/settings.json`, running
-`.agent-room/hooks/close-the-loop-check.js` at the end of every turn. If the
-turn changed tracked files outside the agent-room scaffold but didn't touch
-`.agent-room/anti-patterns.md` or `.agent-room/decisions.md`, the hook
-blocks the turn from ending and explains why. This is mechanical
-enforcement of `.agent-room/skills/closing-the-loop.md` — it can't judge
-whether an entry is *good*, only that the check wasn't silently skipped.
+## Commands
 
-The exit hatch is a one-line waiver in `decisions.md`:
-`<!-- no-log: routine change, no decision or anti-pattern worth recording -->`
+### Backend
+```bash
+source .venv/bin/activate
+export FORTRESS_DB_BACKEND=sqlite        # local SQLite
+export INDSTOCKS_CLIENT_ID=<client_id>       # enables INDmoney provider
+export INDSTOCKS_MPIN=<mpin>                 # account MPIN
+export INDSTOCKS_TOTP_SECRET=<totp_secret>   # base32 TOTP setup key for auto-refresh
+uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-The hook only looks at `git status --porcelain`, so unrelated pre-existing
-dirty files in the work tree will also trigger it — commit or stash them
-first if that gets noisy.
+### Frontend
+```bash
+cd frontend && npm install
+npm run dev      # http://localhost:3000
+npm run build    # production only
+```
 
-## Git rules
+### Tests
+```bash
+PYTHONPATH=.:engine .venv/bin/pytest -v
+```
 
-- Do not run `git push` unless explicitly asked.
-- Do not amend or rewrite history on shared branches without being asked.
+## Architecture Rules
+
+1. **Next.js is the active UI.** Do not add new Streamlit features.
+2. **All market data goes through `market_data_provider.py`** — never call yfinance or
+   INDstocks directly from routers or scanner logic.
+3. **INDstocks/INDmoney is primary, yfinance is fallback.** If neither the TOTP trio
+   (`INDSTOCKS_CLIENT_ID` + `INDSTOCKS_MPIN` + `INDSTOCKS_TOTP_SECRET`) nor a static
+   `INDSTOCKS_TOKEN` are set, yfinance runs automatically — no code changes needed.
+4. **Prefer async FastAPI endpoints + BackgroundTasks** for long scans.
+5. **Scoring logic lives in `engine/stock_scanner/logic.py` + `SCORING.md`.**
+   Update `SCORING.md` when changing scores.
+6. Keep secrets in env vars. Never hardcode tokens or passwords.
+7. Use type hints everywhere in Python. Strict TypeScript on frontend.
+
+## Coding Conventions
+
+- Python: PEP 8, type hints, Google-style docstrings on public functions.
+- Prefer explicit imports. No `import *`.
+- Frontend: functional components, Server Components by default.
+- Small, focused changes. Do not refactor unrelated code.
+- After code changes: run relevant tests or at least type-check/lint.
+
+## Do Not
+
+- Expand the legacy Streamlit UI.
+- Call yfinance or INDstocks directly outside `market_data_provider.py`.
+- Commit `.env` files, API tokens, or database files.
+- Make large speculative refactors without asking first.
+- Use `INDSTOCKS_CLIENT_ID`, `INDSTOCKS_MPIN`, `INDSTOCKS_TOTP_SECRET`, or `INDSTOCKS_TOKEN` in any tracked file — env vars only.
