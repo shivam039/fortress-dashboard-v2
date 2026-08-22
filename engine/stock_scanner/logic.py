@@ -83,26 +83,28 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
     """Cached market data fetch.
 
     Provider priority (single-symbol calls):
-        INDstocks/INDmoney (if configured)  →  yfinance
+        Bhav Copy (if it's the active preference and has data) → INDstocks/
+        INDmoney (if configured) → yfinance — see market_data_provider.get_ohlcv.
 
     Provider priority (batch calls, ``group_by='ticker'``, ``symbol`` a
     tuple/list, daily interval):
-        INDstocks/INDmoney batch historical, gap-filled per-symbol from
-        yfinance for whatever INDstocks could not cover  →  yfinance grouped
-        download for the whole batch (only if the gap-fill itself fails)
+        market_data_provider.get_batch_ohlcv's own tiering (Bhav Copy DB read
+        first when preferred, then INDstocks for whatever it didn't cover),
+        gap-filled per-symbol from yfinance for whatever neither tier
+        could cover → yfinance grouped download for the whole batch (only if
+        the gap-fill itself fails)
 
-    INDstocks' ``/market/historical`` endpoint accepts multiple scrip codes
-    per call, so a full-universe scan can be served from INDstocks. When
-    INDstocks covers every requested symbol, its data is used outright. When
-    it covers only some of them (a symbol not in the instruments cache,
-    delisted, no candles, etc.) — which in practice is the common case, since
-    the instruments cache has no index/derivative coverage — only the
-    *missing* symbols are fetched from yfinance and merged in. Previously this
-    discarded the entire INDstocks batch and re-fetched everyone from
-    yfinance on any partial miss, which meant paying for both providers on
-    every single scan and made scans noticeably slower than necessary. If the
-    yfinance gap-fill itself fails, this falls through to the full yfinance
-    grouped download as a last resort.
+    Bhav Copy's local table has every NSE equity for every backfilled day, so
+    once the backfill has caught up it should cover most/all of a batch with
+    no network call at all. INDstocks' ``/market/historical`` endpoint also
+    accepts multiple scrip codes per call and is tried next for whatever
+    Bhav Copy didn't have (a symbol not yet backfilled, an index/derivative —
+    the instruments cache has no index coverage, etc.). Only the symbols
+    neither tier covered are fetched from yfinance and merged in — this
+    function used to discard the entire batch and re-fetch everyone from
+    yfinance on any partial miss, which meant paying for every provider on
+    every single scan. If the yfinance gap-fill itself fails, this falls
+    through to the full yfinance grouped download as a last resort.
     """
     is_batch = group_by == "ticker" or (hasattr(symbol, "__len__") and not isinstance(symbol, str))
 
@@ -119,29 +121,52 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
         except Exception as _exc:
             _logger.debug("market_data_provider.get_ohlcv failed for %s: %s", symbol, _exc)
     elif interval == "1d":
-        # ── Batch path, daily interval: try INDstocks batch historical ───
+        # ── Batch path, daily interval: try the tiered market_data_provider
+        # batch fetch (Bhav Copy first when it's the active preference, then
+        # INDstocks for whatever it didn't cover — see
+        # market_data_provider.get_batch_ohlcv). This function used to only
+        # ever talk to INDstocks, and the log lines below said so explicitly
+        # ("INDstocks batch OHLCV covered..."); now that a batch can be
+        # served by either tier (or both), that label is misleading on its
+        # own, so it's paired with a per-tier breakdown read from the
+        # call-count counters (see get_ohlcv_source_call_counts) — diffed
+        # before/after this one call so it reflects only this batch, not
+        # everything served since process start.
         symbols = list(symbol) if not isinstance(symbol, str) else [symbol]
         try:
             from utils.market_data_provider import get_batch_ohlcv as _get_batch_ohlcv
+            from utils.market_data_provider import (
+                get_ohlcv_source_call_counts as _get_source_counts,
+            )
 
+            counts_before = _get_source_counts()
             batch = _get_batch_ohlcv(symbols, period=period)
+            counts_after = _get_source_counts()
+            tier_breakdown = {
+                src: counts_after[src] - counts_before.get(src, 0)
+                for src in counts_after
+                if counts_after[src] - counts_before.get(src, 0) > 0
+            }
             if batch and len(batch) == len(symbols):
                 combined = pd.concat(
                     {sym: batch[sym] for sym in symbols}, axis=1
                 )
                 if not combined.empty:
                     _logger.debug(
-                        "INDstocks batch OHLCV covered all %d symbols", len(symbols)
+                        "Batch OHLCV covered all %d symbols (by source: %s)",
+                        len(symbols),
+                        tier_breakdown,
                     )
                     return combined
             elif batch:
                 missing = [s for s in symbols if s not in batch]
                 _logger.info(
-                    "INDstocks batch OHLCV covered %d/%d symbols; gap-filling the "
-                    "remaining %d from yfinance instead of re-fetching the whole "
+                    "Batch OHLCV covered %d/%d symbols (by source: %s); gap-filling "
+                    "the remaining %d from yfinance instead of re-fetching the whole "
                     "batch: %s",
                     len(batch),
                     len(symbols),
+                    tier_breakdown,
                     len(missing),
                     missing,
                 )
