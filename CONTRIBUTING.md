@@ -32,7 +32,7 @@ pip install -r requirements-dev.txt   # adds pytest, flake8
 
 # Backend
 export FORTRESS_DB_BACKEND=sqlite
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>   # enables INDstocks; optional
 uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload

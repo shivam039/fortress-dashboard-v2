@@ -11,7 +11,7 @@ Endpoints:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -26,9 +26,33 @@ router = APIRouter(prefix="/api/reit-invits", tags=["reit-invits"])
 # dev-server restart, which this in-memory dict never did on its own.
 _cached_frame: Optional[List[Dict[str, Any]]] = None
 _cache_ts: Optional[str] = None
+# True when _cached_frame came from a degraded live fetch (see
+# _is_degraded_frame) rather than a healthy one or the DB cache — governs
+# which of the two TTLs below applies to it.
+_cache_is_degraded: bool = False
 
-# How stale the cache is allowed to be before a fresh live fetch is forced.
+# How stale a healthy cached frame is allowed to be before a fresh live
+# fetch is forced.
 _CACHE_MAX_AGE_HOURS = 4
+
+# How long a *degraded* frame (batch timeout, provider outage — see
+# _is_degraded_frame) is served from cache before the next request is
+# allowed to retry the live fetch. Deliberately much shorter than
+# _CACHE_MAX_AGE_HOURS: an outage is usually transient and worth retrying
+# soon, but the reason this exists at all is to put a floor under how often
+# build_reit_frame() runs. Each run spins up a ThreadPoolExecutor(6) plus,
+# for every symbol whose price history came back, up to two more
+# short-lived single-use executors per symbol (_call_with_timeout, used for
+# the two yfinance calls with no timeout of their own) — roughly two dozen
+# threads per attempt for the current 11-symbol universe. Without this
+# cooldown, every single incoming request during a sustained outage would
+# trigger its own full live-fetch attempt (the earlier "don't cache a
+# degraded frame" fix, taken on its own, achieves exactly that), and threads
+# still blocked on a stalled connection when their timeout fires are
+# abandoned, not killed — under real traffic during an extended outage this
+# is unbounded thread growth, which is exactly the shape of "Web Service
+# exceeded its memory limit" restarts.
+_DEGRADED_CACHE_MAX_AGE_MINUTES = 3
 
 
 class RefreshRequest(BaseModel):
@@ -62,12 +86,17 @@ def _is_degraded_frame(frame: List[Dict[str, Any]]) -> bool:
 
 
 def _get_or_fetch_frame() -> List[Dict[str, Any]]:
-    global _cached_frame, _cache_ts
+    global _cached_frame, _cache_ts, _cache_is_degraded
 
     if _cached_frame and _cache_ts:
         try:
-            age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(_cache_ts)).total_seconds() / 3600
-            if age_h < _CACHE_MAX_AGE_HOURS:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(_cache_ts)
+            max_age = (
+                timedelta(minutes=_DEGRADED_CACHE_MAX_AGE_MINUTES)
+                if _cache_is_degraded
+                else timedelta(hours=_CACHE_MAX_AGE_HOURS)
+            )
+            if age < max_age:
                 return _cached_frame
         except Exception:
             pass
@@ -90,22 +119,31 @@ def _get_or_fetch_frame() -> List[Dict[str, Any]]:
     if cached_records and len(cached_records) >= len(REIT_INVIT_UNIVERSE):
         _cached_frame = cached_records
         _cache_ts = datetime.now(timezone.utc).isoformat()
+        _cache_is_degraded = False
         return _cached_frame
 
-    # Third tier: live fetch, then persist for next time — but only if the
-    # fetch actually succeeded for most symbols. A degraded fetch (batch
-    # timeout, provider outage) is served for this one request as a
-    # best-effort answer, but is deliberately NOT written to _cached_frame
-    # or the DB cache: doing so would overwrite any still-good previously
-    # cached data with blanks and lock every viewer into that blank result
-    # for up to _CACHE_MAX_AGE_HOURS, rather than letting the very next
-    # request retry the live fetch (which a transient rate-limit/network
-    # blip usually clears within seconds to minutes).
+    # Third tier: live fetch, then persist for next time — but only to the
+    # DB cache if the fetch actually succeeded for most symbols. A degraded
+    # fetch (batch timeout, provider outage) IS still kept in the
+    # in-process cache — so the next requests within
+    # _DEGRADED_CACHE_MAX_AGE_MINUTES reuse it instead of each triggering
+    # their own live-fetch attempt (see that constant's comment: this is
+    # what actually bounds how often build_reit_frame() — and the ~2 dozen
+    # threads it can spin up — runs during a sustained outage) — but is
+    # deliberately NOT written to the DB cache: doing so would overwrite
+    # any still-good previously cached data with blanks and lock every
+    # viewer into that blank result for the full _CACHE_MAX_AGE_HOURS.
     from reit_invits.logic import build_reit_frame
     from utils.db import upsert_reit_cache
 
     fresh_frame = build_reit_frame()
-    if _is_degraded_frame(fresh_frame):
+    degraded = _is_degraded_frame(fresh_frame)
+
+    _cached_frame = fresh_frame
+    _cache_ts = datetime.now(timezone.utc).isoformat()
+    _cache_is_degraded = degraded
+
+    if degraded:
         bad = sum(
             1
             for r in fresh_frame
@@ -115,15 +153,14 @@ def _get_or_fetch_frame() -> List[Dict[str, Any]]:
         )
         logger.warning(
             "reit_cache: live fetch returned mostly placeholder/error data "
-            "(%d/%d symbols) — serving it for this request only, NOT "
-            "caching it, so the next request retries a live fetch instead "
-            "of being stuck with blank data for %dh",
-            bad, len(fresh_frame), _CACHE_MAX_AGE_HOURS,
+            "(%d/%d symbols) — serving it and holding off on the next live "
+            "retry for %dm, NOT writing it to the DB cache so a still-good "
+            "previous snapshot (if any) survives instead of being "
+            "overwritten with blanks for %dh",
+            bad, len(fresh_frame), _DEGRADED_CACHE_MAX_AGE_MINUTES, _CACHE_MAX_AGE_HOURS,
         )
         return fresh_frame
 
-    _cached_frame = fresh_frame
-    _cache_ts = datetime.now(timezone.utc).isoformat()
     try:
         upsert_reit_cache(_cached_frame)
     except Exception as exc:

@@ -17,7 +17,7 @@ Env vars
 --------
 Auto-refresh (preferred) — set all three::
 
-    INDSTOCKS_CLIENT_ID   = dX03OgVqr0Cgc8x7fJQ0   # from dashboard
+    INDSTOCKS_CLIENT_ID   = <your_client_id>       # from dashboard
     INDSTOCKS_MPIN        = <your mpin>              # never commit
     INDSTOCKS_TOTP_SECRET = <base32 setup key>       # from dashboard QR, never commit
 
@@ -27,7 +27,7 @@ Static token (fallback, expires every 24 h)::
 
 Usage::
 
-    from engine.utils.indstocks_client import get_client
+    from utils.indstocks_client import get_client
 
     client = get_client()                          # auto-refreshes token if TOTP creds set
     ltp_data = client.get_ltp(["NSE_2885"])        # {"NSE_2885": {"live_price": 1426.0}}

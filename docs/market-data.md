@@ -164,7 +164,7 @@ Build with: `INDstocksClient.build_scrip_code("NSE", "2885")` → `"NSE_2885"`
 ### TOTP auto-refresh (recommended)
 
 ```bash
-export INDSTOCKS_CLIENT_ID=dX03OgVqr0Cgc8x7fJQ0
+export INDSTOCKS_CLIENT_ID=<your_client_id>
 export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
 ```

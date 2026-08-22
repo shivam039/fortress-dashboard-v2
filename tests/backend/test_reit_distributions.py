@@ -265,13 +265,12 @@ def test_call_with_timeout_swallows_exceptions_and_returns_default():
     assert result == "fallback"
 
 
-def test_get_or_fetch_frame_skips_caching_a_degraded_live_fetch(monkeypatch):
+def test_get_or_fetch_frame_does_not_db_cache_a_degraded_live_fetch(monkeypatch):
     """A live fetch where most symbols come back as placeholder/error rows
     (batch timeout, provider outage — see reit_invits/logic.py's
-    _BATCH_TIMEOUT_S) must not get written into the in-process cache or the
-    DB-backed reit_cache table. Caching it would lock every viewer into
-    blank REIT/InvIT data for _CACHE_MAX_AGE_HOURS just because one fetch
-    hit a slow patch, instead of letting the very next request retry."""
+    _BATCH_TIMEOUT_S) must not get written into the DB-backed reit_cache
+    table. Doing so would overwrite any still-good previously cached data
+    with blanks and lock every viewer into that for _CACHE_MAX_AGE_HOURS."""
     # These are imported under the bare module names ("reit_invits.logic",
     # "routers.reit_invits", "utils.db") that engine/main.py's sys.path
     # trick makes the *actual* names FastAPI's app loads them under — not
@@ -283,6 +282,7 @@ def test_get_or_fetch_frame_skips_caching_a_degraded_live_fetch(monkeypatch):
 
     reit_router._cached_frame = None
     reit_router._cache_ts = None
+    reit_router._cache_is_degraded = False
 
     degraded_frame = [
         {"symbol": "A.NS", "price": None, "risk_flags": ["fetch_timeout"]},
@@ -301,20 +301,57 @@ def test_get_or_fetch_frame_skips_caching_a_degraded_live_fetch(monkeypatch):
 
     assert result == degraded_frame  # still answers this one request
     assert upsert_calls == []  # but does not persist it to the DB cache
-    assert reit_router._cached_frame is None  # nor to the in-process cache
-    assert reit_router._cache_ts is None
+    assert reit_router._cache_is_degraded is True
 
 
-def test_get_or_fetch_frame_does_cache_a_healthy_live_fetch(monkeypatch):
-    """Sanity check for the test above: a fetch that mostly succeeded must
-    still be cached as before — the degraded-frame check should only ever
-    skip caching, never accidentally skip it for a normal, healthy fetch."""
+def test_get_or_fetch_frame_short_circuits_repeat_requests_during_an_outage(monkeypatch):
+    """The in-process cache DOES hold on to a degraded frame (unlike the DB
+    cache) so that repeat requests within _DEGRADED_CACHE_MAX_AGE_MINUTES
+    are served from it instead of each triggering their own live-fetch
+    attempt. build_reit_frame() spins up roughly two dozen threads per
+    attempt (an outer pool of 6, plus up to two _call_with_timeout
+    single-use executors per symbol) — without this short-circuit, every
+    incoming request during a sustained outage would trigger its own
+    attempt, and threads still blocked on a stalled connection when their
+    timeout fires are abandoned rather than killed. That unbounded thread
+    growth under real traffic is exactly the shape of the "Web Service
+    exceeded its memory limit" restarts this is meant to prevent."""
     import reit_invits.logic as reit_logic
     import routers.reit_invits as reit_router
     import utils.db as db_mod
 
     reit_router._cached_frame = None
     reit_router._cache_ts = None
+    reit_router._cache_is_degraded = False
+
+    degraded_frame = [{"symbol": "A.NS", "price": None, "risk_flags": ["fetch_timeout"]}]
+    fetch_calls = []
+    monkeypatch.setattr(
+        reit_logic, "build_reit_frame", lambda: (fetch_calls.append(1), degraded_frame)[1]
+    )
+    monkeypatch.setattr(db_mod, "fetch_reit_cache", lambda max_age_hours: [])
+    monkeypatch.setattr(db_mod, "upsert_reit_cache", lambda records: None)
+
+    first = reit_router._get_or_fetch_frame()
+    second = reit_router._get_or_fetch_frame()
+
+    assert first == degraded_frame
+    assert second == degraded_frame
+    assert len(fetch_calls) == 1, "second request should be served from cache, not refetch live"
+
+
+def test_get_or_fetch_frame_does_cache_a_healthy_live_fetch(monkeypatch):
+    """Sanity check for the tests above: a fetch that mostly succeeded must
+    still be cached as before, with the normal long TTL — the
+    degraded-frame handling should only ever change behavior for a
+    degraded fetch, never for a normal, healthy one."""
+    import reit_invits.logic as reit_logic
+    import routers.reit_invits as reit_router
+    import utils.db as db_mod
+
+    reit_router._cached_frame = None
+    reit_router._cache_ts = None
+    reit_router._cache_is_degraded = False
 
     healthy_frame = [
         {"symbol": "A.NS", "price": 100.0, "risk_flags": []},
@@ -336,3 +373,4 @@ def test_get_or_fetch_frame_does_cache_a_healthy_live_fetch(monkeypatch):
     assert upsert_calls == [healthy_frame]
     assert reit_router._cached_frame == healthy_frame
     assert reit_router._cache_ts is not None
+    assert reit_router._cache_is_degraded is False
