@@ -141,6 +141,63 @@ def test_scan_no_circuit_breaker_when_most_tickers_succeed(monkeypatch):
     assert body["scanned"] == 50
 
 
+def test_scan_persists_to_history_so_the_history_page_can_see_it(monkeypatch):
+    """/api/scan is what the real Next.js frontend calls, but it never
+    called register_scan/save_scan_results at all — only the legacy
+    Streamlit UI's _save_scan() and the standalone Telegram bot script did.
+    So the Scan History page (/api/history/timestamps + /api/history/data)
+    was always empty, no matter how many scans ran through the actual app."""
+    from utils.db import init_db
+
+    # TestClient() without a `with` block skips FastAPI's startup event,
+    # which is what creates these tables in a real run (uvicorn does fire
+    # it) — call it directly so this test reflects real app behavior.
+    init_db()
+
+    monkeypatch.setattr("stock_scanner.pulse.get_current_regime", lambda: {
+        "Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0,
+    })
+    monkeypatch.setattr(main_mod, "prefetch_metadata", lambda tickers: None)
+
+    def fake_get_stock_data(*a, **k):
+        first_arg = a[0] if a else None
+        if isinstance(first_arg, tuple):
+            return pd.DataFrame()
+        return pd.DataFrame({"Close": range(250)})
+
+    monkeypatch.setattr(main_mod, "get_stock_data", fake_get_stock_data)
+    monkeypatch.setattr(
+        main_mod,
+        "check_institutional_fortress",
+        lambda ticker, *a, **k: {"Symbol": ticker, "Price": 100.0},
+    )
+    # apply_advanced_scoring expects a fully-shaped row (RSI, EMA200, sector
+    # z-scores, etc.) that a real check_institutional_fortress result
+    # supplies — irrelevant to what this test checks (that /api/scan
+    # persists whatever it scores), so stand in with something minimal that
+    # just adds the Score column real scoring would add.
+    monkeypatch.setattr(
+        main_mod, "apply_advanced_scoring", lambda df, cfg: df.assign(Score=90.0)
+    )
+
+    payload = {"universe": "Nifty 50", "portfolio_val": 1000000, "risk_pct": 0.01}
+    response = client.post("/api/scan", json=payload)
+    assert response.status_code == 200
+    results = response.json()
+    assert isinstance(results, list) and len(results) == 50
+
+    ts_response = client.get("/api/history/timestamps")
+    assert ts_response.status_code == 200
+    timestamps = ts_response.json()
+    assert len(timestamps) > 0, "scan just ran but no timestamp appeared in history"
+
+    data_response = client.get(f"/api/history/data?timestamp={timestamps[0]}")
+    assert data_response.status_code == 200
+    records = data_response.json()
+    assert len(records) == 50, "scan history timestamp exists but is missing rows"
+    assert records[0]["Symbol"].endswith(".NS")
+
+
 def test_sector_pulse_prefetches_metadata_before_scoring(monkeypatch):
     calls = {}
 

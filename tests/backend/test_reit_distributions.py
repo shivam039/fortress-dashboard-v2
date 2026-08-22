@@ -18,10 +18,13 @@ to cover all currently-listed Indian REITs/InvITs. These tests cover the
 distribution-history derivation, the new scoring dimension, and the cache.
 """
 
+import time
+
 import pandas as pd
 
 from engine.reit_invits.logic import (
     WEIGHTS,
+    _call_with_timeout,
     _fetch_distribution_history,
     _score_universe,
 )
@@ -234,3 +237,102 @@ def test_reit_cache_upsert_overwrites():
 def test_reit_cache_empty_list_is_a_noop():
     # Must not raise.
     upsert_reit_cache([])
+
+
+def test_call_with_timeout_bounds_a_hanging_call():
+    """yfinance's Ticker.info/.dividends expose no timeout of their own —
+    on a slow/rate-limited connection a single call has been observed
+    taking the better part of a minute, which is most of build_reit_frame's
+    whole 45s batch budget. _call_with_timeout must give up on a stuck call
+    well before that, rather than actually waiting it out."""
+    start = time.monotonic()
+    result = _call_with_timeout(lambda: time.sleep(5), timeout_s=0.2, default="TIMED_OUT")
+    elapsed = time.monotonic() - start
+    assert result == "TIMED_OUT"
+    assert elapsed < 1.0, f"took {elapsed:.2f}s to give up on a 0.2s timeout"
+
+
+def test_call_with_timeout_returns_the_real_result_when_fast_enough():
+    result = _call_with_timeout(lambda: 42, timeout_s=5)
+    assert result == 42
+
+
+def test_call_with_timeout_swallows_exceptions_and_returns_default():
+    def _raise():
+        raise RuntimeError("boom")
+
+    result = _call_with_timeout(_raise, timeout_s=5, default="fallback")
+    assert result == "fallback"
+
+
+def test_get_or_fetch_frame_skips_caching_a_degraded_live_fetch(monkeypatch):
+    """A live fetch where most symbols come back as placeholder/error rows
+    (batch timeout, provider outage — see reit_invits/logic.py's
+    _BATCH_TIMEOUT_S) must not get written into the in-process cache or the
+    DB-backed reit_cache table. Caching it would lock every viewer into
+    blank REIT/InvIT data for _CACHE_MAX_AGE_HOURS just because one fetch
+    hit a slow patch, instead of letting the very next request retry."""
+    # These are imported under the bare module names ("reit_invits.logic",
+    # "routers.reit_invits", "utils.db") that engine/main.py's sys.path
+    # trick makes the *actual* names FastAPI's app loads them under — not
+    # the "engine.*"-prefixed names used elsewhere in this file, which are
+    # loaded as separate module objects with their own separate globals.
+    import reit_invits.logic as reit_logic
+    import routers.reit_invits as reit_router
+    import utils.db as db_mod
+
+    reit_router._cached_frame = None
+    reit_router._cache_ts = None
+
+    degraded_frame = [
+        {"symbol": "A.NS", "price": None, "risk_flags": ["fetch_timeout"]},
+        {"symbol": "B.NS", "price": None, "risk_flags": ["fetch_timeout"]},
+        {"symbol": "C.NS", "price": 100.0, "risk_flags": []},
+    ]
+    monkeypatch.setattr(reit_logic, "build_reit_frame", lambda: degraded_frame)
+    monkeypatch.setattr(db_mod, "fetch_reit_cache", lambda max_age_hours: [])
+
+    upsert_calls = []
+    monkeypatch.setattr(
+        db_mod, "upsert_reit_cache", lambda records: upsert_calls.append(records)
+    )
+
+    result = reit_router._get_or_fetch_frame()
+
+    assert result == degraded_frame  # still answers this one request
+    assert upsert_calls == []  # but does not persist it to the DB cache
+    assert reit_router._cached_frame is None  # nor to the in-process cache
+    assert reit_router._cache_ts is None
+
+
+def test_get_or_fetch_frame_does_cache_a_healthy_live_fetch(monkeypatch):
+    """Sanity check for the test above: a fetch that mostly succeeded must
+    still be cached as before — the degraded-frame check should only ever
+    skip caching, never accidentally skip it for a normal, healthy fetch."""
+    import reit_invits.logic as reit_logic
+    import routers.reit_invits as reit_router
+    import utils.db as db_mod
+
+    reit_router._cached_frame = None
+    reit_router._cache_ts = None
+
+    healthy_frame = [
+        {"symbol": "A.NS", "price": 100.0, "risk_flags": []},
+        {"symbol": "B.NS", "price": 200.0, "risk_flags": []},
+        {"symbol": "C.NS", "price": 300.0, "risk_flags": []},
+        {"symbol": "D.NS", "price": None, "risk_flags": ["fetch_timeout"]},
+    ]
+    monkeypatch.setattr(reit_logic, "build_reit_frame", lambda: healthy_frame)
+    monkeypatch.setattr(db_mod, "fetch_reit_cache", lambda max_age_hours: [])
+
+    upsert_calls = []
+    monkeypatch.setattr(
+        db_mod, "upsert_reit_cache", lambda records: upsert_calls.append(records)
+    )
+
+    result = reit_router._get_or_fetch_frame()
+
+    assert result == healthy_frame
+    assert upsert_calls == [healthy_frame]
+    assert reit_router._cached_frame == healthy_frame
+    assert reit_router._cache_ts is not None
