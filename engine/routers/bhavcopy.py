@@ -32,7 +32,12 @@ _SETTING_KEY = "ohlcv_provider_preference"
 # meant to survive a process restart — if the service restarts mid-backfill,
 # bhavcopy_fetch_log's per-day dedup is what makes re-triggering safe, this
 # flag just avoids two backfills hammering NSE concurrently in the common case.
-_backfill_state: dict = {"in_progress": False, "started_at": None}
+_backfill_state: dict = {
+    "in_progress": False,
+    "started_at": None,
+    "days_processed": 0,
+    "target_days": 0,
+}
 
 
 class RefreshRequest(BaseModel):
@@ -41,6 +46,7 @@ class RefreshRequest(BaseModel):
 
 class BackfillRequest(BaseModel):
     days: int = 300
+    max_fetches: int = 30
 
 
 class DataProviderRequest(BaseModel):
@@ -69,6 +75,8 @@ def bhavcopy_refresh_status():
         "status": status or "never_attempted",
         "backfill_in_progress": _backfill_state["in_progress"],
         "backfill_started_at": _backfill_state["started_at"],
+        "backfill_days_processed": _backfill_state.get("days_processed", 0),
+        "backfill_target_days": _backfill_state.get("target_days", 0),
         # Cumulative, since process start or the last POST
         # /api/bhavcopy/reset-stats — what actually served OHLCV calls,
         # independent of the ohlcv_provider_preference *setting* (which
@@ -124,7 +132,18 @@ async def backfill_bhavcopy_data(req: BackfillRequest, background_tasks: Backgro
     Safe to re-run or retry: bhavcopy_fetch_log's per-day dedup means an
     already-fetched day is skipped rather than re-downloaded, so an
     interrupted backfill (e.g. a deploy restart) just picks up where it
-    left off on the next call.
+    left off on the next call — this is also how `req.max_fetches` chunking
+    (below) is meant to be driven: call this endpoint repeatedly (see
+    .github/workflows/bhavcopy-backfill.yml, which now loops automatically)
+    rather than once with an unbounded `days`.
+
+    `req.max_fetches` caps how many actual NSE network requests a single
+    call makes (already-fetched days are skipped near-instantly and don't
+    count against this) — added after a full 300-day backfill in one
+    BackgroundTask was found to reliably outlive a Render deploy and get
+    silently killed mid-run, well before reaching its target. `0` means no
+    cap (run the full `days` range in one call) — fine for a short range or
+    a host that won't redeploy mid-run, but not the default for that reason.
     """
     if _backfill_state["in_progress"]:
         raise HTTPException(
@@ -136,6 +155,8 @@ async def backfill_bhavcopy_data(req: BackfillRequest, background_tasks: Backgro
         )
     if not (1 <= req.days <= 3650):
         raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+    if not (0 <= req.max_fetches <= 300):
+        raise HTTPException(status_code=400, detail="max_fetches must be between 0 and 300 (0 = no cap)")
 
     from datetime import datetime, timezone
 
@@ -144,8 +165,19 @@ async def backfill_bhavcopy_data(req: BackfillRequest, background_tasks: Backgro
     def _run():
         _backfill_state["in_progress"] = True
         _backfill_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _backfill_state["days_processed"] = 0
+        _backfill_state["target_days"] = req.days
+
+        def _on_progress(processed: int, total: int):
+            _backfill_state["days_processed"] = processed
+            _backfill_state["target_days"] = total
+
         try:
-            result = backfill_bhavcopy(days=req.days)
+            result = backfill_bhavcopy(
+                days=req.days,
+                max_fetches=req.max_fetches,
+                progress_cb=_on_progress,
+            )
             logger.info(
                 "Bhav Copy backfill finished: %d fetched, %d no-data days, %d errors",
                 len(result["done"]),
