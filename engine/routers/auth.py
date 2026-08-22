@@ -1,4 +1,6 @@
 # engine/routers/auth.py — Authentication endpoints (login, signup, guest)
+# AI agents modifying this file: see /AI_AGENT_PROTOCOL.md — log every change
+# via engine/utils/ai_audit.py:log_ai_change().
 """
 JWT-based auth router.
 
@@ -23,6 +25,15 @@ from auth_utils import (
 
 logger = logging.getLogger("fortress.routers.auth")
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_DEFAULT_ADMIN_PASSWORD = "fortress123"
+if not os.environ.get("FORTRESS_APP_PASSWORD"):
+    logger.warning(
+        "FORTRESS_APP_PASSWORD is not set — the admin account falls back to "
+        "the hardcoded default password, which is public in this repo's "
+        "git history. Set FORTRESS_APP_USERNAME and FORTRESS_APP_PASSWORD "
+        "to unique values in any non-local environment."
+    )
 
 
 # ── Request / response models ────────────────────────────────────────────────
@@ -74,7 +85,7 @@ async def login(req: LoginRequest, response: Response):
 
     # Admin login
     if username == admin_username:
-        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "fortress123")
+        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", _DEFAULT_ADMIN_PASSWORD)
         if req.password != admin_pwd:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
