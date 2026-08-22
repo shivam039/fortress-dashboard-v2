@@ -261,11 +261,20 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
     if preference == "bhavcopy":
         df = _ohlcv_bhavcopy(symbol, period)
         if df is not None and not df.empty:
-            _record_ohlcv_source("bhavcopy")
-            return df
-        logger.debug(
-            "Bhav Copy has no OHLCV for %s (%s) yet, falling back", symbol, period
-        )
+            if _bhavcopy_has_sufficient_coverage(df, period):
+                _record_ohlcv_source("bhavcopy")
+                return df
+            logger.debug(
+                "Bhav Copy has only %d rows for %s (%s) — below the coverage "
+                "threshold for this period (likely mid-backfill), falling back",
+                len(df),
+                symbol,
+                period,
+            )
+        else:
+            logger.debug(
+                "Bhav Copy has no OHLCV for %s (%s) yet, falling back", symbol, period
+            )
 
     if _indstocks_available():
         df = _ohlcv_indstocks(symbol, period)
@@ -310,6 +319,43 @@ def _period_to_start_date(period: str) -> Optional[str]:
         return None
     start = datetime.now(tz=timezone.utc) - timedelta(days=days)
     return start.strftime("%Y-%m-%d")
+
+
+# Below this fraction of the trading days a requested period should actually
+# contain, Bhav Copy's answer is treated as "not enough history yet" (e.g.
+# mid-backfill, or a genuinely recent listing) rather than "good enough" —
+# and the tier falls through to INDstocks/yfinance instead of silently
+# serving a technically-non-empty-but-practically-useless partial history.
+#
+# This was found live: right after the backfill first ran, Bhav Copy had
+# only ~16 trading days of history. Because the old check was just "is the
+# DataFrame non-empty", get_ohlcv()/get_batch_ohlcv() served that thin
+# 16-row history outright for period="1y" requests — which then silently
+# failed stock_scanner.logic.check_institutional_fortress's own
+# `len(data) < 210` minimum-history gate for every single symbol, so a full
+# scan came back with 0 results and no error anywhere in the chain.
+_BHAVCOPY_MIN_COVERAGE_RATIO = 0.5
+
+
+def _bhavcopy_has_sufficient_coverage(df: pd.DataFrame, period: str) -> bool:
+    """Return False if ``df`` (Bhav Copy's answer for ``period``) covers
+    meaningfully fewer trading days than the period actually spans. Uses the
+    real NSE-week calendar (``pandas.bdate_range``, Mon–Fri) rather than a
+    hardcoded row count, so this stays correct for every period string
+    (a "1mo" request needing ~22 trading days isn't held to the same bar as
+    a "1y" request needing ~260) without hardcoding any specific caller's
+    own downstream minimum (e.g. the scanner's 210)."""
+    start_date = _period_to_start_date(period)
+    if start_date is None:
+        # Unrecognised period string — no expected-length bound to compare
+        # against, so accept whatever Bhav Copy has.
+        return True
+    expected_trading_days = len(
+        pd.bdate_range(start=start_date, end=datetime.now(tz=timezone.utc).date())
+    )
+    if expected_trading_days == 0:
+        return True
+    return len(df) >= expected_trading_days * _BHAVCOPY_MIN_COVERAGE_RATIO
 
 
 def _ohlcv_bhavcopy(symbol: str, period: str) -> Optional[pd.DataFrame]:
@@ -477,7 +523,17 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
     remaining = symbols
 
     if preference == "bhavcopy":
-        result = _batch_ohlcv_bhavcopy(symbols, period)
+        raw_result = _batch_ohlcv_bhavcopy(symbols, period)
+        # Drop any symbol whose Bhav Copy history doesn't clear the coverage
+        # bar for this period (see _bhavcopy_has_sufficient_coverage) — those
+        # symbols fall through to the INDstocks tier below just like a
+        # symbol Bhav Copy had nothing for at all, instead of being served a
+        # thin partial history that downstream scoring would just reject.
+        result = {
+            sym: df
+            for sym, df in raw_result.items()
+            if _bhavcopy_has_sufficient_coverage(df, period)
+        }
         _record_ohlcv_source("bhavcopy", count=len(result))
         remaining = [s for s in symbols if s not in result]
         if not remaining:
