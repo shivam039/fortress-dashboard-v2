@@ -16,6 +16,24 @@ have to re-derive it from scratch by reading git history.
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-08-22 — Retire the stray [tool.vercel] entrypoint; scope Vercel to frontend/ only
+
+**Decision:** Removed `[tool.vercel]` from `pyproject.toml` (which had declared `engine.main:app` as a Vercel entrypoint) and instead configured the Vercel project's Root Directory to `frontend/`, deploying only the Next.js app to Vercel.
+**Why:** The FastAPI backend already deploys to Render with its own env vars (Neon `DATABASE_URL`, INDstocks TOTP secrets, `FORTRESS_API_KEY`). Building it a second time on Vercel from the repo root also caused Vercel's Python auto-detection to fail outright ("No FastAPI entrypoint found"), and would have meant maintaining two divergent backend deployments with separate, easily-drifting config.
+**Rejected:** Fixing the Vercel entrypoint declaration to make the dual-deployment work. Rejected because a second live backend copy — likely missing production env vars — adds real operational risk for no benefit; Render already serves this role.
+
+### 2026-08-22 — REIT/InvIT distribution-history scoring and cache-backed, non-blocking route handlers
+
+**Decision:** Fixed 5 incorrect REIT/InvIT NSE tickers (previously guessed from marketing names rather than verified against actual trading symbols), added 1y/3y distribution-history scoring pulled from `yfinance` dividends, and converted `list_reit_invits`/`get_reit_detail`/`reit_refresh_status` from `async def` to `def` with an in-memory → DB-cache → live-fetch resolution order.
+**Why:** The REIT/InvIT tab was reported as permanently stuck loading. Root cause was a combination of wrong tickers silently failing to fetch data, `async def` route handlers wrapping slow synchronous yfinance calls (blocking uvicorn's entire event loop for every request on the server, not just REIT/InvIT ones), and a completely unimplemented cache layer (`upsert_reit_cache` was a no-op placeholder).
+**Rejected:** Keeping the async signature and just optimizing the yfinance calls. Rejected because the blocking-event-loop bug affects the whole server, not just this endpoint's own response time — the signature itself was the defect, matching a fix pattern already established elsewhere in this app (scanner, sector-pulse, MF routes).
+
+### 2026-08-22 — IndStocks TOTP auto-refresh for a credential-free unattended deployment
+
+**Decision:** Verified via full code audit (`indstocks_client.py`, `market_data_provider.py`, `main.py`) that the app runs safely with zero INDstocks credentials locally (transparent yfinance fallback via `_indstocks_available()` gating before any client is constructed), and documented that Render production should use the TOTP trio (`INDSTOCKS_CLIENT_ID`/`MPIN`/`TOTP_SECRET`) rather than the static `INDSTOCKS_TOKEN`, since the static token expires every 24h with no one present on an unattended server to manually refresh it.
+**Why:** User needed to deploy the backend to Render (no human present to refresh a 24h token) while also being able to run locally without ever entering credentials.
+**Rejected:** A cron job or separate refresh service to rotate `INDSTOCKS_TOKEN` on a schedule. Rejected because the TOTP trio already lets the app self-refresh on any `403`, entirely inside the running process — no separate process, cron, or webhook required.
+
 ### 2026-08-21 — Configure Vercel FastAPI entrypoint
 
 **Decision:** Declare `engine.main:app` in the `[tool.vercel]` section of

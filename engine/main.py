@@ -1,4 +1,6 @@
 # engine/main.py
+# AI agents modifying this file: see /AI_AGENT_PROTOCOL.md — log every change
+# via engine/utils/ai_audit.py:log_ai_change().
 import os
 import sys
 from typing import Dict, List, Optional
