@@ -1,8 +1,8 @@
 // src/app/screener/page.tsx — Stock Screener (most complex page)
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { scanApi, type ScanPayload } from '@/lib/api';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { scanApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
@@ -27,6 +27,15 @@ export default function ScreenerPage() {
   const [loading, setLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
+
+  // ── Single-stock search ─────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<SymbolSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchResult, setSearchResult] = useState<Record<string, unknown>[]>([]);
+  const [searchedSymbol, setSearchedSymbol] = useState('');
+  const searchBoxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scanApi.getUniverses().then(u => {
@@ -87,6 +96,51 @@ export default function ScreenerPage() {
     }
   }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, success, error]);
 
+  // Debounced search-as-you-type suggestions — waits for a pause in typing
+  // before hitting the backend so every keystroke doesn't fire a request.
+  useEffect(() => {
+    const query = searchQuery.trim();
+    const timer = setTimeout(() => {
+      if (query.length < 2) {
+        setSuggestions([]);
+        return;
+      }
+      scanApi.searchSymbols(query)
+        .then(s => { setSuggestions(s); setShowSuggestions(true); })
+        .catch(() => setSuggestions([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Close the suggestions dropdown on an outside click.
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const runSearch = useCallback(async (symbol: string) => {
+    const ticker = symbol.trim();
+    if (!ticker) return;
+    setSearching(true);
+    setShowSuggestions(false);
+    try {
+      const data = await scanApi.searchStock(ticker, universe || undefined);
+      setSearchResult(data);
+      setSearchedSymbol((data[0]?.Symbol as string) || ticker.toUpperCase());
+      success(`Found ${(data[0]?.Symbol as string) || ticker}`);
+    } catch (err: unknown) {
+      setSearchResult([]);
+      error(`Search failed: ${(err as Error).message}`);
+    } finally {
+      setSearching(false);
+    }
+  }, [universe, success, error]);
+
   const momentum = results.filter(r => r.Strategy === 'Momentum Pick');
   const longTerm = results.filter(r => r.Strategy === 'Long-Term Pick');
   const actionable = results.filter(r => r.Quality_Gate_Pass === true);
@@ -100,6 +154,49 @@ export default function ScreenerPage() {
         <h1 className="page-title">📊 Stock Screener</h1>
         <p className="page-subtitle">Configure scan parameters below, then run the screener to find actionable setups.</p>
       </div>
+
+      {/* ── Stock Search ────────────────────────────────────────────────── */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <h3 className="section-title" style={{ marginTop: 0 }}>🔎 Search a Stock</h3>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+          <div className="input-group" style={{ position: 'relative', flex: 1 }} ref={searchBoxRef}>
+            <label>Ticker or company name</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="e.g. RELIANCE or Reliance Industries"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+              onKeyDown={e => { if (e.key === 'Enter') runSearch(searchQuery); }}
+            />
+            {showSuggestions && suggestions.length > 0 && (
+              <ul className="search-suggestions">
+                {suggestions.map(s => (
+                  <li key={s.symbol} onClick={() => { setSearchQuery(s.symbol); runSearch(s.symbol); }}>
+                    <strong>{s.symbol}</strong>
+                    {s.name && <span className="suggestion-name">{s.name}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={() => runSearch(searchQuery)}
+            disabled={searching || !searchQuery.trim()}
+          >
+            {searching ? 'Searching…' : '🔍 Search'}
+          </button>
+        </div>
+      </div>
+
+      {searchResult.length > 0 && (
+        <div className="section" style={{ marginBottom: '24px' }}>
+          <h3 className="section-title">📌 Search Result — {searchedSymbol}</h3>
+          <DataTable data={searchResult} />
+        </div>
+      )}
 
       {/* ── Scan Controls ───────────────────────────────────────────────── */}
       <div className="card" style={{ marginBottom: '24px' }}>

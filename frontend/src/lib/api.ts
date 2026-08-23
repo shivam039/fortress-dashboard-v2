@@ -273,6 +273,11 @@ export interface ScanPayload {
 // slow-but-working scan as "stuck".
 const SCAN_TIMEOUT_MS = 240_000; // 4 minutes
 
+export interface SymbolSuggestion {
+  symbol: string;
+  name: string;
+}
+
 export const scanApi = {
   getUniverses: async () =>
     asArray<string>(await api.get<unknown>('/api/universes'), [
@@ -292,6 +297,27 @@ export const scanApi = {
         SCAN_TIMEOUT_MS
       ),
       ['sector_pulse', 'sectors', 'data', 'results', 'items']
+    ),
+  // Search-as-you-type ticker/company-name suggestions (INDstocks
+  // instruments cache when available, Bhav Copy's symbol list as fallback —
+  // see GET /api/symbols/search).
+  searchSymbols: async (q: string) =>
+    asArray<SymbolSuggestion>(
+      await api.get<unknown>(`/api/symbols/search?q=${encodeURIComponent(q)}`),
+      ['results', 'data']
+    ),
+  // Fetch live data + the full scan-row scoring for one arbitrary ticker,
+  // outside the curated universes — see GET /api/scan/search. Same
+  // SCAN_TIMEOUT_MS as a full scan since it runs the identical
+  // fetch-then-score pipeline for that one symbol.
+  searchStock: async (symbol: string, universe?: string) =>
+    asArray<ApiRecord>(
+      await api.get<unknown>(
+        `/api/scan/search?symbol=${encodeURIComponent(symbol)}` +
+          (universe ? `&universe=${encodeURIComponent(universe)}` : ''),
+        SCAN_TIMEOUT_MS
+      ),
+      ['results', 'data']
     ),
 };
 

@@ -461,6 +461,109 @@ def run_scan(req: ScanRequest):
     return _sanitize_json_value(score_df.to_dict(orient="records"))
 
 
+@app.get("/api/symbols/search")
+def search_symbols(q: str = Query(..., min_length=1), n: int = 10):
+    """Ticker/company-name suggestions for the UI's stock search box.
+
+    Tries the INDstocks instruments cache first (has full company names);
+    falls back to Bhav Copy's own distinct symbol list (tickers only, no
+    company names) so search still works when INDstocks credentials are
+    broken or expired — see utils.instruments_cache / utils.db.search_bhavcopy_symbols.
+    """
+    query = q.strip()
+    if not query:
+        return []
+
+    try:
+        from utils.instruments_cache import get_instruments_cache
+
+        matches = get_instruments_cache().search_symbol(query, n=n)
+        if matches:
+            return [
+                {
+                    "symbol": f"{m['TRADING_SYMBOL'].upper()}.NS",
+                    "name": m.get("SYMBOL_NAME", ""),
+                }
+                for m in matches
+            ]
+    except Exception as e:
+        logger.debug(f"Instruments-cache symbol search failed, falling back to Bhav Copy: {e}")
+
+    try:
+        from utils.db import search_bhavcopy_symbols
+
+        return [{"symbol": s, "name": ""} for s in search_bhavcopy_symbols(query, limit=n)]
+    except Exception as e:
+        logger.warning(f"Bhav Copy symbol search failed for {query!r}: {e}")
+        return []
+
+
+@app.get("/api/scan/search")
+def search_stock(
+    symbol: str = Query(..., min_length=1),
+    universe: Optional[str] = None,
+    portfolio_val: float = 1000000,
+    risk_pct: float = 0.01,
+):
+    """Fetch live data and score a single arbitrary NSE ticker outside the
+    curated universes — same pipeline /api/scan uses per-ticker
+    (get_stock_data -> check_institutional_fortress -> apply_advanced_scoring),
+    so the response has the exact same columns as a row from /api/scan.
+
+    Note: a few columns in apply_advanced_scoring are cross-sectional
+    (computed relative to the whole scanned universe, e.g. Sector_RSI_Z,
+    RS_Rank) — on this single-row DataFrame they degenerate to a neutral
+    value (0 / 100th percentile) rather than being meaningfully comparable
+    to a multi-stock scan's values.
+    """
+    from stock_scanner.pulse import get_current_regime
+
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if not ticker.startswith("^") and "." not in ticker:
+        ticker = f"{ticker}.NS"
+
+    try:
+        regime_data = get_current_regime()
+    except Exception as e:
+        logger.warning(f"Regime fetch failed for search, defaulting to Range: {e}")
+        regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+
+    hist = get_stock_data(ticker, period="1y", interval="1d", group_by="column").dropna()
+    if hist.empty or len(hist) < 210:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Not enough market data for '{ticker}' (need at least 210 "
+                "trading days). Check the symbol is correct and NSE-listed."
+            ),
+        )
+
+    result = check_institutional_fortress(
+        ticker,
+        hist,
+        None,
+        portfolio_val,
+        risk_pct,
+        selected_universe=universe,
+        regime_data=regime_data,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"'{ticker}' did not produce a scoreable result — it may be "
+                "illiquid, recently listed, or missing fundamentals data."
+            ),
+        )
+
+    scoring_config = DEFAULT_SCORING_CONFIG.copy()
+    scoring_config["regime"] = regime_data
+    score_df = apply_advanced_scoring(pd.DataFrame([result]), scoring_config)
+    return _sanitize_json_value(score_df.to_dict(orient="records"))
+
+
 @app.get("/api/sector-pulse")
 def get_sector_pulse(universe: str = "Nifty 50"):
     # Same reasoning as /api/scan above: purely synchronous blocking work,
