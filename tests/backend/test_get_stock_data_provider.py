@@ -24,7 +24,7 @@ import pandas as pd
 import pytest
 import utils.market_data_provider as mdp_bare
 
-from engine.stock_scanner import logic
+from stock_scanner import logic
 
 
 @pytest.fixture(autouse=True)

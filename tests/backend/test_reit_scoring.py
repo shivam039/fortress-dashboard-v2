@@ -1,5 +1,5 @@
 import pytest
-from engine.reit_invits.logic import _score_universe
+from reit_invits.logic import _score_universe
 
 def test_score_range():
     records = [

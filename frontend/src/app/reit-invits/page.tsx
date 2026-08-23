@@ -78,6 +78,7 @@ export default function ReitInvitsPage() {
     }
   }, [sortBy, sortDesc, error]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleRefresh = async () => {

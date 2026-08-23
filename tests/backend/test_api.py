@@ -1,8 +1,8 @@
 import pandas as pd
 from fastapi.testclient import TestClient
 
-import engine.main as main_mod
-from engine.main import app
+import main as main_mod
+from main import app
 
 client = TestClient(app)
 
@@ -219,10 +219,10 @@ def test_trigger_mf_job(monkeypatch):
     def mock_run_mf_background_job(*args, **kwargs):
         pass
 
-    import engine.main
+    import main
 
     monkeypatch.setattr(
-        engine.main, "run_mf_background_job", mock_run_mf_background_job
+        main, "run_mf_background_job", mock_run_mf_background_job
     )
 
     payload = {"job_type": "refresh_nav", "force_refresh": False, "scheme_codes": []}

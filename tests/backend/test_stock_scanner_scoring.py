@@ -4,8 +4,8 @@ import pandas as pd
 from stock_scanner.ui_helpers import prepare_screener_table
 from streamlit.testing.v1 import AppTest
 
-from engine.stock_scanner import logic
-from engine.stock_scanner.logic import (
+from stock_scanner import logic
+from stock_scanner.logic import (
     _apply_quality_gates,
     _resolve_conviction_score,
     apply_advanced_scoring,

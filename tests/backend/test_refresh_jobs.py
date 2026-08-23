@@ -1,5 +1,5 @@
 import pytest
-from engine.utils.db import record_refresh_job_start, record_refresh_job_done, get_last_refresh_job, _ensure_investment_tables
+from utils.db import record_refresh_job_start, record_refresh_job_done, get_last_refresh_job, _ensure_investment_tables
 
 def test_refresh_jobs():
     _ensure_investment_tables()
