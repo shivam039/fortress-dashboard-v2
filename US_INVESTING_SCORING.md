@@ -102,16 +102,13 @@ For each symbol, using OHLCV + `info` fetched via `us_investing.service`
   don't carry a meaningful P/E at all — see §7).
 - **Staleness** — same 3-day rule as REIT/InvIT.
 
-Not computed anywhere in this pipeline: sector-relative valuation (P/E vs.
-sector median is *documented* in this file's own module docstring as the
-`valuation` sub-score's basis — see §4 for why that's not actually what
-happens), analyst targets/ratings, earnings-surprise history, or any
-options/short-interest data.
+Not computed anywhere in this pipeline: analyst targets/ratings,
+earnings-surprise history, or any options/short-interest data.
 
 ## 4. Conviction Score (`_score_universe`)
 
-Six weighted dimensions, each a **percentile rank against the other
-instruments in the current response** (`_pct_rank`, identical semantics to
+Six weighted dimensions, each a **percentile rank against peers**
+(`_pct_rank(value, peers, higher_is_better=True)`, identical semantics to
 REIT/InvIT's — see `REIT_INVIT_SCORING.md` §4, including the single-peer
 degenerate case in §7 below):
 
@@ -119,26 +116,42 @@ degenerate case in §7 below):
 |---|---|---|
 | return_score | 25% | Blend: 1m × 30% + 1y × 70%, percentile-ranked |
 | momentum_score | 20% | 3m return, percentile-ranked |
-| downside_protection | 20% | Max drawdown (1y), inverted percentile rank |
-| volatility_score | 15% | 30d annualized volatility, inverted percentile rank |
-| valuation | 10% | P/E, inverted percentile rank (lower P/E ranks higher) — **within this response's universe, not sector-relative; see below** |
+| downside_protection | 20% | Max drawdown (1y), percentile-ranked **without inversion** — see the note below, this used to be backwards |
+| volatility_score | 15% | 30d annualized volatility, `higher_is_better=False` — lower vol ranks higher |
+| valuation | 10% | P/E, `higher_is_better=False`, ranked against **same-sector peers** when there are enough of them (see below) |
 | liquidity | 10% | Average volume, percentile-ranked |
 
 ```python
 conviction = clamp(sum(breakdown[k] * weight[k] for k in WEIGHTS), 0, 100)
 ```
 
-**The module docstring says "P/E vs sector median" — the code doesn't do
-that.** `_score_universe` builds one flat `pes` list from every instrument
-in the response with a positive P/E (stocks and ETFs, every sector,
-together) and ranks each instrument against that single combined list —
-there is no per-sector grouping or per-sector median anywhere in this
-function. A richly-valued tech stock and a deep-value energy stock are
-ranked on the same P/E percentile scale as if their sectors' normal
-valuation ranges were the same. This is the same shape of
-documentation-vs-implementation drift `SCORING.md` and `MF_SCORING.md`
-were written to catch elsewhere in this app — flagged here rather than
-silently trusting the docstring.
+**`downside_protection`'s sign was inverted — fixed (2026-08-23).**
+`max_drawdown_1y` is stored as a negative number, where a *shallower* loss
+is the numerically *larger* value (`-2 > -15`) — i.e. it's already a
+"higher raw value is better" metric, unlike volatility (always positive,
+where lower really is the lower raw number). The old code did
+`100 - _pct_rank(max_drawdown_1y, peers)`, which double-flipped drawdown's
+already-correct ranking: **the fund with the shallower, better drawdown
+scored *worse* downside protection than one with a deep loss.** Identical
+bug and identical fix to REIT/InvIT's — see `REIT_INVIT_SCORING.md` §4/§8
+for the full writeup and a worked example. `_pct_rank` now takes an
+explicit `higher_is_better` flag instead of relying on callers to
+correctly guess when a manual `100 - rank` is needed.
+
+**Valuation is now sector-relative — fixed (2026-08-23).** The module
+docstring always said "P/E vs sector median"; the code didn't do that — it
+pooled every instrument's P/E together regardless of sector, so a
+richly-valued tech stock and a deep-value energy stock were ranked on the
+same scale as if their sectors' normal valuation ranges were equal. Now
+`_score_universe` groups P/E by `sector` first and ranks each instrument
+against its own sector's pool — but only when that sector has at least
+`_MIN_SECTOR_PEERS_FOR_VALUATION` (3) other same-sector instruments with a
+valid P/E in the current response; below that, it falls back to the whole
+universe's P/E pool for that instrument specifically, since a 1- or
+2-name "sector" comparison is as much of a degenerate rank as the
+single-instrument bug in §7. With only 31 symbols across many sectors,
+expect this fallback to trigger often — it's a real improvement over
+always-pooled, not a guarantee of a deep same-sector comparison every time.
 
 **ETFs get a neutral valuation score.** `bd["valuation"] = 50.0` whenever
 `pe_ratio` is falsy (`None` or ≤0) — true for essentially all ETFs, which
@@ -163,57 +176,72 @@ confidence.
 
 ## 6. Caching
 
-**Single tier, in-process only** (`engine/routers/us_investing.py`):
-`_cached_frame` + `_cache_ts`, 4-hour TTL, no DB-backed persistence layer.
-This is meaningfully simpler than both MF Lab (DB-backed monthly cache,
-`MF_SCORING.md` §8) and REIT/InvIT (3-tier: in-process → DB → live,
-`REIT_INVIT_SCORING.md` §6) — there is no `us_investing_cache`-equivalent
-table, so **every process restart or redeploy means the next request pays
-the full live-fetch cost again**, for all 31 symbols, with nothing served
-in the meantime. For a 31-symbol universe this is a smaller blast radius
-than MF Lab's hundreds-to-thousands-fund universe was before its DB cache
-existed, but it's the same shape of gap MF Lab had (`MF_SCORING.md` §8's
-history) — worth deciding whether US Investing needs the same fix, or
-whether the smaller universe genuinely makes it a non-issue in practice.
+**Three tiers, same shape as REIT/InvIT's** (`engine/routers/us_investing.py`,
+`_get_or_fetch_frame`): in-process dict (`_cached_frame`, 4h TTL) → DB cache
+(`utils.db.fetch_us_cache`/`upsert_us_cache`, `us_investing_cache` table) →
+live fetch. **Fixed (2026-08-23)**: this used to be in-process only, with
+`upsert_us_cache` a literal no-op placeholder — every process restart or
+redeploy meant the next request paid the full live-fetch cost across all
+31 symbols with nothing served in the meantime, the same starting bug
+REIT/InvIT's cache had before it was fixed (`REIT_INVIT_SCORING.md` §6's
+history). The DB tier is only used when it has at least as many rows as
+`FULL_UNIVERSE` (a partial cache is treated as stale, matching REIT/InvIT's
+convention).
 
-There's also no degraded-frame protection here (contrast REIT/InvIT §6's
-`_is_degraded_frame` handling) — a provider outage that returns mostly
-empty/error records for this batch gets cached and served as-is for the
-full 4 hours, with no distinction from a healthy fetch.
+**Degraded-frame protection added too** — a fetch where more than 30% of
+the returned records have no price (`_is_degraded_frame`) still answers
+the request that triggered it but is not written to the DB cache, so a
+provider outage can't overwrite a still-good previous snapshot with blanks
+for the full TTL. Simpler than REIT/InvIT's version (no separate
+short-cooldown in-process TTL for a degraded frame, no risk-flag-based
+detection — just the price-null ratio) since US Investing's fetch path
+(`us_investing.service.fetch_single`, `ThreadPoolExecutor(8)`) doesn't have
+REIT/InvIT's documented per-symbol nested-executor thread-growth risk that
+motivated that extra layer there.
 
-**Manual refresh** — `POST /api/us-investing/refresh` runs
-`us_investing.jobs.run_us_refresh_job()` in the background, then calls
-`build_us_frame()` again to repopulate the in-process cache — i.e. it
-fetches live twice per manual refresh (once inside the job, once to
-refresh `_cached_frame`), unlike REIT/InvIT's refresh flow which explicitly
-re-reads the job's own DB write instead of double-fetching
-(`REIT_INVIT_SCORING.md` §6).
+**Manual refresh** — `POST /api/us-investing/refresh` now re-reads the
+freshly-written DB cache after `run_us_refresh_job()` instead of calling
+`build_us_frame()` a second time, matching REIT/InvIT's refresh flow.
+**Fixed (2026-08-23)**: this used to fetch live twice per manual refresh
+(once inside the job, once to repopulate `_cached_frame`), doubling the
+provider load and the wait for every refresh.
+
+Declared routes (`list_us_instruments`, `get_us_detail`) are now plain
+`def`, not `async def` — an `async def` route with no real `await` inside
+runs directly on uvicorn's single event loop and freezes request handling
+for the *entire app* for the duration of a live fetch, the same bug
+pattern already fixed for the stock scanner, sector pulse, MF analysis,
+and REIT/InvIT routes (this module was missed at the time; **fixed
+2026-08-23**).
 
 ## 7. Known Gaps & Open Questions
 
-- **Single-instrument detail always scores 100 on every dimension —
-  identical bug to REIT/InvIT.** `get_us_detail(symbol)` calls
-  `_score_universe([raw])`, a peer list of exactly one instrument (itself).
-  `_pct_rank(value, [value])` = 100 unconditionally for every dimension.
-  `GET /api/us-investing/{symbol}` therefore returns a conviction score
-  that's mathematically guaranteed to be 100 (before the confidence/
-  staleness discount) regardless of the instrument's actual metrics. See
-  `REIT_INVIT_SCORING.md` §8 for the matching writeup and the shared fix
-  direction (rank against the full universe's peer values, not a
-  single-element list containing only the instrument being scored).
-- **`valuation`'s docstring ("P/E vs sector median") doesn't match its
-  implementation** (§4) — either fix the code to actually group by sector,
-  or fix the docstring/comment to describe what it really does
-  (universe-wide P/E percentile).
+**Fixed (2026-08-23)** — four items previously listed here are resolved;
+kept as a record of what changed:
+
+- ~~Single-instrument detail always scores 100 on every dimension~~ — same
+  bug and same router-level fix as REIT/InvIT's — see
+  `REIT_INVIT_SCORING.md` §8.
+- ~~`valuation`'s docstring doesn't match its implementation~~ — the code
+  now actually does sector-relative P/E ranking, with a whole-universe
+  fallback for thin sectors (§4).
+- ~~No DB-backed cache~~ / ~~no degraded-frame protection~~ — both added
+  (§6).
+- ~~`downside_protection` was inverted~~ — fixed (§4), same bug and fix as
+  REIT/InvIT.
+
+**Still open:**
+
 - **No conviction label** — confirm whether this is intentional (§1) or a
   gap versus MF Lab/REIT-InvIT's shared label vocabulary.
-- **No DB-backed cache** (§6) — every restart pays a full live-fetch, with
-  no degraded-frame protection during a provider outage.
 - **Risk flag thresholds aren't sector/type-aware** (§3) — a P/E-based flag
   applied uniformly across a 31-symbol mixed stock/ETF universe with no
-  per-sector or per-instrument-type baseline.
+  per-sector or per-instrument-type baseline. (Note: this is about the
+  `high_pe` *risk flag* specifically — the `valuation` *score* is now
+  sector-relative per §4; the flag wasn't part of that fix.)
 - **11×/31× universe sizes mean coarse percentile ranks**, same caveat as
-  REIT/InvIT (`REIT_INVIT_SCORING.md` §4).
+  REIT/InvIT (`REIT_INVIT_SCORING.md` §4) — more so now that `valuation`
+  ranks within (often thin) same-sector groups rather than the whole pool.
 - **No absolute/benchmarked equivalent of MF's v1 score** — same as
   REIT/InvIT, every dimension here is peer-relative only.
 

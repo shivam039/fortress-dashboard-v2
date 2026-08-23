@@ -21,11 +21,13 @@ distribution-history derivation, the new scoring dimension, and the cache.
 import time
 
 import pandas as pd
+import pytest
 
 from engine.reit_invits.logic import (
     WEIGHTS,
     _call_with_timeout,
     _fetch_distribution_history,
+    _pct_rank,
     _score_universe,
 )
 from engine.reit_invits.universe import REIT_INVIT_UNIVERSE
@@ -338,6 +340,99 @@ def test_get_or_fetch_frame_short_circuits_repeat_requests_during_an_outage(monk
     assert first == degraded_frame
     assert second == degraded_frame
     assert len(fetch_calls) == 1, "second request should be served from cache, not refetch live"
+
+
+def test_pct_rank_single_peer_is_neutral_not_a_trivial_100():
+    """A peer list of exactly one value (only ever the value being ranked
+    itself, as in a single-instrument detail lookup previously scored via
+    _score_universe([raw])) must not rank as a trivial 100th percentile —
+    see REIT_INVIT_SCORING.md §8. Needs at least 2 *other* comparison
+    points to mean anything."""
+    assert _pct_rank(8.0, [8.0]) == 50.0
+    # Two real peers: a genuine, non-degenerate rank is still computed.
+    assert _pct_rank(8.0, [8.0, 4.0]) == 100.0
+    assert _pct_rank(4.0, [8.0, 4.0]) == 50.0
+
+
+def test_score_universe_ranks_reit_and_invit_peer_groups_separately():
+    """REITs and InvITs are structurally different instrument types
+    (rental-income real estate vs. contracted-cashflow infrastructure) —
+    see REIT_INVIT_SCORING.md §8. A REIT's yield should be ranked against
+    other REITs, not pooled with InvITs (which typically run higher
+    yields). Three REITs (yields 4/5/6%) and three InvITs (yields
+    9/10/11%): the middling REIT (5%) should rank near the middle of its
+    own type, not near the bottom of a pooled 6-instrument list."""
+    def _rec(symbol, asset_class, yield_pct):
+        return {
+            "symbol": symbol, "price": 100, "asset_class": asset_class,
+            "yield_pct": yield_pct,
+        }
+
+    records = [
+        _rec("REIT_LOW", "REIT", 4.0),
+        _rec("REIT_MID", "REIT", 5.0),
+        _rec("REIT_HIGH", "REIT", 6.0),
+        _rec("INVIT_LOW", "InvIT", 9.0),
+        _rec("INVIT_MID", "InvIT", 10.0),
+        _rec("INVIT_HIGH", "InvIT", 11.0),
+    ]
+    scored = _score_universe(records)
+    by_symbol = {r["symbol"]: r for r in scored}
+
+    # REIT_MID (5%) is the 2nd-lowest of its own 3-instrument REIT pool
+    # ([4, 5, 6]) -> _pct_rank's "count(peers <= value)/n" gives 2/3 = 66.7.
+    # Pooled with the InvITs instead ([4, 5, 6, 9, 10, 11], all 6 together),
+    # it would rank 2/6 = 33.3 -- roughly half its real, type-scoped score,
+    # entirely because unrelated InvITs structurally run higher yields, not
+    # because REIT_MID is actually a weak REIT.
+    reit_mid_yield_score = by_symbol["REIT_MID"]["score_breakdown"]["yield_score"]
+    assert reit_mid_yield_score == pytest.approx(66.7, abs=0.1)
+
+    # Sanity check the InvIT side scores independently against its own
+    # 3-instrument pool ([9, 10, 11]): INVIT_LOW is the lowest of the three
+    # -> 1/3 = 33.3, not pulled down further by the lower-yielding REITs it
+    # would otherwise be pooled with.
+    invit_low_yield_score = by_symbol["INVIT_LOW"]["score_breakdown"]["yield_score"]
+    assert invit_low_yield_score == pytest.approx(33.3, abs=0.1)
+
+
+def test_get_reit_detail_endpoint_uses_full_universe_peers_not_itself(monkeypatch):
+    """GET /api/reit-invits/{symbol} must rank the requested instrument
+    against the other instruments in the cached frame, not a "peer group"
+    of just itself (the old reit_invits.logic.get_reit_detail() bug — see
+    REIT_INVIT_SCORING.md §8). A weak instrument among strong peers should
+    NOT come back with a perfect 100 on every dimension."""
+    import routers.reit_invits as reit_router
+
+    reit_router._cached_frame = None
+    reit_router._cache_ts = None
+    reit_router._cache_is_degraded = False
+
+    # EMBASSY.NS is a real key in REIT_INVIT_UNIVERSE — the endpoint 404s
+    # fast on an unknown symbol before ever calling _get_or_fetch_frame, so
+    # the monkeypatched frame below needs a real universe symbol to match.
+    weak = {
+        "symbol": "EMBASSY.NS", "price": 100, "asset_class": "REIT",
+        "yield_pct": 2.0, "returns_1y": -20.0, "returns_1m": -5.0,
+        "volatility_30d": 50.0, "max_drawdown_1y": -40.0, "returns_3m": -10.0,
+    }
+    strong_peers = [
+        {
+            "symbol": f"PEER{i}.NS", "price": 100, "asset_class": "REIT",
+            "yield_pct": 9.0, "returns_1y": 30.0, "returns_1m": 8.0,
+            "volatility_30d": 8.0, "max_drawdown_1y": -2.0, "returns_3m": 10.0,
+        }
+        for i in range(4)
+    ]
+    scored_frame = _score_universe([weak] + strong_peers)
+
+    monkeypatch.setattr(reit_router, "_get_or_fetch_frame", lambda: scored_frame)
+
+    result = reit_router.get_reit_detail("EMBASSY.NS")
+    assert result["symbol"] == "EMBASSY.NS"
+    assert result["score_breakdown"]["yield_score"] < 50.0
+    assert result["score_breakdown"]["volatility_score"] < 50.0
+    assert result["conviction_score"] < 50.0
 
 
 def test_get_or_fetch_frame_does_cache_a_healthy_live_fetch(monkeypatch):

@@ -961,6 +961,21 @@ def enrich_mf_records_with_conviction(records: List[dict]) -> List[dict]:
     Apply compute_mf_conviction() to each fund record in-place.
     Preserves all existing fields — only adds new v2 conviction fields.
     Safe for single-fund and empty universes.
+
+    Also aliases the v1 conviction fields (already present on `r` from
+    conviction_engine.score_mf_fund(), applied earlier in run_full_mf_scan())
+    under unambiguous `_v1`-suffixed names: `conviction_score_v1`,
+    `conviction_label_v1`, `conviction_emoji_v1`. This is purely additive —
+    the original `Conviction Score`/`Conviction Label`/`Conviction Emoji`
+    keys are untouched, for any existing consumer depending on them — but it
+    gives a new consumer of the raw API an unambiguous way to ask for "the
+    v1 score" without needing to know that `Conviction Score` (spaced,
+    title-cased) means v1 while `conviction_score_v2` (snake_case) means v2.
+    See MF_SCORING.md §2/§10: the API returning two different numbers under
+    confusingly similar names was flagged as a trust hazard even after the
+    frontend table's *display* mismatch was fixed — this doesn't consolidate
+    the two scores (still an open question), it just makes both explicitly
+    self-describing at the API layer too.
     """
     if not records:
         return records
@@ -968,6 +983,10 @@ def enrich_mf_records_with_conviction(records: List[dict]) -> List[dict]:
     peer_stats = [r for r in records if r.get("Sharpe") is not None or r.get("sharpe") is not None]
 
     for r in records:
+        r["conviction_score_v1"] = r.get("Conviction Score")
+        r["conviction_label_v1"] = r.get("Conviction Label")
+        r["conviction_emoji_v1"] = r.get("Conviction Emoji")
+
         try:
             result = compute_mf_conviction(r, peer_stats)
             r["conviction_score_v2"] = result["conviction_score"]

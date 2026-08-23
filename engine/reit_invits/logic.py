@@ -94,15 +94,44 @@ def _safe(val: Any) -> Optional[float]:
         return None
 
 
-def _pct_rank(value: Optional[float], peer_values: list[float]) -> float:
-    """Return percentile rank of value within peers (0-100). 100 = best."""
+def _pct_rank(
+    value: Optional[float], peer_values: list[float], higher_is_better: bool = True
+) -> float:
+    """Return percentile rank of value within peers (0-100). 100 = best.
+
+    `higher_is_better` makes the direction of "good" explicit at every call
+    site instead of leaving callers to manually invert with `100 - rank` —
+    see the note below on why that manual-inversion pattern is a trap.
+
+    Requires at least 2 *other* comparison points to mean anything — with a
+    peer list of exactly one value (which is only ever `value` itself, e.g.
+    a single-instrument detail lookup scored against a "peer group" of just
+    that instrument), `sum(1 for p in peers if p <= value)/len(peers)` is
+    trivially `1/1 = 100%` regardless of whether the underlying metric is
+    actually good or bad. Same convention as mf_lab.logic's percentile-rank
+    helper (see MF_SCORING.md §6: "fewer than 2 peers... defaults to 50").
+
+    Bug this signature fixes: `downside_protection` used to compute
+    `100 - _pct_rank(max_drawdown_1y, peers)`, treating "lower is better"
+    as if it applied to the *raw stored value*. But max_drawdown_1y is
+    stored as a negative number where a *shallower* loss is the numerically
+    *larger* value (-2 > -15) — i.e. it's already a "higher raw value is
+    better" metric, the opposite of volatility (always positive, where
+    lower really is the lower raw number). Manually inverting it produced
+    the exact opposite of the intended ranking: the fund with the better
+    (shallower) drawdown scored *worse* downside protection than one with
+    a deep loss. Explicit `higher_is_better=False` at the call site (for a
+    metric that's genuinely "lower raw number is better," like volatility)
+    removes the guesswork the old pattern required for every new metric.
+    """
     if value is None or not peer_values:
         return 50.0
     peers = [v for v in peer_values if v is not None]
-    if not peers:
+    if len(peers) < 2:
         return 50.0
     rank = sum(1 for p in peers if p <= value) / len(peers)
-    return round(rank * 100, 1)
+    score = rank * 100 if higher_is_better else (1 - rank) * 100
+    return round(score, 1)
 
 
 def _fetch_history(symbol: str, period: str = "1y") -> pd.DataFrame:
@@ -298,20 +327,53 @@ def _compute_raw_metrics(symbol: str, meta: dict[str, Any]) -> dict[str, Any]:
 
 # ── Universe scoring ──────────────────────────────────────────────────────────
 
+def _peer_values(valid: list[dict[str, Any]], field: str) -> dict[Optional[str], list[float]]:
+    """Build {asset_class: [values]} plus an "__all__" pool across every
+    valid record, for one metric field."""
+    by_class: dict[Optional[str], list[float]] = {}
+    all_values: list[float] = []
+    for r in valid:
+        v = r.get(field)
+        if v is None:
+            continue
+        all_values.append(v)
+        by_class.setdefault(r.get("asset_class"), []).append(v)
+    by_class["__all__"] = all_values
+    return by_class
+
+
+def _peers_for(pools: dict[Optional[str], list[float]], asset_class: Optional[str]) -> list[float]:
+    """Prefer same-asset_class peers; fall back to the whole valid pool if
+    the type-specific group is too thin to rank against meaningfully (see
+    _pct_rank's len(peers) < 2 floor) — e.g. a data outage that leaves only
+    one REIT with a valid metric that day shouldn't make every REIT's rank
+    on that metric go neutral when a perfectly good cross-type comparison
+    pool is sitting right there."""
+    same_type = pools.get(asset_class, [])
+    return same_type if len(same_type) >= 2 else pools["__all__"]
+
+
 def _score_universe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Assign conviction + confidence scores after all raw metrics are computed."""
+    """Assign conviction + confidence scores after all raw metrics are computed.
+
+    Peer ranking is scoped to same-`asset_class` instruments (REIT vs
+    InvIT) where there are enough of them, not pooled across both types —
+    see REIT_INVIT_SCORING.md §8 for why: a REIT (commercial real estate,
+    rental-income-driven) and an InvIT (regulated infrastructure,
+    contracted-cashflow-driven) have structurally different normal yield/
+    volatility ranges, so ranking a power-transmission InvIT's yield
+    against a mall REIT's treated them as substitutes when they aren't.
+    """
     valid = [r for r in records if r.get("price")]
 
-    # Build peer arrays for normalisation
-    yields = [r.get("yield_pct") for r in valid if r.get("yield_pct") is not None]
-    returns_1y = [r.get("returns_1y") for r in valid if r.get("returns_1y") is not None]
-    returns_1m = [r.get("returns_1m") for r in valid if r.get("returns_1m") is not None]
-    vols = [r.get("volatility_30d") for r in valid if r.get("volatility_30d") is not None]
-    drawdowns = [r.get("max_drawdown_1y") for r in valid if r.get("max_drawdown_1y") is not None]
-    returns_3m = [r.get("returns_3m") for r in valid if r.get("returns_3m") is not None]
-    growth_rates = [
-        r.get("distribution_growth_3y_pct") for r in valid if r.get("distribution_growth_3y_pct") is not None
-    ]
+    # Build per-asset_class (+ "__all__" fallback) peer pools for normalisation
+    yield_pools = _peer_values(valid, "yield_pct")
+    returns_1y_pools = _peer_values(valid, "returns_1y")
+    returns_1m_pools = _peer_values(valid, "returns_1m")
+    vol_pools = _peer_values(valid, "volatility_30d")
+    drawdown_pools = _peer_values(valid, "max_drawdown_1y")
+    returns_3m_pools = _peer_values(valid, "returns_3m")
+    growth_pools = _peer_values(valid, "distribution_growth_3y_pct")
 
     for r in records:
         if not r.get("price"):
@@ -326,35 +388,54 @@ def _score_universe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             })
             continue
 
+        asset_class = r.get("asset_class")
+
         # ── Sub-scores (each 0-100) ────────────────────────────────────────
         breakdown: dict[str, float] = {}
 
         # yield_score — higher trailing distribution yield rank = better
-        breakdown["yield_score"] = _pct_rank(r.get("yield_pct"), yields)
+        breakdown["yield_score"] = _pct_rank(
+            r.get("yield_pct"), _peers_for(yield_pools, asset_class)
+        )
 
         # distribution_growth_score — is the per-unit payout growing vs 3
         # years ago? Funds without 3y of listed history get a neutral 50
         # here (via _pct_rank's None handling) rather than being penalised
         # for simply being newer listings.
         breakdown["distribution_growth_score"] = _pct_rank(
-            r.get("distribution_growth_3y_pct"), growth_rates
+            r.get("distribution_growth_3y_pct"), _peers_for(growth_pools, asset_class)
         )
 
         # return_score — blend 1m (30%) + 1y (70%)
-        ret_1m_rank = _pct_rank(r.get("returns_1m"), returns_1m)
-        ret_1y_rank = _pct_rank(r.get("returns_1y"), returns_1y)
+        ret_1m_rank = _pct_rank(r.get("returns_1m"), _peers_for(returns_1m_pools, asset_class))
+        ret_1y_rank = _pct_rank(r.get("returns_1y"), _peers_for(returns_1y_pools, asset_class))
         breakdown["return_score"] = round(ret_1m_rank * 0.3 + ret_1y_rank * 0.7, 1)
 
-        # downside_protection — lower drawdown = better (invert rank)
-        dd_rank = _pct_rank(r.get("max_drawdown_1y"), drawdowns)
-        breakdown["downside_protection"] = round(100 - dd_rank, 1)  # inverted
+        # downside_protection — shallower (closer-to-zero) drawdown = better.
+        # max_drawdown_1y is stored as a negative number, so a *shallower*
+        # loss is already the numerically *larger* value (-2 > -15) —
+        # _pct_rank already ranks it higher without inverting. Inverting
+        # here (as this used to: `100 - dd_rank`) double-flips that,
+        # scoring deep-loss instruments as having *better* downside
+        # protection than shallow-loss ones. Fixed: use the raw rank
+        # directly, same as return_score/momentum_score do for their own
+        # already-correctly-signed metrics.
+        breakdown["downside_protection"] = _pct_rank(
+            r.get("max_drawdown_1y"), _peers_for(drawdown_pools, asset_class)
+        )
 
-        # volatility_score — lower vol = better (invert rank)
-        vol_rank = _pct_rank(r.get("volatility_30d"), vols)
-        breakdown["volatility_score"] = round(100 - vol_rank, 1)
+        # volatility_score — lower vol = better. Volatility is always
+        # positive, so unlike max_drawdown_1y above, "lower raw number" and
+        # "better" really do point the same direction here — higher_is_better=False
+        # is the correct, explicit inversion for this one.
+        breakdown["volatility_score"] = _pct_rank(
+            r.get("volatility_30d"), _peers_for(vol_pools, asset_class), higher_is_better=False
+        )
 
         # momentum_score — 3m return rank
-        breakdown["momentum_score"] = _pct_rank(r.get("returns_3m"), returns_3m)
+        breakdown["momentum_score"] = _pct_rank(
+            r.get("returns_3m"), _peers_for(returns_3m_pools, asset_class)
+        )
 
         # ── Weighted composite ─────────────────────────────────────────────
         raw_score = sum(
