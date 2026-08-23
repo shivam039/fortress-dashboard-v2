@@ -75,6 +75,20 @@ async def record_pick(
     return {"message": f"Pick tracked for {pick.symbol}.", "symbol": pick.symbol}
 
 
+_EMPTY_SUMMARY = {
+    "total": 0,
+    "hits": 0,
+    "misses": 0,
+    "expired": 0,
+    "trailing": 0,
+    "hit_rate": 0,
+    "avg_pnl": 0,
+    "avg_days": 0,
+    "best_pnl": 0,
+    "worst_pnl": 0,
+}
+
+
 @router.get("/summary")
 async def pick_summary(user: dict = Depends(get_current_user)):
     """Return pick outcome statistics."""
@@ -82,10 +96,10 @@ async def pick_summary(user: dict = Depends(get_current_user)):
 
     username = user["sub"]
     if username == "guest_user":
-        return {"hit_rate": 0, "hits": 0, "misses": 0, "avg_pnl": 0, "avg_days": 0, "best_pnl": 0}
+        return _EMPTY_SUMMARY
 
     uid = get_user_id_by_username(username)
     if not uid:
-        return {"hit_rate": 0, "hits": 0, "misses": 0, "avg_pnl": 0, "avg_days": 0, "best_pnl": 0}
+        return _EMPTY_SUMMARY
 
     return get_pick_outcome_summary(uid)

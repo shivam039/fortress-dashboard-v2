@@ -24,9 +24,47 @@ it entirely, same as this session's reit_invits/us_investing router tests.
 import asyncio
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 
 import main as main_mod
 from routers import orders as orders_router_mod
+
+
+def test_create_order_rejects_guest():
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(orders_router_mod.create_order(
+            order=orders_router_mod.OrderCreate(symbol="RELIANCE"),
+            user={"sub": "guest_user"},
+        ))
+    assert exc_info.value.status_code == 403
+
+
+def test_create_order_persists_via_db(monkeypatch):
+    """The new Add-Order form on the Orders page relies on this endpoint
+    actually calling through to create_fortress_order with the fields it
+    submits."""
+    import utils.db as db_mod
+
+    calls = []
+    monkeypatch.setattr(
+        db_mod,
+        "create_fortress_order",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    body = asyncio.run(orders_router_mod.create_order(
+        order=orders_router_mod.OrderCreate(
+            symbol="RELIANCE", order_type="Buy", quantity=10, price=2500, status="Pending",
+        ),
+        user={"sub": "test_user"},
+    ))
+
+    assert body["symbol"] == "RELIANCE"
+    assert len(calls) == 1
+    assert calls[0]["username"] == "test_user"
+    assert calls[0]["symbol"] == "RELIANCE"
+    assert calls[0]["quantity"] == 10
 
 
 def test_order_stats_counts_cancelled(monkeypatch):

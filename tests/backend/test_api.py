@@ -188,13 +188,15 @@ def test_scan_persists_to_history_so_the_history_page_can_see_it(monkeypatch):
 
     ts_response = client.get("/api/history/timestamps")
     assert ts_response.status_code == 200
-    timestamps = ts_response.json()
-    assert len(timestamps) > 0, "scan just ran but no timestamp appeared in history"
+    entries = ts_response.json()
+    assert len(entries) > 0, "scan just ran but no entry appeared in history"
+    assert entries[0]["scan_type"] == "STOCK"
+    assert entries[0]["universe"] == "Nifty 50"
 
-    data_response = client.get(f"/api/history/data?timestamp={timestamps[0]}")
+    data_response = client.get(f"/api/history/data?scan_id={entries[0]['scan_id']}")
     assert data_response.status_code == 200
     records = data_response.json()
-    assert len(records) == 50, "scan history timestamp exists but is missing rows"
+    assert len(records) == 50, "scan history entry exists but is missing rows"
     assert records[0]["Symbol"].endswith(".NS")
 
 
