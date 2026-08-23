@@ -13,7 +13,7 @@ test_watchlist_api.py) — using distinctive fake ticker symbols to avoid
 colliding with real data.
 """
 
-from engine.utils.db import bulk_fetch_metadata, upsert_ticker_metadata_cache
+from utils.db import bulk_fetch_metadata, upsert_ticker_metadata_cache
 
 
 def test_upsert_then_bulk_fetch_round_trip():

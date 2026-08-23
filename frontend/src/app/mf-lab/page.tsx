@@ -146,6 +146,7 @@ export default function MfLabPage() {
   // Clear the selection when a filter changes, since the previously
   // selected fund may no longer be in view.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedSchemeCode(null);
   }, [categoryFilter, subCategoryFilter]);
 
@@ -153,6 +154,7 @@ export default function MfLabPage() {
   // "All" rather than risk pointing at a sub-category that doesn't exist
   // under the newly selected Category.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSubCategoryFilter('All');
   }, [categoryFilter]);
 

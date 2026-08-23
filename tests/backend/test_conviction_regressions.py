@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from engine.stock_scanner.logic import DEFAULT_SCORING_CONFIG, apply_advanced_scoring
+from stock_scanner.logic import DEFAULT_SCORING_CONFIG, apply_advanced_scoring
 
 
 def _base_stock(**overrides: object) -> dict[str, object]:

@@ -1,5 +1,5 @@
 import pytest
-from engine.us_investing.logic import _score_universe
+from us_investing.logic import _score_universe
 
 def test_score_range():
     records = [

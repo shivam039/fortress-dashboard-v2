@@ -23,15 +23,15 @@ import time
 import pandas as pd
 import pytest
 
-from engine.reit_invits.logic import (
+from reit_invits.logic import (
     WEIGHTS,
     _call_with_timeout,
     _fetch_distribution_history,
     _pct_rank,
     _score_universe,
 )
-from engine.reit_invits.universe import REIT_INVIT_UNIVERSE
-from engine.utils.db import fetch_reit_cache, upsert_reit_cache
+from reit_invits.universe import REIT_INVIT_UNIVERSE
+from utils.db import fetch_reit_cache, upsert_reit_cache
 
 
 def test_weights_sum_to_one():
@@ -77,7 +77,7 @@ def test_fetch_distribution_history_sums_trailing_1y_and_3y(monkeypatch):
         dividends = divs
 
     monkeypatch.setattr(
-        "engine.reit_invits.logic.yf.Ticker",
+        "reit_invits.logic.yf.Ticker",
         lambda symbol: _FakeTicker(),
     )
 
@@ -92,7 +92,7 @@ def test_fetch_distribution_history_empty_series_returns_all_none(monkeypatch):
         dividends = pd.Series(dtype=float)
 
     monkeypatch.setattr(
-        "engine.reit_invits.logic.yf.Ticker",
+        "reit_invits.logic.yf.Ticker",
         lambda symbol: _FakeTicker(),
     )
 
@@ -110,7 +110,7 @@ def test_fetch_distribution_history_handles_exception_gracefully(monkeypatch):
     def _raise(symbol):
         raise RuntimeError("network error")
 
-    monkeypatch.setattr("engine.reit_invits.logic.yf.Ticker", _raise)
+    monkeypatch.setattr("reit_invits.logic.yf.Ticker", _raise)
 
     out = _fetch_distribution_history("BROKEN.NS")
     assert out["distributions_1y"] is None

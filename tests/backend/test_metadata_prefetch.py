@@ -16,7 +16,7 @@ import logging
 
 import pandas as pd
 
-from engine.stock_scanner import logic
+from stock_scanner import logic
 
 
 def _reset_caches():
