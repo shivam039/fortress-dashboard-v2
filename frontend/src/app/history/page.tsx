@@ -24,6 +24,7 @@ export default function HistoryPage() {
 
   useEffect(() => {
     if (!selectedTimestamp) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingData(true);
     api.get<Record<string, unknown>[]>(`/api/history/data?timestamp=${encodeURIComponent(selectedTimestamp)}`)
       .then(setHistoryData)

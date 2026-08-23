@@ -13,7 +13,7 @@ No live network calls.
 
 import pytest
 
-from engine.utils import indstocks_client as ic
+from utils import indstocks_client as ic
 
 
 def test_generate_totp_code_strips_internal_whitespace(monkeypatch):

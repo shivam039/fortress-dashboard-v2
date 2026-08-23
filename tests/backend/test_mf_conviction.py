@@ -1,5 +1,5 @@
 import pytest
-from engine.mf_lab.logic import compute_mf_conviction
+from mf_lab.logic import compute_mf_conviction
 
 def test_sub_score_sum_weights_to_100():
     fund = {
@@ -28,7 +28,7 @@ def test_stale_nav_flag_triggered():
     assert res["data_quality"] == "stale"
 
 def test_backward_compat_fields_unchanged():
-    from engine.mf_lab.logic import enrich_mf_records_with_conviction
+    from mf_lab.logic import enrich_mf_records_with_conviction
     records = [{"Scheme": "A", "Score": 50, "AI_Score": 60}]
     enriched = enrich_mf_records_with_conviction(records)
     assert enriched[0]["Score"] == 50

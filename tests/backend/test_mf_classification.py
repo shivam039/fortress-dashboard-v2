@@ -17,7 +17,7 @@ detection checked Debt keywords before Hybrid keywords, so a name like
 classified Debt instead of Hybrid. These tests lock in the fix.
 """
 
-from engine.mf_lab.logic import classify_category
+from mf_lab.logic import classify_category
 
 
 def test_flexi_cap_and_multi_cap_are_separate_sub_categories():

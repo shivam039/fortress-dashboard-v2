@@ -1,7 +1,7 @@
 // src/app/us-investing/page.tsx — US Stocks & ETFs investment section
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { usInvestingApi } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import type { InvestmentInstrument } from '@/lib/types';
@@ -42,7 +42,7 @@ export default function USInvestingPage() {
   const [search, setSearch] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -63,6 +63,7 @@ export default function USInvestingPage() {
     }
   }, [assetType, sector, includeInr, sortBy, sortDesc, error]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleRefresh = async () => {

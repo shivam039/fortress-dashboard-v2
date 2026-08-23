@@ -13,7 +13,7 @@ distinction matters in this repo.
 import pytest
 from fastapi.testclient import TestClient
 
-from engine.main import app
+from main import app
 
 client = TestClient(app)
 

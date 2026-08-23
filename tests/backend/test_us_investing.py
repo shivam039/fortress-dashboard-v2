@@ -23,13 +23,13 @@ these tests establish a baseline alongside the fixes above.
 
 import pytest
 
-from engine.us_investing.logic import (
+from us_investing.logic import (
     WEIGHTS,
     _MIN_SECTOR_PEERS_FOR_VALUATION,
     _pct_rank,
     _score_universe,
 )
-from engine.utils.db import fetch_us_cache, upsert_us_cache
+from utils.db import fetch_us_cache, upsert_us_cache
 
 
 def test_weights_sum_to_one():
