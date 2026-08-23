@@ -345,6 +345,7 @@ export interface OrderStats {
   executed: number;
   pending: number;
   rejected: number;
+  cancelled: number;
 }
 
 export const ordersApi = {
@@ -373,7 +374,11 @@ export const brokersApi = {
 // ── Commodities ──────────────────────────────────────────────────────────────
 
 export const commoditiesApi = {
-  list: () => api.get<Record<string, unknown>[]>('/api/commodities'),
+  list: (forceRefresh?: boolean) =>
+    api.get<Record<string, unknown>[]>(
+      `/api/commodities${forceRefresh ? '?force_refresh=true' : ''}`,
+      SCAN_TIMEOUT_MS
+    ),
 };
 
 // ── Picks ────────────────────────────────────────────────────────────────────

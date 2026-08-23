@@ -51,11 +51,12 @@ export default function OrdersPage() {
         <p className="page-subtitle">Track and manage your order history across all connected brokers.</p>
       </div>
 
-      <div className="grid-4" style={{ marginBottom: '24px' }}>
+      <div className="grid-5" style={{ marginBottom: '24px' }}>
         <MetricCard label="Total Orders" value={stats?.total ?? 0} />
         <MetricCard label="Executed" value={stats?.executed ?? 0} deltaType="positive" />
         <MetricCard label="Pending" value={stats?.pending ?? 0} deltaType="neutral" />
         <MetricCard label="Rejected" value={stats?.rejected ?? 0} deltaType="negative" />
+        <MetricCard label="Cancelled" value={stats?.cancelled ?? 0} deltaType="neutral" />
       </div>
 
       <div className="card" style={{ marginBottom: '24px' }}>

@@ -92,10 +92,16 @@ async def order_stats(user: dict = Depends(get_current_user)):
     executed = int((df["status"] == "Executed").sum()) if not df.empty else 0
     pending = int((df["status"] == "Pending").sum()) if not df.empty else 0
     rejected = int((df["status"] == "Rejected").sum()) if not df.empty else 0
+    # The Orders page's status filter offers "Cancelled" as an option
+    # (frontend/src/app/orders/page.tsx) but this endpoint never counted
+    # it, so a cancelled order silently vanished from every stat here
+    # while still showing up in the (separately-fetched) orders list.
+    cancelled = int((df["status"] == "Cancelled").sum()) if not df.empty else 0
 
     return {
         "total": total,
         "executed": executed,
         "pending": pending,
         "rejected": rejected,
+        "cancelled": cancelled,
     }
