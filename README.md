@@ -26,28 +26,57 @@ graph TD
     Browser[Browser]
     Next[Next.js frontend<br/>frontend/src/app]
     API[FastAPI backend<br/>engine/main.py]
-    MDP[market_data_provider.py]
+    
+    %% API Routers / Modules
+    Scanner[Stock Scanner<br/>stock_scanner/]
+    MF[MF Lab<br/>mf_lab/]
+    Opt[Options<br/>options_algo/]
+    Reit[REIT & InvITs<br/>routers/reit_invits.py]
+    Cmdty[Commodities<br/>commodities/logic.py]
+    US[US Investing<br/>routers/us_investing.py]
+    Profile[Profile & Auth<br/>routers/auth, users]
+    Orders[Orders<br/>routers/orders.py]
+
+    %% Data layer
+    MDP[market_data_provider.py<br/>Single Entry Point]
     Bhav[Bhav Copy<br/>NSE EOD CSV]
     IND[INDstocks API<br/>live primary]
-    YF[yfinance<br/>fallback]
+    YF[yfinance<br/>fallback / US / MF]
     Cache[instruments_cache.py<br/>daily CSV]
-    Scanner[stock_scanner]
-    MF[mf_lab]
-    Opt[options_algo]
     DB[utils/db.py<br/>SQLite / Neon]
 
     Browser --> Next
     Next --> API
+    
     API --> Scanner
     API --> MF
     API --> Opt
-    API --> DB
+    API --> Reit
+    API --> Cmdty
+    API --> US
+    API --> Profile
+    API --> Orders
+    
+    %% Data flow
     Scanner --> MDP
+    Reit --> MDP
+    US --> YF
+    Opt --> YF
+    Cmdty --> YF
+    MF --> YF
+    
     MDP --> Bhav
     MDP --> IND
     MDP --> YF
+    
     IND --> Cache
     Bhav --> DB
+    
+    Scanner --> DB
+    MF --> DB
+    Profile --> DB
+    Orders --> DB
+    Reit --> DB
 ```
 
 ## Market Data Provider
