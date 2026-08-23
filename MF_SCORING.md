@@ -326,6 +326,34 @@ between" pipeline, not a "run on every page load" one:
   directly regardless of cache freshness, for an on-demand refresh outside the
   monthly cycle.
 
+**Fixed (2026-08-23): a limited or targeted scan could poison this cache for
+everyone.** `run_full_mf_scan(limit=N)` and `mf_lab/jobs.py`'s targeted
+"Scheme Codes" job path (`full_refresh`/`update_metrics`/
+`recalculate_rankings` with specific codes typed into the Trigger Job UI)
+both used to call `upsert_mf_scan_results()` unconditionally on whatever
+subset they'd just scored. Since `fetch_mf_cached_results` only checks
+"is there *any* non-stale row," a single `?limit=5` request — or a normal
+user targeting two or three funds via the documented Scheme Codes field —
+silently overwrote the shared monthly cache with just that handful of
+funds, and every visitor for up to 31 days saw only those few funds instead
+of the real universe. Reproduced live in production before the fix landed.
+Now: `run_full_mf_scan()` only persists when `limit is None`, and the
+targeted job path (renamed `_compute_targeted_snapshot`) never persists at
+all — it only ever returns the snapshot for the job's own "processed" count.
+
+**Still open**: this doesn't cover a genuine full (`limit=None`) scan that
+gets *interrupted* partway through — e.g. a Render redeploy mid-run, same
+failure shape already fixed for the Bhav Copy backfill (see
+`docs/market-data.md`). `upsert_mf_scan_results()` is called once, after
+the whole `ThreadPoolExecutor` batch completes, so an interrupted run
+should mean the call never happens at all — but if that write itself isn't
+one atomic transaction (unverified either way as of this writing), a kill
+mid-write could still leave a partial-but-genuinely-full-scan set of rows
+stamped with today's date, which `fetch_mf_cached_results` has no way to
+distinguish from a deliberately smaller-but-complete universe. Worth
+verifying `upsert_mf_scan_results`'s transaction boundaries directly if
+this becomes a live-observed problem again.
+
 Nothing currently *schedules* a monthly re-scan automatically (e.g. no cron/
 scheduled task calling `full_refresh`) — the 31-day cache means data can go
 stale for up to a month if nobody visits the page or manually triggers a
@@ -345,14 +373,32 @@ The MF Lab page (`frontend/src/app/mf-lab/page.tsx`):
   Category`, `Conviction Score`, `Conviction Label`, `Confidence`, `Data
   Quality`, `NAV`, returns, and the raw risk metrics), where the "Conviction
   Score" column is `conviction_score_v2` (§2), not the persisted v1 score.
+  **Fixed (2026-08-23)**: "Conviction Label" in this table is no longer the
+  raw v1 label passed through from the API — it's now derived in the
+  frontend from the *same* v2 score the column displays (🟢 Strong ≥70, 🟡
+  Moderate ≥45, 🔴 Weak below, matching `ConvictionScoreCard`'s own
+  thresholds). Previously the table showed v2's score next to v1's label —
+  e.g. a v2 score of 25.8 next to the label "STRONG BUY" — two individually
+  correct but mutually contradictory-looking numbers from unrelated scoring
+  systems in the same row. The API response is unchanged (still returns
+  both `Conviction Label` (v1) and the v2 fields); only this one frontend
+  table's display column was fixed. The underlying "should v1 and v2 be
+  consolidated" question in §10 is still open — this only fixed the most
+  visibly broken symptom of it.
 - **Conviction Grid / Conviction Detail panel** — `ConvictionScoreCard`, driven
   entirely by v2's score, confidence, `score_breakdown`, and `risk_flags_v2`.
 - **Stats row** (Funds Analyzed, Avg Conviction, High Conviction ≥65, Stale
   Data) — all computed from v2 fields (`conviction_score_v2`, `data_quality`).
-- **Freshness badge** — reads `last_updated` off the first record, which is
-  either the persisted `scan_date` (cache hit) or unset (cache miss / this
-  particular request ran a fresh scan and no scan_date has been round-tripped
-  back onto the in-memory records — the badge simply won't render in that case).
+- **Freshness badge** — reads `last_updated` off the first record.
+  **Fixed (2026-08-23)**: this used to be `str(scan_date)` — a bare
+  `"YYYY-MM-DD"` with no time-of-day or timezone. `new Date("2026-08-23")`
+  parses as UTC midnight, so for a viewer east of UTC (e.g. IST, UTC+5:30) a
+  scan that had just finished could already read as several hours old, or
+  even "1d ago," depending on time of day — reproduced live. `fetch_mf_cached_results`
+  now selects the table's actual `updated_at` (a real `timestamptz`) and
+  normalizes it to a UTC ISO string instead. On a genuine cache miss (fresh
+  scan, no round-tripped `scan_date`/`updated_at` on the in-memory records)
+  the badge still won't render — that part is unchanged.
 
 ## 10. Open Questions For Review
 
@@ -362,6 +408,10 @@ The MF Lab page (`frontend/src/app/mf-lab/page.tsx`):
   to one is easy to make without realizing the other exists. At minimum, the
   API response should probably be relabeled so `Conviction Score` (v1) and
   `conviction_score_v2` aren't both present under confusingly similar names.
+  The table's *label* mismatch was patched at the display layer (§9), but the
+  API still returns both scores under near-identical names — a consumer of
+  the raw API (not the frontend) can still be misled the same way the UI used
+  to be.
 - **Should momentum/efficiency be fixed or removed from v2's weights?** See §7
   — right now they're silently inert. Either populate real inputs (3M return is
   cheap; expense ratio needs a new data source) or stop weighting them until

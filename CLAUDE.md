@@ -57,8 +57,12 @@ PYTHONPATH=.:engine .venv/bin/pytest -v
    (`INDSTOCKS_CLIENT_ID` + `INDSTOCKS_MPIN` + `INDSTOCKS_TOTP_SECRET`) nor a static
    `INDSTOCKS_TOKEN` are set, yfinance runs automatically — no code changes needed.
 4. **Prefer async FastAPI endpoints + BackgroundTasks** for long scans.
-5. **Scoring logic lives in `engine/stock_scanner/logic.py` + `SCORING.md`.**
-   Update `SCORING.md` when changing scores.
+5. **Scoring logic has one doc per module — update the matching one when you
+   change scores:**
+   - Stock scanner: `engine/stock_scanner/logic.py` + `SCORING.md`
+   - Mutual funds: `engine/mf_lab/logic.py` + `MF_SCORING.md`
+   - REITs & InvITs: `engine/reit_invits/logic.py` + `REIT_INVIT_SCORING.md`
+   - US Investing: `engine/us_investing/logic.py` + `US_INVESTING_SCORING.md`
 6. Keep secrets in env vars. Never hardcode tokens or passwords.
 7. Use type hints everywhere in Python. Strict TypeScript on frontend.
 
