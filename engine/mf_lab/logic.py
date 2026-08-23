@@ -700,13 +700,33 @@ def run_full_mf_scan(
 
     df = df.sort_values("Conviction Score", ascending=False).reset_index(drop=True)
 
-    try:
-        from utils.db import upsert_mf_scan_results
+    # Only a genuine, unlimited full-universe scan may overwrite the shared
+    # monthly cache (mf_scan_results) that /api/mf-analysis checks before
+    # deciding whether a fresh scan is even needed. upsert_mf_scan_results()
+    # has no way to tell "this is the whole universe" apart from "this is a
+    # `limit=N`/scheme_codes-targeted subset" — both just look like a normal
+    # UPSERT keyed on (scheme_code, scan_date). Persisting a limited scan
+    # here previously stamped today's date on only those few funds, which
+    # then made /api/mf-analysis treat that partial result as a fresh
+    # complete scan for up to max_age_days (31) — every other real fund
+    # silently disappeared from the UI until the cache aged out or someone
+    # noticed and force-refreshed. Confirmed live: a single `?limit=5` test
+    # request left exactly 5 funds cached in production, masking the entire
+    # rest of the universe on every subsequent page load.
+    if limit is None:
+        try:
+            from utils.db import upsert_mf_scan_results
 
-        upsert_mf_scan_results(df)
-        logger.info("run_full_mf_scan: persisted %d funds", len(df))
-    except Exception as e:
-        logger.error("Neon persist failed: %s", e)
+            upsert_mf_scan_results(df)
+            logger.info("run_full_mf_scan: persisted %d funds", len(df))
+        except Exception as e:
+            logger.error("Neon persist failed: %s", e)
+    else:
+        logger.info(
+            "run_full_mf_scan: limit=%d set, skipping mf_scan_results persist "
+            "(a partial scan must never masquerade as a fresh full-universe cache)",
+            limit,
+        )
 
     return df
 
