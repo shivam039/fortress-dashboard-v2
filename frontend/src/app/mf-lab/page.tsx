@@ -1,7 +1,7 @@
 // src/app/mf-lab/page.tsx
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { mfApi } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import DataTable from '@/components/DataTable';
@@ -60,12 +60,36 @@ export default function MfLabPage() {
   // Category is currently selected, since e.g. "Large Cap" only makes sense
   // once you're already looking at Equity funds.
   const [subCategoryFilter, setSubCategoryFilter] = useState<string>('All');
+  // A failed load previously left `data` empty with no signal at all — the
+  // page just rendered the same "No fund data available" empty state a
+  // genuinely-empty-but-successful response would, so a real backend error
+  // (timeout, 500, network drop) was indistinguishable from "nothing to
+  // show" and silently discarded (`.catch(() => {})`). This full scan can
+  // legitimately take a while and fail, so surfacing *why* — plus a way to
+  // retry without a full page reload — matters here specifically.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
     mfApi.getAnalysis()
       .then(setData)
-      .catch(() => {})
+      .catch((err: unknown) => {
+        const message = (err as Error).message || 'Unknown error';
+        setLoadError(message);
+        error(`Failed to load fund data: ${message}`);
+      })
       .finally(() => setLoading(false));
+  }, [error]);
+
+  // loadData() itself sets loading/error state (needed so the Retry button
+  // can reuse it) — the correct shape for a fetch-on-mount effect, not the
+  // cascading-render pattern react-hooks/set-state-in-effect is meant to
+  // catch, so it's disabled for this call specifically.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const categoryOf = (fund: Record<string, unknown>): string =>
@@ -140,14 +164,31 @@ export default function MfLabPage() {
   // one of the last keys added to each record. This mapping surfaces the v2
   // conviction score (the one the rest of this page — cards, stats — already
   // uses) under a plain "Conviction Score" label near the front instead.
+  //
+  // "Conviction Label" also needs overriding here, not just passed through:
+  // the raw record's `Conviction Label` comes from the legacy v1 scoring
+  // engine (alpha-generation based — see mf_lab/logic.py's Decision text),
+  // which frequently disagrees with conviction_score_v2 (a percentile-rank
+  // score from an unrelated v2 model). The table was showing e.g. Score 25.8
+  // right next to Label "STRONG BUY" — individually correct outputs of two
+  // different scoring systems, but nonsensical and broken-looking side by
+  // side in one row. Deriving the label from the same v2 score the column
+  // actually displays keeps them consistent; thresholds (70/45) match
+  // ConvictionScoreCard's own score->color bands elsewhere on this page.
   const tableData = useMemo(
     () =>
-      filteredData.map(f => ({
-        ...f,
-        'Conviction Score': (f.conviction_score_v2 as number | null) ?? f['Conviction Score'] ?? null,
-        Confidence: f.confidence_score ?? null,
-        'Data Quality': f.data_quality ?? null,
-      })),
+      filteredData.map(f => {
+        const v2Score = (f.conviction_score_v2 as number | null) ?? (f['Conviction Score'] as number | null) ?? null;
+        const v2Label =
+          v2Score === null ? null : v2Score >= 70 ? '🟢 Strong' : v2Score >= 45 ? '🟡 Moderate' : '🔴 Weak';
+        return {
+          ...f,
+          'Conviction Score': v2Score,
+          'Conviction Label': v2Label,
+          Confidence: f.confidence_score ?? null,
+          'Data Quality': f.data_quality ?? null,
+        };
+      }),
     [filteredData]
   );
 
@@ -326,6 +367,17 @@ export default function MfLabPage() {
 
         {loading ? (
           <div className="loading-overlay">Loading data...</div>
+        ) : loadError ? (
+          // Distinguishes "the fetch actually failed" from a genuinely
+          // empty result set (DataTable's own emptyMessage covers the
+          // latter) — see the loadData() comment above for why this matters.
+          <div className="empty-state">
+            <div className="icon">⚠️</div>
+            <p>Couldn&apos;t load fund data: {loadError}</p>
+            <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={loadData}>
+              Retry
+            </button>
+          </div>
         ) : viewMode === 'table' ? (
           <DataTable
             data={tableData}

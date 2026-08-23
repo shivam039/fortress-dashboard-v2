@@ -2515,7 +2515,7 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
     try:
         if _can_use_neon():
             df = _read_df(
-                "SELECT scheme_code, scheme_name, scan_date, result_json "
+                "SELECT scheme_code, scheme_name, scan_date, updated_at, result_json "
                 "FROM mf_scan_results "
                 "WHERE scan_date >= CURRENT_DATE - INTERVAL :age "
                 "ORDER BY scan_date DESC, scheme_code",
@@ -2525,7 +2525,7 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
             with _sqlite_connection() as conn:
                 _ensure_mf_scan_results_sqlite(conn)
                 df = pd.read_sql_query(
-                    "SELECT scheme_code, scheme_name, scan_date, result_json "
+                    "SELECT scheme_code, scheme_name, scan_date, updated_at, result_json "
                     "FROM mf_scan_results "
                     "WHERE scan_date >= date('now', :cutoff) "
                     "ORDER BY scan_date DESC, scheme_code",
@@ -2540,7 +2540,28 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
             if isinstance(rj, str):
                 rj = json.loads(rj)
             if isinstance(rj, dict):
-                rj.setdefault("last_updated", str(row["scan_date"]))
+                # DataFreshnessBadge (frontend) computes "N hours/days ago"
+                # from this value via `new Date(last_updated)`. scan_date is
+                # a DATE with no time-of-day or timezone (str() gives a bare
+                # "YYYY-MM-DD"), which the JS Date constructor treats as UTC
+                # midnight — for a viewer east of UTC (e.g. IST, UTC+5:30) a
+                # scan that just finished can already read as several hours
+                # or even "1d ago", since "today" in the DB's UTC session
+                # can still be "yesterday" or a different time-of-day
+                # entirely from the viewer's wall clock. updated_at is a
+                # real timestamptz with second-level precision, so use that
+                # instead — falling back to scan_date only if it's somehow
+                # missing (e.g. a pre-migration row).
+                last_updated = str(row["scan_date"])
+                updated_at = row.get("updated_at")
+                if updated_at is not None and not pd.isna(updated_at):
+                    try:
+                        ts = pd.Timestamp(updated_at)
+                        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+                        last_updated = ts.isoformat()
+                    except Exception:
+                        pass
+                rj.setdefault("last_updated", last_updated)
                 rows.append(rj)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
     except Exception as e:

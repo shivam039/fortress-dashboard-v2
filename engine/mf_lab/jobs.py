@@ -44,11 +44,25 @@ def _refresh_nav_cache(
     return {"requested": len(codes), "refreshed": refreshed}
 
 
-def _persist_snapshot(scheme_codes: List[str]) -> pd.DataFrame:
-    snapshot = fetch_mf_snapshot(scheme_codes)
-    if not snapshot.empty:
-        upsert_mf_scan_results(snapshot)
-    return snapshot
+def _compute_targeted_snapshot(scheme_codes: List[str]) -> pd.DataFrame:
+    """Score just the given scheme codes — used by every call site below for
+    a *targeted* job (the "Scheme Codes" field on the Trigger Job UI), never
+    for a full-universe scan (that's run_full_mf_scan(), called directly).
+
+    Deliberately does NOT persist to mf_scan_results: that table is the
+    shared monthly full-scan cache /api/mf-analysis checks before deciding
+    whether to re-scan at all (fetch_mf_cached_results — any non-empty,
+    non-stale row set is treated as "today's fresh complete scan"). Writing
+    a handful of targeted rows into it — this function used to, via
+    upsert_mf_scan_results — silently replaced the entire MF Lab dataset
+    with just those few funds for every visitor, for up to 31 days, with no
+    error or indication anything was wrong. Confirmed live: a single
+    targeted request left exactly N funds cached in production, hiding the
+    rest of the real universe. See the matching fix in
+    mf_lab.logic.run_full_mf_scan for the other code path that had the same
+    bug.
+    """
+    return fetch_mf_snapshot(scheme_codes)
 
 
 def _run_job_sync(
@@ -76,7 +90,7 @@ def _run_job_sync(
             _refresh_nav_cache(normalized_codes, force_refresh=True)
 
         if normalized_codes:
-            snapshot = _persist_snapshot(normalized_codes)
+            snapshot = _compute_targeted_snapshot(normalized_codes)
             result = {"requested": len(normalized_codes), "processed": len(snapshot)}
         else:
             df = run_full_mf_scan(max_workers=20)
@@ -94,7 +108,7 @@ def _run_job_sync(
             _refresh_nav_cache(normalized_codes, force_refresh=True)
 
         if normalized_codes:
-            snapshot = _persist_snapshot(normalized_codes)
+            snapshot = _compute_targeted_snapshot(normalized_codes)
             result = {"requested": len(normalized_codes), "processed": len(snapshot)}
         else:
             df = run_full_mf_scan(max_workers=20)
@@ -110,7 +124,7 @@ def _run_job_sync(
     if job_type == "recalculate_rankings":
         cached_df = fetch_mf_cached_results(max_age_days=365)
         if cached_df.empty and normalized_codes:
-            cached_df = _persist_snapshot(normalized_codes)
+            cached_df = _compute_targeted_snapshot(normalized_codes)
         elif not cached_df.empty:
             upsert_mf_scan_results(cached_df)
 
