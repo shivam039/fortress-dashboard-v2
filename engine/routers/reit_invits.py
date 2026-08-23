@@ -221,12 +221,33 @@ def reit_refresh_status():
 
 @router.get("/{symbol}")
 def get_reit_detail(symbol: str):
-    """Return detailed metrics for a single REIT/InvIT."""
-    from reit_invits.logic import get_reit_detail
-    result = get_reit_detail(symbol.upper())
-    if result is None:
+    """Return detailed metrics for a single REIT/InvIT — looked up from the
+    same cached, full-universe-scored frame GET /api/reit-invits serves, so
+    this instrument's conviction score is ranked against its real peers.
+
+    Previously this called reit_invits.logic.get_reit_detail() directly,
+    which scores the one requested instrument against a "peer group"
+    containing only itself — _pct_rank(value, [value]) is mathematically
+    always 100%, so every single-symbol detail lookup returned a perfect
+    score on every dimension regardless of the instrument's actual metrics
+    (see REIT_INVIT_SCORING.md §8).
+    """
+    from reit_invits.universe import REIT_INVIT_UNIVERSE
+
+    symbol = symbol.upper()
+    if symbol not in REIT_INVIT_UNIVERSE:
         raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found in REIT/InvIT universe")
-    return result
+
+    try:
+        frame = _get_or_fetch_frame()
+    except Exception as exc:
+        logger.error("REIT detail fetch failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch REIT/InvIT data")
+
+    for r in frame:
+        if r.get("symbol") == symbol:
+            return r
+    raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found in the current REIT/InvIT scan")
 
 
 @router.post("/refresh", status_code=202)

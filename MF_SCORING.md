@@ -411,7 +411,15 @@ The MF Lab page (`frontend/src/app/mf-lab/page.tsx`):
   The table's *label* mismatch was patched at the display layer (§9), but the
   API still returns both scores under near-identical names — a consumer of
   the raw API (not the frontend) can still be misled the same way the UI used
-  to be.
+  to be. **Partially addressed (2026-08-23)**: `enrich_mf_records_with_conviction`
+  now also adds `conviction_score_v1`/`conviction_label_v1`/`conviction_emoji_v1`
+  as explicit aliases of the existing `Conviction Score`/`Conviction Label`/
+  `Conviction Emoji` fields — purely additive, originals untouched for
+  backward compatibility. A new API consumer can now ask for "the v1 score"
+  unambiguously without needing to already know that `Conviction Score`
+  (spaced, title-cased) means v1. This doesn't consolidate the two scores —
+  that question is still open — it just makes both self-describing at the
+  API layer, not only in the frontend table.
 - **Should momentum/efficiency be fixed or removed from v2's weights?** See §7
   — right now they're silently inert. Either populate real inputs (3M return is
   cheap; expense ratio needs a new data source) or stop weighting them until

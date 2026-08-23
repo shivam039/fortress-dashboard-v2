@@ -1116,6 +1116,7 @@ def init_db():
         _ensure_ticker_metadata_neon()
         _ensure_ohlcv_cache_neon()
         _ensure_reit_cache_neon()
+        _ensure_us_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
         _ensure_bhavcopy_eod_neon()
@@ -3250,9 +3251,107 @@ def upsert_reit_cache(records: list):
         logger.error("reit_cache upsert error: %s", e)
 
 
+def _ensure_us_cache_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS us_investing_cache (
+            symbol       TEXT PRIMARY KEY,
+            payload_json JSONB,
+            updated_at   TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+
+def _ensure_us_cache_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS us_investing_cache (
+            symbol       TEXT PRIMARY KEY,
+            payload_json TEXT,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def fetch_us_cache(max_age_hours: int = 4) -> list:
+    """Return cached US Investing records fresher than max_age_hours, or []
+    if there's no fresh cache. Mirrors fetch_reit_cache — see that
+    function's docstring for why this tier matters: without it, every
+    process restart re-fetches the whole 31-symbol universe live before
+    the next request can be served at all, with no persistence layer to
+    fall back to in the meantime (upsert_us_cache was a literal no-op
+    placeholder until this was added — same starting bug reit_cache had)."""
+    try:
+        if _can_use_neon():
+            engine = get_db_engine()
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text("""
+                    SELECT payload_json FROM us_investing_cache
+                    WHERE updated_at >= NOW() - INTERVAL :age_h
+                    """),
+                    {"age_h": f"{max_age_hours} hours"},
+                ).fetchall()
+            return [r[0] for r in rows if r[0]]
+
+        with _sqlite_connection() as conn:
+            _ensure_us_cache_sqlite(conn)
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM us_investing_cache
+                WHERE updated_at >= datetime('now', :cutoff)
+                """,
+                {"cutoff": f"-{int(max_age_hours)} hours"},
+            ).fetchall()
+        return [json.loads(r[0]) for r in rows if r[0]]
+    except Exception as e:
+        logger.error("us_investing_cache fetch error: %s", e)
+        return []
+
+
 def upsert_us_cache(records: list):
-    """Placeholder — US data cached in-memory for now; add Neon persistence if needed."""
-    pass
+    """Persist scored US Investing records so they survive process restarts
+    and repeat requests don't force a live re-fetch. Works on both
+    backends. See `fetch_us_cache` for why this mattered — this was a
+    no-op placeholder before."""
+    if not records:
+        return
+    try:
+        if _can_use_neon():
+            for r in records:
+                symbol = r.get("symbol")
+                if not symbol:
+                    continue
+                payload = json.dumps(r, default=str)
+                _exec(
+                    """
+                    INSERT INTO us_investing_cache (symbol, payload_json, updated_at)
+                    VALUES (:sym, CAST(:payload AS JSONB), NOW())
+                    ON CONFLICT (symbol) DO UPDATE
+                      SET payload_json = EXCLUDED.payload_json,
+                          updated_at = EXCLUDED.updated_at
+                    """,
+                    {"sym": symbol, "payload": payload},
+                )
+            return
+
+        with _sqlite_connection() as conn:
+            _ensure_us_cache_sqlite(conn)
+            for r in records:
+                symbol = r.get("symbol")
+                if not symbol:
+                    continue
+                payload = json.dumps(r, default=str)
+                conn.execute(
+                    """
+                    INSERT INTO us_investing_cache (symbol, payload_json, updated_at)
+                    VALUES (:sym, :payload, CURRENT_TIMESTAMP)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    {"sym": symbol, "payload": payload},
+                )
+    except Exception as e:
+        logger.error("us_investing_cache upsert error: %s", e)
 
 
 # ─────────────────────────────────────────────

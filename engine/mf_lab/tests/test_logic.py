@@ -2,7 +2,35 @@ import unittest
 
 import numpy as np
 import pandas as pd
-from mf_lab.logic import detect_integrity_issues
+from mf_lab.logic import detect_integrity_issues, enrich_mf_records_with_conviction
+
+
+def test_enrich_mf_records_aliases_v1_fields_unambiguously():
+    """The API returned v1's score/label under plain "Conviction Score"/
+    "Conviction Label" and v2's under snake_case conviction_score_v2, with
+    no v1-specific name at all — a new API consumer had no unambiguous way
+    to ask for "the v1 score" without already knowing that distinction
+    (see MF_SCORING.md §2/§10). enrich_mf_records_with_conviction now also
+    aliases the v1 fields under explicit _v1-suffixed names, additively —
+    the original keys must still be present and unchanged."""
+    records = [
+        {
+            "Scheme": "Test Fund",
+            "Conviction Score": 72.5,
+            "Conviction Label": "BUY",
+            "Conviction Emoji": "✅",
+            "Sharpe": 1.1,
+        }
+    ]
+    enriched = enrich_mf_records_with_conviction(records)
+    r = enriched[0]
+    assert r["conviction_score_v1"] == 72.5
+    assert r["conviction_label_v1"] == "BUY"
+    assert r["conviction_emoji_v1"] == "✅"
+    # Originals untouched, for any existing consumer.
+    assert r["Conviction Score"] == 72.5
+    assert r["Conviction Label"] == "BUY"
+    assert "conviction_score_v2" in r  # v2 still computed as before
 
 
 class TestMFLabLogic(unittest.TestCase):

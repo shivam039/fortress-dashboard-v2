@@ -117,32 +117,58 @@ quality signals that don't come from a generic yfinance OHLCV+info fetch.
 
 ## 4. Conviction Score (`_score_universe`)
 
-Six weighted dimensions, each a **percentile rank against the other
-instruments in the current response** (`_pct_rank` — `(peers ≤ this
-value) / peer count × 100`, inverted for "lower is better" metrics; returns
-50 if there are no peer values at all — see §8 for the single-instrument
-degenerate case):
+Six weighted dimensions, each a **percentile rank against same-type peers**
+(`_pct_rank(value, peers, higher_is_better=True)` —
+`(peers ≤ this value) / peer count × 100`, or its complement when
+`higher_is_better=False`; returns 50 if there are fewer than 2 peer values —
+see §8 for why that floor matters):
 
 | Dimension | Weight | Basis |
 |---|---|---|
-| yield_score | 20% | Trailing 12m distribution yield, percentile-ranked |
+| yield_score | 20% | Trailing 12m distribution yield, percentile-ranked (`higher_is_better=True`) |
 | distribution_growth_score | 15% | 3y distribution growth, percentile-ranked (funds without 3y history rank at the neutral 50, not penalized for being newer listings) |
 | return_score | 20% | Blend: 1m return × 30% + 1y return × 70%, each percentile-ranked separately then combined |
-| downside_protection | 15% | Max drawdown (1y), inverted percentile rank — smaller drawdown ranks higher |
-| volatility_score | 15% | 30d annualized volatility, inverted percentile rank — lower vol ranks higher |
+| downside_protection | 15% | Max drawdown (1y), percentile-ranked **without inversion** — see the note below, this used to be backwards |
+| volatility_score | 15% | 30d annualized volatility, percentile-ranked with `higher_is_better=False` — lower vol ranks higher |
 | momentum_score | 15% | 3m return, percentile-ranked |
 
 ```python
 conviction = clamp(sum(breakdown[k] * weight[k] for k in WEIGHTS), 0, 100)
 ```
 
+**Peer grouping is scoped to `asset_class` (REIT vs. InvIT), not pooled.**
+Every dimension above ranks an instrument against same-type peers first
+(`_peers_for`), falling back to the whole valid universe only when the
+same-type group has fewer than 2 values for that metric — e.g. a data
+outage that leaves only one REIT with a usable metric that day. **Fixed
+(2026-08-23)**: this used to pool all REITs and InvITs into one peer list
+for every dimension — see §8 for why that's a real methodological problem
+(the two instrument types have structurally different normal yield/
+volatility ranges) and not just a labeling nitpick.
+
+**`downside_protection`'s sign was inverted — fixed (2026-08-23).**
+`max_drawdown_1y` is stored as a negative number, where a *shallower* loss
+is the numerically *larger* value (`-2 > -15`) — i.e. it's already a
+"higher raw value is better" metric, unlike volatility (always positive,
+where lower really is the lower raw number). The old code did
+`100 - _pct_rank(max_drawdown_1y, peers)` for every "lower is better"
+dimension uniformly, which double-flipped drawdown's already-correct
+ranking: **the fund with the shallower, better drawdown scored *worse*
+downside protection than one with a deep loss.** Verified directly: two
+REITs with -5% and -15% drawdowns respectively scored `downside_protection`
+= 0 and 50 (backwards) before the fix, 100 and 50 (correct) after. `_pct_rank`
+now takes an explicit `higher_is_better` flag (same convention as
+`mf_lab.logic._pct_rank_mf`, which already had this and never had the bug)
+so the direction is stated at each call site instead of inferred from a
+metric-by-metric mental model of which raw values are "low."
+
 The weighted sum is a straight linear blend — no IQR winsorization, no
 sector/peer-group z-scoring, no regime multiplier (all present in the stock
-scanner's `apply_advanced_scoring`, see `SCORING.md` §4–5). With an 11-symbol
-universe, percentile rank is coarse by construction — each additional peer
-below you only ever moves your rank by ~9 percentage points (`1/11`), so two
-instruments that are meaningfully different on a raw metric can still land on
-the same rounded percentile.
+scanner's `apply_advanced_scoring`, see `SCORING.md` §4–5). With 5 REITs and
+6 InvITs, percentile rank is coarse by construction even within one type —
+each additional same-type peer only ever moves your rank by ~17-20
+percentage points, so two instruments that are meaningfully different on a
+raw metric can still land on the same rounded percentile.
 
 The resulting `conviction_score` is then mapped to a shared label via
 `utils.conviction_engine._label()` — the same vocabulary used by the stock
@@ -241,36 +267,39 @@ The REITs & InvITs page (`frontend/src/app/reit-invits/page.tsx`):
 
 ## 8. Known Gaps & Open Questions
 
-- **Single-instrument detail always scores 100 on every dimension.**
-  `get_reit_detail(symbol)` calls `_score_universe([raw])` — a peer list of
-  exactly one instrument, itself. `_pct_rank(value, [value])` = `1/1 × 100`
-  = 100, unconditionally, for every dimension, regardless of how good or
-  bad the instrument's actual metrics are. `_pct_rank`'s "no peers" fallback
-  (return 50) only triggers on an *empty* peer list — a one-element list
-  doesn't hit it. So `GET /api/reit-invits/{symbol}` — the single-symbol
-  detail endpoint — currently returns a conviction score that's
-  mathematically guaranteed to be 100 (before the confidence/staleness
-  discount) for any instrument with a valid price, which is almost
-  certainly not the intent. **The same bug exists in US Investing's
-  `get_us_detail`** — see `US_INVESTING_SCORING.md` §7. The fix is the same
-  in both places: score single-instrument lookups against the full
-  universe's peer values (fetch or cache the universe's raw metrics first,
-  then rank the one instrument against them), not against a peer list
-  containing only itself.
-- **REIT and InvIT are scored identically** despite being economically
-  different instrument types — a REIT (commercial real estate,
-  rental-income-driven) and a power/road/gas-pipeline InvIT (regulated
-  infrastructure, contracted-cashflow-driven) have different normal yield
-  ranges, volatility profiles, and risk drivers, but `WEIGHTS` and the
-  metric set are identical for both, and they're ranked against each other
-  in the same peer pool. A power-transmission InvIT with a stable 8% yield
-  and a mall-REIT with a volatile 4% yield end up compared on the same
-  `yield_score` percentile scale as if they were substitutes.
-- **`sector` is always "Real Estate"**, even for non-real-estate InvITs
-  (power, road, gas pipeline) — `REIT_INVIT_UNIVERSE`'s static metadata
-  doesn't currently distinguish. Combined with the point above, there's
-  currently no way to filter or peer-group by the actual underlying asset
-  type at all.
+**Fixed (2026-08-23)** — three items previously listed here are resolved;
+kept as a record of what changed and why, since the underlying reasoning
+(especially on peer-grouping) is still relevant context:
+
+- ~~Single-instrument detail always scores 100 on every dimension~~ — was:
+  `reit_invits.logic.get_reit_detail(symbol)` called `_score_universe([raw])`,
+  a peer list of exactly one instrument, itself; `_pct_rank(value, [value])`
+  is mathematically always `1/1 × 100 = 100`. Fixed at the router level:
+  `GET /api/reit-invits/{symbol}` now looks the requested symbol up from
+  the same cached, full-universe-scored frame `GET /api/reit-invits`
+  serves (`routers/reit_invits.py`), so it's ranked against its real peers.
+  `_pct_rank` was also hardened as defense-in-depth (§4: fewer than 2 peers
+  → neutral 50) for any future direct caller of the logic-level function,
+  which still has the single-peer shape if called on its own.
+  **The same bug and the same fix shape applied to US Investing's
+  `get_us_detail`** — see `US_INVESTING_SCORING.md` §7.
+- ~~REIT and InvIT are scored identically, pooled together~~ — was: all 11
+  instruments shared one peer pool per dimension despite REITs (commercial
+  real estate, rental-income-driven) and InvITs (regulated infrastructure,
+  contracted-cashflow-driven) having structurally different normal yield
+  and volatility ranges. Fixed: peer ranking is now scoped to `asset_class`
+  (§4), falling back to the whole universe only when a same-type group is
+  too thin (fewer than 2 values) to rank against.
+- ~~`sector` is always "Real Estate"~~ — this claim in an earlier version
+  of this doc was simply wrong; `REIT_INVIT_UNIVERSE` (`reit_invits/
+  universe.py`) already sets `sector: "Infrastructure"` for every InvIT
+  and `sector: "Real Estate"` only for actual REITs, and `_compute_raw_metrics`'s
+  `meta.get("sector", "Real Estate")` fallback (the source of the original,
+  incorrect claim here) never actually triggers because every universe
+  entry sets `sector` explicitly. Corrected.
+
+**Still open:**
+
 - **NAV proxy (`info.bookValue`) is a stretch for this instrument type.**
   "Book value" in yfinance's `info` dict is a generic equity-accounting
   field; for a trust structure like a REIT/InvIT, actual NAV is normally
@@ -282,8 +311,10 @@ The REITs & InvITs page (`frontend/src/app/reit-invits/page.tsx`):
   verifying against a real disclosed-NAV source (e.g. the trust's own
   investor-relations filings) before trusting it for anything beyond a
   rough directional signal.
-- **11-symbol universe means coarse percentile ranks** (§4) — worth keeping
-  in mind when reading small differences in conviction score as meaningful.
+- **11-symbol universe (5 REITs, 6 InvITs) means coarse percentile ranks**
+  (§4), more so now that ranking is type-scoped rather than pooled — worth
+  keeping in mind when reading small differences in conviction score as
+  meaningful.
 - **No absolute/benchmarked equivalent of MF's v1 score** — every dimension
   here is peer-relative only. In a universe where all 11 instruments are
   having a bad year, the "best" one still ranks near 100 on

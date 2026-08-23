@@ -46,13 +46,37 @@ def _safe(val: Any) -> Optional[float]:
         return None
 
 
-def _pct_rank(value: Optional[float], peers: list[float]) -> float:
+def _pct_rank(
+    value: Optional[float], peers: list[float], higher_is_better: bool = True
+) -> float:
+    """Return percentile rank of value within peers (0-100). 100 = best.
+
+    `higher_is_better` makes the direction of "good" explicit at every call
+    site instead of leaving callers to manually invert with `100 - rank` —
+    see reit_invits.logic's identical helper for the bug that pattern
+    caused there (max_drawdown_1y is stored as a negative number, so
+    "shallower loss = better" is *already* "higher raw value", the
+    opposite of a plain positive "lower is better" metric like volatility;
+    manually inverting it scored deep-loss instruments as having better
+    downside protection than shallow-loss ones — see US_INVESTING_SCORING.md
+    §7 / REIT_INVIT_SCORING.md §8).
+
+    Requires at least 2 *other* comparison points to mean anything — with a
+    peer list of exactly one value (only ever `value` itself, e.g. a
+    single-instrument detail lookup scored against a "peer group" of just
+    that instrument), the rank is trivially 100% regardless of whether the
+    underlying metric is actually good or bad. Same convention as
+    reit_invits.logic's identical helper and mf_lab.logic's percentile-rank
+    helper.
+    """
     if value is None or not peers:
         return 50.0
     clean = [v for v in peers if v is not None]
-    if not clean:
+    if len(clean) < 2:
         return 50.0
-    return round(sum(1 for p in clean if p <= value) / len(clean) * 100, 1)
+    rank = sum(1 for p in clean if p <= value) / len(clean)
+    score = rank * 100 if higher_is_better else (1 - rank) * 100
+    return round(score, 1)
 
 
 def _compute_raw_metrics(
@@ -176,6 +200,14 @@ def _compute_raw_metrics(
     return result
 
 
+# Below this many same-sector peers with a valid P/E, a sector-scoped rank
+# is too noisy to trust (e.g. a sector with just one other constituent
+# means "your rank" is entirely determined by whether you beat that one
+# name) — fall back to the whole universe's P/E pool instead for that
+# instrument's valuation score specifically.
+_MIN_SECTOR_PEERS_FOR_VALUATION = 3
+
+
 def _score_universe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     valid = [r for r in records if r.get("price")]
 
@@ -186,6 +218,20 @@ def _score_universe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     drawdowns = [r.get("max_drawdown_1y") for r in valid if r.get("max_drawdown_1y") is not None]
     pes = [r.get("pe_ratio") for r in valid if r.get("pe_ratio") is not None and r.get("pe_ratio") > 0]
     volumes = [r.get("avg_volume") for r in valid if r.get("avg_volume") is not None]
+
+    # valuation is sector-relative (module docstring's intent — a richly
+    # valued tech stock and a deep-value energy stock don't share a normal
+    # P/E range), unlike every other dimension above, which is ranked
+    # against the whole response pool. Falls back to the universe-wide
+    # `pes` pool per-instrument when that instrument's own sector doesn't
+    # have enough same-sector peers with a valid P/E (see
+    # _MIN_SECTOR_PEERS_FOR_VALUATION) — better a coarse comparison than a
+    # rank decided by one other company.
+    pes_by_sector: dict[str, list[float]] = {}
+    for r in valid:
+        pe = r.get("pe_ratio")
+        if pe and pe > 0:
+            pes_by_sector.setdefault(r.get("sector") or "", []).append(pe)
 
     for r in records:
         if not r.get("price"):
@@ -209,12 +255,23 @@ def _score_universe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         bd["return_score"] = round(r1m * 0.3 + r1y * 0.7, 1)
 
         bd["momentum_score"] = _pct_rank(r.get("returns_3m"), returns_3m)
-        bd["downside_protection"] = round(100 - _pct_rank(r.get("max_drawdown_1y"), drawdowns), 1)
-        bd["volatility_score"] = round(100 - _pct_rank(r.get("volatility_30d"), vols), 1)
+        # max_drawdown_1y is stored as a negative number, so a shallower
+        # loss is already the numerically larger (better-ranking) value —
+        # see reit_invits/logic.py's identical fix and REIT_INVIT_SCORING.md
+        # §8 for the full writeup of this bug. No inversion needed.
+        bd["downside_protection"] = _pct_rank(r.get("max_drawdown_1y"), drawdowns)
+        # volatility is always positive, so unlike max_drawdown_1y above,
+        # "lower raw number" and "better" really do point the same
+        # direction — higher_is_better=False is the correct inversion here.
+        bd["volatility_score"] = _pct_rank(r.get("volatility_30d"), vols, higher_is_better=False)
 
-        # valuation: lower PE = better (inverted)
+        # valuation: lower PE = better (inverted), ranked against same-sector
+        # peers when there are enough of them, else the whole universe (see
+        # _MIN_SECTOR_PEERS_FOR_VALUATION above).
         if r.get("pe_ratio") and r["pe_ratio"] > 0:
-            bd["valuation"] = round(100 - _pct_rank(r["pe_ratio"], pes), 1)
+            sector_pes = pes_by_sector.get(r.get("sector") or "", [])
+            pe_peers = sector_pes if len(sector_pes) >= _MIN_SECTOR_PEERS_FOR_VALUATION else pes
+            bd["valuation"] = _pct_rank(r["pe_ratio"], pe_peers, higher_is_better=False)
         else:
             bd["valuation"] = 50.0  # neutral for ETFs / no PE
 
