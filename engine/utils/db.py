@@ -3632,6 +3632,43 @@ def fetch_bhavcopy_ohlcv_batch(
         return {}
 
 
+def search_bhavcopy_symbols(query: str, limit: int = 10) -> List[str]:
+    """Ticker-only symbol search over bhavcopy_eod's own distinct symbols —
+    the fallback source for GET /api/symbols/search when the INDstocks
+    instruments cache (which has company names too) is unreachable. Every
+    symbol here has real trading data, so results are guaranteed usable by
+    GET /api/scan/search unlike a static/curated ticker list.
+
+    `query` matches against the ticker (case-insensitive substring, so
+    "reli" finds "RELIANCE.NS"). Returns bare symbol strings, most recently
+    traded first, so a delisted/renamed ticker (e.g. old TATAMOTORS.NS)
+    naturally sorts behind its live replacement.
+    """
+    q = (query or "").strip().upper()
+    if not q:
+        return []
+    try:
+        sql = """
+            SELECT symbol, max(trade_date) AS last_seen
+            FROM bhavcopy_eod
+            WHERE symbol LIKE :q
+            GROUP BY symbol
+            ORDER BY last_seen DESC, symbol ASC
+            LIMIT :n
+        """
+        params = {"q": f"%{q}%", "n": limit}
+        if _can_use_neon():
+            df = _read_df_uncached(sql, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_bhavcopy_eod_sqlite(conn)
+                df = pd.read_sql_query(sql, conn, params=params)
+        return [] if df.empty else df["symbol"].tolist()
+    except Exception as e:
+        logger.error("bhavcopy_eod symbol search error for %r: %s", query, e)
+        return []
+
+
 def get_bhavcopy_coverage_summary() -> Dict[str, Any]:
     """Return how much Bhav Copy history is actually stored right now:
     {"trading_days_covered": int, "symbol_count": int,
