@@ -506,9 +506,14 @@ def search_stock(
     risk_pct: float = 0.01,
 ):
     """Fetch live data and score a single arbitrary NSE ticker outside the
-    curated universes — same pipeline /api/scan uses per-ticker
-    (get_stock_data -> check_institutional_fortress -> apply_advanced_scoring),
-    so the response has the exact same columns as a row from /api/scan.
+    curated universes. Same scoring pipeline /api/scan uses per-ticker
+    (check_institutional_fortress -> apply_advanced_scoring), so the
+    response has the exact same columns as a row from /api/scan — but the
+    OHLCV fetch itself goes through get_ohlcv_indmoney_first() (IndMoney/
+    INDstocks -> yfinance) instead of get_stock_data()'s Bhav Copy-first
+    tiering, per explicit request: this search feature should surface
+    IndMoney data specifically, without touching how /api/scan or anything
+    else sources data.
 
     Note: a few columns in apply_advanced_scoring are cross-sectional
     (computed relative to the whole scanned universe, e.g. Sector_RSI_Z,
@@ -517,6 +522,7 @@ def search_stock(
     to a multi-stock scan's values.
     """
     from stock_scanner.pulse import get_current_regime
+    from utils.market_data_provider import get_ohlcv_indmoney_first
 
     ticker = symbol.strip().upper()
     if not ticker:
@@ -530,7 +536,7 @@ def search_stock(
         logger.warning(f"Regime fetch failed for search, defaulting to Range: {e}")
         regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
 
-    hist = get_stock_data(ticker, period="1y", interval="1d", group_by="column").dropna()
+    hist = get_ohlcv_indmoney_first(ticker, period="1y").dropna()
     if hist.empty or len(hist) < 210:
         raise HTTPException(
             status_code=404,

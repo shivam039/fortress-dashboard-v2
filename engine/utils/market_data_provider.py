@@ -680,6 +680,35 @@ def _ohlcv_yfinance(symbol: str, period: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def get_ohlcv_indmoney_first(symbol: str, period: str = "1y") -> pd.DataFrame:
+    """OHLCV for a single symbol: IndMoney/INDstocks -> yfinance. Bypasses
+    the Bhav Copy tier and the ohlcv_provider_preference setting entirely —
+    unlike get_ohlcv() above, this never touches Bhav Copy at all.
+
+    Exists solely for GET /api/scan/search (the standalone single-stock
+    search feature), which should surface IndMoney data specifically
+    regardless of whichever source /api/scan and the rest of the app are
+    currently configured to prefer for bulk scans. Deliberately does not
+    replace or alter get_ohlcv()/get_batch_ohlcv() — those keep serving
+    every other caller exactly as before.
+    """
+    if _indstocks_available():
+        df = _ohlcv_indstocks(symbol, period)
+        if df is not None and not df.empty:
+            _record_ohlcv_source("indstocks")
+            return df
+        logger.warning(
+            "IndMoney OHLCV failed for %s (%s) in stock search, falling back to yfinance",
+            symbol,
+            period,
+        )
+
+    df = _ohlcv_yfinance(symbol, period)
+    if not df.empty:
+        _record_ohlcv_source("yfinance")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Batch LTP (convenience)
 # ---------------------------------------------------------------------------
