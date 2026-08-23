@@ -2,8 +2,18 @@
 engine/bhavcopy/logic.py
 =========================
 Fetch and parse NSE's daily UDiFF common Bhav Copy — the exchange's own
-official EOD file (OHLC, volume, turnover, deliverable quantity) for every
-NSE-listed equity, published after market close.
+official EOD file (OHLC, volume, turnover) for every NSE-listed equity,
+published after market close.
+
+Deliverable quantity/percentage (`DlvryQty`/`DlvryPct` below) are NOT
+present in this particular file (the UDiFF CM Bhav Copy served at the
+`nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_...` endpoint) —
+confirmed against a real downloaded file, not assumed. NSE publishes
+delivery data separately (the "MTO"/delivery-position report), which this
+module does not fetch. `deliv_qty`/`deliv_pct` are kept in `_COLUMN_MAP`
+in case NSE ever adds them to this file, but they will always be absent
+from `bhavcopy_eod` as this module is currently designed — do not treat
+their being NULL as a bug.
 
 URL pattern (confirmed against current NSE archive behaviour, not the older
 pre-2024 `archives.nseindia.com/.../cmDDMMMYYYYbhav.csv.zip` path, which NSE
@@ -56,8 +66,17 @@ _REQUEST_TIMEOUT_S = 30
 # common bhavcopy format documents; if NSE renames a column again (it has
 # done this before — see the pre-UDiFF -> UDiFF migration), a symbol/row
 # simply won't map and `fetch_bhavcopy()` will raise a clear "no recognised
-# columns" error rather than silently returning wrong data. Verify against a
-# real downloaded file the first time this runs against production.
+# columns" error rather than silently returning wrong data.
+#
+# Verified against a real downloaded file (2026-08 UDiFF CM Bhav Copy, via
+# the chartiny/nse-cm-bhavcopy GitHub mirror): symbol/series/OHLC/volume/
+# turnover column names below are all confirmed correct. `TtlTrfVal` was
+# previously mis-mapped as `TtlTrdgVal` (one-letter typo: "Trdg" vs "Trf"),
+# which silently dropped `turnover` from every parsed row instead of raising
+# — `turnover` isn't in `_REQUIRED_COLUMNS`, so `_normalise_columns` had no
+# way to catch the miss. `DlvryQty`/`DlvryPct` are NOT present in this file
+# at all (see module docstring) — left in the map only in case NSE adds them
+# later, not because they've been seen in an actual file.
 _COLUMN_MAP = {
     "TckrSymb": "symbol",
     "SctySrs": "series",
@@ -66,7 +85,7 @@ _COLUMN_MAP = {
     "LwPric": "low",
     "ClsPric": "close",
     "TtlTradgVol": "volume",
-    "TtlTrdgVal": "turnover",
+    "TtlTrfVal": "turnover",
     "DlvryQty": "deliv_qty",
     "DlvryPct": "deliv_pct",
 }

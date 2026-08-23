@@ -36,6 +36,16 @@ def _make_bhavcopy_zip(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+# Column names here match a REAL downloaded UDiFF CM Bhav Copy file
+# (verified via the chartiny/nse-cm-bhavcopy GitHub mirror), not just what
+# the code happened to expect — using `TtlTrdgVal` here previously let a
+# one-letter mismatch (the real column is `TtlTrfVal`) go undetected,
+# because the fixture and the (buggy) `_COLUMN_MAP` agreed with each other
+# instead of with NSE. `DlvryQty`/`DlvryPct` are NOT part of the real file
+# at all — see the "no delivery columns" test below, which is the one that
+# reflects actual production data. They're kept here anyway (harmlessly
+# exercising the DlvryQty/DlvryPct branch of `_COLUMN_MAP`) so a future
+# format change that *adds* delivery columns back is still covered.
 _SAMPLE_ROWS = [
     {
         "TckrSymb": "RELIANCE",
@@ -45,7 +55,7 @@ _SAMPLE_ROWS = [
         "LwPric": 2490.0,
         "ClsPric": 2530.0,
         "TtlTradgVol": 1000000,
-        "TtlTrdgVal": 2500000000.0,
+        "TtlTrfVal": 2500000000.0,
         "DlvryQty": 400000,
         "DlvryPct": 40.0,
     },
@@ -57,7 +67,7 @@ _SAMPLE_ROWS = [
         "LwPric": 3790.0,
         "ClsPric": 3820.0,
         "TtlTradgVol": 500000,
-        "TtlTrdgVal": 1900000000.0,
+        "TtlTrfVal": 1900000000.0,
         "DlvryQty": 200000,
         "DlvryPct": 40.0,
     },
@@ -71,9 +81,28 @@ _SAMPLE_ROWS = [
         "LwPric": 100.0,
         "ClsPric": 100.0,
         "TtlTradgVol": 10,
-        "TtlTrdgVal": 1000.0,
+        "TtlTrfVal": 1000.0,
         "DlvryQty": 5,
         "DlvryPct": 50.0,
+    },
+]
+
+# The shape NSE actually publishes at this endpoint: no delivery columns at
+# all. A real file also has extra columns this parser ignores (e.g. ISIN,
+# SctySrsPrvsClsg-style fields); trimming to just what _COLUMN_MAP cares
+# about plus one unrecognised extra column is enough to prove those don't
+# break parsing.
+_REAL_SHAPE_ROWS = [
+    {
+        "TckrSymb": "RELIANCE",
+        "SctySrs": "EQ",
+        "OpnPric": 2500.0,
+        "HghPric": 2550.0,
+        "LwPric": 2490.0,
+        "ClsPric": 2530.0,
+        "TtlTradgVol": 1000000,
+        "TtlTrfVal": 2500000000.0,
+        "ISIN": "INE002A01018",
     },
 ]
 
@@ -91,7 +120,25 @@ def test_parse_bhavcopy_zip_normalises_columns_and_filters_to_equity_series():
     reliance = df[df["symbol"] == "RELIANCE.NS"].iloc[0]
     assert reliance["close"] == 2530.0
     assert reliance["volume"] == 1000000
+    assert reliance["turnover"] == 2500000000.0
     assert reliance["deliv_pct"] == 40.0
+
+
+def test_parse_bhavcopy_zip_handles_real_file_shape_with_no_delivery_columns():
+    """Production reality: NSE's UDiFF CM Bhav Copy at this endpoint has no
+    DlvryQty/DlvryPct columns at all (confirmed against a real downloaded
+    file — see bhavcopy/logic.py module docstring). OHLCV/turnover must
+    still parse correctly, and deliv_qty/deliv_pct must come back absent
+    (not present-but-null) rather than raising."""
+    raw = _make_bhavcopy_zip(_REAL_SHAPE_ROWS)
+    df = bhavcopy_logic.parse_bhavcopy_zip(raw)
+
+    reliance = df[df["symbol"] == "RELIANCE.NS"].iloc[0]
+    assert reliance["close"] == 2530.0
+    assert reliance["volume"] == 1000000
+    assert reliance["turnover"] == 2500000000.0
+    assert "deliv_qty" not in df.columns
+    assert "deliv_pct" not in df.columns
 
 
 def test_parse_bhavcopy_zip_raises_format_error_on_unrecognised_columns():

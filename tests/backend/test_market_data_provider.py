@@ -549,6 +549,39 @@ def test_bhavcopy_coverage_accepts_a_short_period_with_matching_short_history():
     assert mdp._bhavcopy_has_sufficient_coverage(df, "1mo") is True
 
 
+def test_bhavcopy_coverage_rejects_203_days_against_a_one_year_request():
+    # Found live (2026-08-23): a real mid-backfill state where Bhav Copy had
+    # 203 trading days of history. That clears the 0.5 *ratio* bar on its
+    # own (203 >= ~260*0.5), so the ratio-only check accepted it as "covered"
+    # — but 203 rows is still short of the scanner's own hard `len(data) <
+    # 210` gate in stock_scanner.logic.check_institutional_fortress, so
+    # every one of those symbols got marked "served by Bhav Copy" here, never
+    # fell through to INDstocks/yfinance, and then silently failed the 210
+    # gate downstream — a full scan came back with 0 results (49 symbols
+    # "served" by Bhav Copy, 0 by INDstocks, 0 by yfinance) with no error
+    # anywhere in the chain. This pins down the absolute-floor fix.
+    df = mdp._candles_to_df(_sample_candles(203))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "1y") is False
+
+
+def test_bhavcopy_coverage_accepts_210_days_against_a_one_year_request():
+    # The absolute floor is MIN_SCAN_HISTORY_ROWS (210) exactly, not a
+    # rounded-up ratio bar — 210 rows must clear it.
+    df = mdp._candles_to_df(_sample_candles(210))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "1y") is True
+
+
+def test_bhavcopy_coverage_absolute_floor_does_not_apply_to_short_periods():
+    # The 210-row absolute floor must only bite once the period's own
+    # expected trading-day count could plausibly reach it (~"1y" and up).
+    # A "6mo" request (~130 expected trading days) can never reach 210
+    # trading days no matter how complete Bhav Copy's history is, so it must
+    # stay governed by the ratio bar alone, not be held to the scanner's 1y
+    # minimum it was never trying to satisfy.
+    df = mdp._candles_to_df(_sample_candles(100))[["Open", "High", "Low", "Close", "Volume"]]
+    assert mdp._bhavcopy_has_sufficient_coverage(df, "6mo") is True
+
+
 def test_bhavcopy_coverage_accepts_unrecognised_period_with_no_bound_to_compare():
     df = mdp._candles_to_df(_sample_candles(1))[["Open", "High", "Low", "Close", "Volume"]]
     assert mdp._bhavcopy_has_sufficient_coverage(df, "garbage-period") is True

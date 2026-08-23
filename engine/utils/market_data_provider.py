@@ -349,6 +349,17 @@ def _period_to_start_date(period: str) -> Optional[str]:
 # scan came back with 0 results and no error anywhere in the chain.
 _BHAVCOPY_MIN_COVERAGE_RATIO = 0.5
 
+# The scanner's own hard minimum-history requirement
+# (stock_scanner.logic.check_institutional_fortress: `len(data) < 210` ->
+# reject). Duplicated as a literal `210` in several call sites today
+# (main.py, stock_scanner/ui.py, cron_stock_scan.py, scripts/telegram_bot.py,
+# stock_scanner/logic.py itself) — defined here, in the one module every
+# OHLCV consumer already imports, so this coverage check can enforce it
+# directly instead of just approximating it with a ratio (see below), and so
+# new/other call sites have one place to import it from instead of
+# re-hardcoding the number.
+MIN_SCAN_HISTORY_ROWS = 210
+
 
 def _bhavcopy_has_sufficient_coverage(df: pd.DataFrame, period: str) -> bool:
     """Return False if ``df`` (Bhav Copy's answer for ``period``) covers
@@ -356,8 +367,24 @@ def _bhavcopy_has_sufficient_coverage(df: pd.DataFrame, period: str) -> bool:
     real NSE-week calendar (``pandas.bdate_range``, Mon–Fri) rather than a
     hardcoded row count, so this stays correct for every period string
     (a "1mo" request needing ~22 trading days isn't held to the same bar as
-    a "1y" request needing ~260) without hardcoding any specific caller's
-    own downstream minimum (e.g. the scanner's 210)."""
+    a "1y" request needing ~260).
+
+    Combines two bars:
+      - a coverage *ratio* (``_BHAVCOPY_MIN_COVERAGE_RATIO``) — catches a
+        thin/mid-backfill history relative to what the period should hold,
+        for every period string generically;
+      - an *absolute* floor of ``MIN_SCAN_HISTORY_ROWS``, applied only when
+        the period's own expected trading-day count is already at or above
+        that floor (i.e. "1y" and longer — never a short period like "1mo"
+        or "6mo", which can't reach 210 expected trading days at all and
+        would otherwise be held to a bar they were never meant to clear).
+        This catches the specific case that slipped through the ratio
+        alone in production: a "1y" request (~260 expected trading days)
+        satisfied by Bhav Copy at 203 days, which clears a 0.5 ratio
+        (203 >= 130) but is still short of the scanner's own 210-row hard
+        gate — so those symbols got marked "covered" here and never fell
+        through to INDstocks/yfinance, silently producing a 0-result scan.
+    """
     start_date = _period_to_start_date(period)
     if start_date is None:
         # Unrecognised period string — no expected-length bound to compare
@@ -368,7 +395,10 @@ def _bhavcopy_has_sufficient_coverage(df: pd.DataFrame, period: str) -> bool:
     )
     if expected_trading_days == 0:
         return True
-    return len(df) >= expected_trading_days * _BHAVCOPY_MIN_COVERAGE_RATIO
+    required = expected_trading_days * _BHAVCOPY_MIN_COVERAGE_RATIO
+    if expected_trading_days >= MIN_SCAN_HISTORY_ROWS:
+        required = max(required, MIN_SCAN_HISTORY_ROWS)
+    return len(df) >= required
 
 
 def _ohlcv_bhavcopy(symbol: str, period: str) -> Optional[pd.DataFrame]:
