@@ -26,25 +26,57 @@ graph TD
     Browser[Browser]
     Next[Next.js frontend<br/>frontend/src/app]
     API[FastAPI backend<br/>engine/main.py]
-    MDP[market_data_provider.py]
-    IND[INDstocks API<br/>primary]
-    YF[yfinance<br/>fallback]
+    
+    %% API Routers / Modules
+    Scanner[Stock Scanner<br/>stock_scanner/]
+    MF[MF Lab<br/>mf_lab/]
+    Opt[Options<br/>options_algo/]
+    Reit[REIT & InvITs<br/>routers/reit_invits.py]
+    Cmdty[Commodities<br/>commodities/logic.py]
+    US[US Investing<br/>routers/us_investing.py]
+    Profile[Profile & Auth<br/>routers/auth, users]
+    Orders[Orders<br/>routers/orders.py]
+
+    %% Data layer
+    MDP[market_data_provider.py<br/>Single Entry Point]
+    Bhav[Bhav Copy<br/>NSE EOD CSV]
+    IND[INDstocks API<br/>live primary]
+    YF[yfinance<br/>fallback / US / MF]
     Cache[instruments_cache.py<br/>daily CSV]
-    Scanner[stock_scanner]
-    MF[mf_lab]
-    Opt[options_algo]
     DB[utils/db.py<br/>SQLite / Neon]
 
     Browser --> Next
     Next --> API
+    
     API --> Scanner
     API --> MF
     API --> Opt
-    API --> DB
+    API --> Reit
+    API --> Cmdty
+    API --> US
+    API --> Profile
+    API --> Orders
+    
+    %% Data flow
     Scanner --> MDP
+    Reit --> MDP
+    US --> YF
+    Opt --> YF
+    Cmdty --> YF
+    MF --> YF
+    
+    MDP --> Bhav
     MDP --> IND
     MDP --> YF
+    
     IND --> Cache
+    Bhav --> DB
+    
+    Scanner --> DB
+    MF --> DB
+    Profile --> DB
+    Orders --> DB
+    Reit --> DB
 ```
 
 ## Market Data Provider
@@ -53,15 +85,24 @@ All price data flows through `engine/utils/market_data_provider.py`:
 
 | Call type | Provider |
 |---|---|
-| Single-symbol daily OHLCV | **INDstocks** → yfinance fallback |
-| Close price series (benchmark, returns) | **INDstocks** → yfinance fallback |
-| Batch multi-ticker download (`group_by="ticker"`) | yfinance (INDstocks has no equivalent) |
+| Single-symbol daily OHLCV | **Bhav Copy** → **INDstocks** → yfinance fallback |
+| Close price series (benchmark, returns) | **Bhav Copy** → **INDstocks** → yfinance fallback |
+| Batch multi-ticker download (`group_by="ticker"`) | **Bhav Copy** → yfinance (INDstocks has no equivalent) |
 | Intraday intervals (5m, 1h, etc.) | yfinance |
 | US stocks | yfinance (INDstocks is India-only) |
 
 INDstocks activates automatically when any of these env vars are set:
 - **TOTP (preferred):** `INDSTOCKS_CLIENT_ID` + `INDSTOCKS_MPIN` + `INDSTOCKS_TOTP_SECRET`
 - **Static:** `INDSTOCKS_TOKEN` (expires every 24 h)
+
+## Bhav Copy Operational Health
+
+Bhav Copy is the preferred daily OHLCV data source (set by default) because it offers robust, rate-limit-free NSE EOD data.
+Its operational health depends on:
+- **Historical Backfill Depth:** The number of trading days backfilled determines its ability to serve full historical scans (e.g., 200-EMA requires at least 210 trading days). Trigger this manually via `POST /api/bhavcopy/backfill` or the `bhavcopy-backfill.yml` GitHub Action.
+- **Daily Refresh (GHA):** A scheduled GitHub Action (`.github/workflows/bhavcopy-refresh.yml`) fetches the latest day's data automatically at 19:00 and 20:30 IST on weekdays.
+
+Both metrics (days covered and latest fetch date) are visible via the `GET /api/bhavcopy/status` endpoint and rendered in the dashboard's `SystemStatus` UI component.
 
 ## Key Features
 

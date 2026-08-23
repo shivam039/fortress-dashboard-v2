@@ -17,8 +17,8 @@ scheme codes/symbols to avoid colliding with real data.
 
 import pandas as pd
 
-from engine.mf_lab.logic import _bulk_preseed_nav_cache
-from engine.utils.db import (
+from mf_lab.logic import _bulk_preseed_nav_cache
+from utils.db import (
     fetch_mf_nav_cache,
     fetch_ohlcv_cache,
     upsert_mf_nav_cache,

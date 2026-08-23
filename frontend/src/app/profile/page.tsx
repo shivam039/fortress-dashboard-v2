@@ -7,10 +7,16 @@ import { useToast } from '@/contexts/ToastContext';
 import { brokersApi } from '@/lib/api';
 import DataTable from '@/components/DataTable';
 
+interface Broker {
+  broker_name: string;
+  broker_client_id?: string;
+  is_active?: boolean;
+}
+
 export default function ProfilePage() {
-  const { user, refreshUser } = useAuth();
-  const { toast, success, error } = useToast();
-  const [brokers, setBrokers] = useState<Record<string, unknown>[]>([]);
+  const { user } = useAuth();
+  const { success, error } = useToast();
+  const [brokers, setBrokers] = useState<Broker[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [brokerName, setBrokerName] = useState('Zerodha');
@@ -21,12 +27,13 @@ export default function ProfilePage() {
   const loadBrokers = async () => {
     try {
       const data = await brokersApi.list();
-      setBrokers(data);
+      setBrokers(data as unknown as Broker[]);
     } catch {}
     setLoading(false);
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadBrokers();
   }, []);
 
@@ -137,7 +144,7 @@ export default function ProfilePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {brokers.map((b: any) => (
+                      {brokers.map((b: Broker) => (
                         <tr key={b.broker_name}>
                           <td><strong>{b.broker_name}</strong></td>
                           <td>{b.broker_client_id || '—'}</td>

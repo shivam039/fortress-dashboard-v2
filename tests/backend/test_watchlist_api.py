@@ -1,5 +1,5 @@
 import pytest
-from engine.utils.db import add_to_watchlist, get_watchlist, remove_from_watchlist, _ensure_investment_tables
+from utils.db import add_to_watchlist, get_watchlist, remove_from_watchlist, _ensure_investment_tables
 
 def test_watchlist_crud():
     username = "test_user"

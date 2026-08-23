@@ -19,7 +19,7 @@ client in unit tests — no live API calls in tests").
 
 import pytest
 
-from engine.utils import market_data_provider as mdp
+from utils import market_data_provider as mdp
 
 _ENV_KEYS = (
     "INDSTOCKS_TOKEN",

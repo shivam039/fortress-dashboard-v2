@@ -16,9 +16,9 @@ prefers a fresh cache over re-scanning.
 import pandas as pd
 from fastapi.testclient import TestClient
 
-import engine.main as main_mod
-from engine.main import app
-from engine.utils.db import fetch_mf_cached_results, upsert_mf_scan_results
+import main as main_mod
+from main import app
+from utils.db import fetch_mf_cached_results, upsert_mf_scan_results
 
 client = TestClient(app)
 

@@ -2,7 +2,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { authApi, type UserProfile, type APIError } from '@/lib/api';
+import { authApi, type UserProfile } from '@/lib/api';
 
 interface AuthState {
   user: UserProfile | null;
@@ -37,11 +37,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshUser();
   }, [refreshUser]);
 
   const login = async (username: string, password: string) => {
-    const res = await authApi.login(username, password);
+    await authApi.login(username, password);
     // Cookie is set by the backend — just fetch the profile
     const profile = await authApi.me();
     setState({ user: profile, isLoading: false, isAuthenticated: true });

@@ -52,6 +52,7 @@ export default function ScreenerPage() {
   // long a completed/failed scan actually took.
   useEffect(() => {
     if (!loading) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setElapsedSec(0);
       return;
     }

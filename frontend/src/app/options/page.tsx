@@ -18,6 +18,7 @@ export default function OptionsPage() {
   const [loadingExpiries, setLoadingExpiries] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingExpiries(true);
     optionsApi
       .expiries(symbol)
@@ -46,6 +47,7 @@ export default function OptionsPage() {
 
   useEffect(() => {
     if (expiry) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadChain();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
