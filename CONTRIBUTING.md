@@ -344,7 +344,9 @@ Commits from `shivam.dixit@publicissapient.com` or `shidixit2@publicisgroupe.net
 - [ ] New functions have type hints and docstrings
 - [ ] `flake8` reports no errors
 - [ ] Change is logged to `logs/ai_audit_log.jsonl` (AI agents only — use `engine/utils/ai_audit.py`)
-- [ ] `SCORING.md` updated if you changed scoring logic
+- [ ] Matching scoring doc updated if you changed scoring logic — `SCORING.md`
+      (stock scanner), `MF_SCORING.md` (mutual funds), `REIT_INVIT_SCORING.md`
+      (REITs & InvITs), or `US_INVESTING_SCORING.md` (US Investing)
 - [ ] `DEPLOYMENT.md` updated if you changed env vars or infra
 
 ---
@@ -357,6 +359,9 @@ All AI coding agents modifying this repository **must**:
 2. Log every change to `logs/ai_audit_log.jsonl` using `engine/utils/ai_audit.log_ai_change()`.
 3. Never commit from a corporate email address (guardrail enforced by pre-commit hook).
 4. Run `pytest` before committing — never commit failing tests.
-5. Update `SCORING.md` when changing any scoring logic in `engine/stock_scanner/`.
+5. Update the matching scoring doc when changing any scoring logic —
+   `SCORING.md` for `engine/stock_scanner/`, `MF_SCORING.md` for
+   `engine/mf_lab/`, `REIT_INVIT_SCORING.md` for `engine/reit_invits/`,
+   `US_INVESTING_SCORING.md` for `engine/us_investing/`.
 6. Record architectural decisions in `.agent-room/decisions.md`.
 7. Record anti-patterns discovered in `.agent-room/anti-patterns.md`.
