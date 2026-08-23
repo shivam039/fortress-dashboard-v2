@@ -2300,14 +2300,50 @@ def fetch_timestamps(table_name="scan_mf", scan_type=None):
     return timestamps
 
 
+def fetch_scan_history_list(limit=200):
+    """Return completed scans with their scan_id, universe, and scan_type,
+    not just a bare timestamp string.
 
-def fetch_history_data(table_name, timestamp, scan_type=None):
+    fetch_timestamps() above only returns raw timestamps, so the Scan
+    History page's dropdown had no way to tell a user whether a given
+    entry was a stock scan, an MF scan, a commodities scan, etc. — every
+    row looked identical except for the time. Keying entries by scan_id
+    also sidesteps fetch_history_data's timestamp-collision risk (two
+    scans registered in the same second previously resolved to whichever
+    row happened to sort first).
+    """
+    try:
+        df = _read_df(
+            """
+            SELECT scan_id, timestamp, universe, scan_type
+            FROM scans
+            WHERE status = 'Completed'
+            ORDER BY scan_id DESC
+            LIMIT :limit
+            """,
+            {"limit": limit},
+            ttl="5m",
+        )
+    except Exception as e:
+        logger.warning(f"Error fetching scan history list: {e}")
+        return []
+    return df.to_dict(orient="records") if not df.empty else []
+
+
+def fetch_history_data(table_name, timestamp=None, scan_type=None, scan_id=None):
     # 1. Try New Schema via scans table
-    scan_info = _read_df(
-        "SELECT scan_id, scan_type FROM scans WHERE timestamp = :timestamp",
-        {"timestamp": timestamp},
-        ttl="5m",
-    )
+    if scan_id is not None:
+        scan_info = _read_df(
+            "SELECT scan_id, scan_type FROM scans WHERE scan_id = :scan_id",
+            {"scan_id": scan_id},
+            ttl="5m",
+        )
+    else:
+        scan_info = _read_df(
+            "SELECT scan_id, scan_type FROM scans WHERE timestamp = :timestamp",
+            {"timestamp": timestamp},
+            ttl="5m",
+        )
 
     if not scan_info.empty:
         # int(...): scan_info.iloc[0]["scan_id"] comes back as numpy.int64

@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: '/reit-invits', icon: '🏢', label: 'REITs & InvITs' },
   { href: '/us-investing', icon: '🇺🇸', label: 'US Investing' },
   { href: '/orders', icon: '📋', label: 'Orders' },
+  { href: '/picks', icon: '🎯', label: 'Picks Tracker' },
   { href: '/commodities', icon: '🌍', label: 'Commodities' },
   { href: '/options', icon: '⚡', label: 'Options' },
   { href: '/history', icon: '🕐', label: 'Scan History' },

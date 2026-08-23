@@ -37,7 +37,7 @@ from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.db import (
     fetch_history_data,
     fetch_mf_cached_results,
-    fetch_timestamps,
+    fetch_scan_history_list,
     register_scan,
     save_scan_results,
 )
@@ -819,12 +819,15 @@ def get_options_chain(
 
 @app.get("/api/history/timestamps")
 def get_history_timestamps():
-    return fetch_timestamps()
+    """Return scan entries with enough metadata (scan_id, universe,
+    scan_type) for the frontend to label each one by section, not just
+    by a bare, indistinguishable timestamp."""
+    return fetch_scan_history_list()
 
 
 @app.get("/api/history/data")
-def get_history_data(timestamp: str, scan_type: Optional[str] = None):
-    df = fetch_history_data("scan_mf", timestamp, scan_type=scan_type)
+def get_history_data(scan_id: int):
+    df = fetch_history_data("scan_mf", scan_id=scan_id)
     records = df.to_dict(orient="records") if not df.empty else []
     return _sanitize_json_value(records)
 

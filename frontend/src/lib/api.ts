@@ -383,11 +383,39 @@ export const commoditiesApi = {
 
 // ── Picks ────────────────────────────────────────────────────────────────────
 
+export interface PickSummary {
+  total: number;
+  hits: number;
+  misses: number;
+  expired: number;
+  trailing: number;
+  hit_rate: number;
+  avg_pnl: number;
+  avg_days: number;
+  best_pnl: number;
+  worst_pnl: number;
+}
+
 export const picksApi = {
   list: (status?: string) =>
     api.get<Record<string, unknown>[]>(`/api/picks${status ? `?status=${status}` : ''}`),
   record: (data: Record<string, unknown>) => api.post('/api/picks', data),
-  summary: () => api.get<Record<string, unknown>>('/api/picks/summary'),
+  summary: () => api.get<PickSummary>('/api/picks/summary'),
+};
+
+// ── Scan History ─────────────────────────────────────────────────────────────
+
+export interface ScanHistoryEntry {
+  scan_id: number;
+  timestamp: string;
+  universe: string;
+  scan_type: string;
+}
+
+export const historyApi = {
+  timestamps: () => api.get<ScanHistoryEntry[]>('/api/history/timestamps'),
+  data: (scanId: number) =>
+    api.get<Record<string, unknown>[]>(`/api/history/data?scan_id=${scanId}`),
 };
 
 // ── Options ────────────────────────────────────────────────────────────────
