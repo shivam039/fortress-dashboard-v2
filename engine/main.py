@@ -755,8 +755,39 @@ async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/api/commodities")
-async def get_commodities():
-    df = build_commodities_frame()
+def get_commodities(force_refresh: bool = Query(False)):
+    """Return conviction-scored Gold/Silver/Crude/Copper rows.
+
+    Declared as a plain `def`, not `async def`: build_commodities_frame()
+    does synchronous, potentially slow work (up to 9 live yfinance calls —
+    USDINR plus global+local OHLCV for each of the 4 commodities — on a
+    cache miss). An `async def` route with no real `await` inside runs
+    directly on uvicorn's single event loop and freezes request handling
+    for the *entire app*, not just this endpoint — the same bug pattern
+    already fixed for the stock scanner, sector pulse, MF analysis, REIT/
+    InvIT, and US Investing routes (this one was missed at the time). A
+    plain `def` route lets FastAPI dispatch it to a worker thread instead.
+    """
+    df = build_commodities_frame(force_refresh=force_refresh)
+
+    # Persist to scan_history_details so the existing Scan History page
+    # (GET /api/history/timestamps + /api/history/data — already used by
+    # the stock scanner and MF Lab) also covers commodity scans. The
+    # legacy Streamlit UI (commodities/ui.py) already did this
+    # (register_scan + save_scan_results); the Next.js-facing endpoint
+    # never picked it up, so every commodity scan this app has ever run
+    # vanished the moment the response was returned — no way to see how
+    # e.g. Gold's spread or conviction score has trended over time.
+    if not df.empty:
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            scan_id = register_scan(
+                timestamp, universe="Commodities", scan_type="COMMODITY", status="Completed"
+            )
+            save_scan_results(scan_id, df, scan_timestamp=timestamp)
+        except Exception as e:
+            logger.warning("get_commodities: failed to persist scan history: %s", e)
+
     records = df.to_dict(orient="records")
     return _sanitize_json_value(records)
 

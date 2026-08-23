@@ -18,7 +18,7 @@ export default function DashboardPage() {
     async function load() {
       try {
         const [s, b, o] = await Promise.all([
-          ordersApi.stats().catch(() => ({ total: 0, executed: 0, pending: 0, rejected: 0 })),
+          ordersApi.stats().catch(() => ({ total: 0, executed: 0, pending: 0, rejected: 0, cancelled: 0 })),
           brokersApi.list().catch(() => []),
           ordersApi.list({ limit: '8' } as Record<string, string>).catch(() => []),
         ]);
