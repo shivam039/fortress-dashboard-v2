@@ -25,8 +25,8 @@ import asyncio
 
 import pandas as pd
 
-import engine.main as main_mod
-from engine.routers import orders as orders_router_mod
+import main as main_mod
+from routers import orders as orders_router_mod
 
 
 def test_order_stats_counts_cancelled(monkeypatch):
