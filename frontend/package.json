@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:scan": "tsc -p tsconfig.scan-tests.json && node --test tests/scan.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.32.0",
