@@ -208,3 +208,17 @@ historical scores.
 
 **Rejected:** Recomputing scores from current scanner code or fitting a
 surrogate and presenting it as production ablation evidence.
+
+### 2026-09-10 — Use fixed, non-tuned R4 walk-forward windows
+
+**Decision:** R4 uses rolling 252-session training, 63-session validation,
+and 63-session untouched test windows advanced by 63 sessions. Top-N values
+default to fixed 5/10/20, and validation is reported but not used for tuning.
+
+**Why:** The R1/R2 artifacts contain archived decisions and labels, not a
+research-approved parameter-selection protocol. Fixed parameters make the
+evaluation reproducible and prevent accidental test leakage while still
+showing in-sample versus out-of-sample degradation.
+
+**Rejected:** Rebuilding production scores, optimizing top-N on all history, or
+using the validation period to silently fit new scoring parameters.
