@@ -2259,6 +2259,226 @@ def update_scan_status(scan_id, status):
     )
 
 
+# ─────────────────────────────────────────────
+# Async scan jobs (FORTRESS-P3)
+# ─────────────────────────────────────────────
+# Backs POST /api/scan/jobs + GET /api/scan/jobs/{job_id}/status +
+# GET /api/scan/jobs/{job_id}/results (engine/main.py) — moves a long-running
+# /api/scan off the synchronous request path. `job_id` is a caller-supplied
+# UUID string (not autoincrement), inserted synchronously by
+# create_scan_job() *before* the background task starts, so a status poll
+# immediately after job creation always finds a row. DB-backed (not
+# in-memory) so a browser refresh/reconnect, or a second app instance behind
+# a load balancer, can resume polling the same job_id and see the same state.
+
+
+def _ensure_scan_jobs_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS scan_jobs (
+            job_id            TEXT PRIMARY KEY,
+            universe          TEXT,
+            request_json      JSONB,
+            status            TEXT NOT NULL DEFAULT 'queued',
+            stage             TEXT,
+            progress_current  INTEGER DEFAULT 0,
+            progress_total    INTEGER DEFAULT 0,
+            message           TEXT,
+            results_json      JSONB,
+            error             TEXT,
+            created_at        TIMESTAMPTZ DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+
+def _ensure_scan_jobs_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_jobs (
+            job_id            TEXT PRIMARY KEY,
+            universe          TEXT,
+            request_json      TEXT,
+            status            TEXT NOT NULL DEFAULT 'queued',
+            stage             TEXT,
+            progress_current  INTEGER DEFAULT 0,
+            progress_total    INTEGER DEFAULT 0,
+            message           TEXT,
+            results_json      TEXT,
+            error             TEXT,
+            created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at        TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def create_scan_job(job_id: str, universe: str, request_dict: Dict[str, Any]) -> None:
+    """Insert a new scan_jobs row with status='queued'. Called synchronously
+    from POST /api/scan/jobs before the background task is scheduled."""
+    request_json = json.dumps(request_dict)
+    if _can_use_neon():
+        _ensure_scan_jobs_neon()
+        _exec(
+            "INSERT INTO scan_jobs (job_id, universe, request_json, status) "
+            "VALUES (:job_id, :universe, CAST(:request_json AS JSONB), 'queued')",
+            {"job_id": job_id, "universe": universe, "request_json": request_json},
+        )
+        return
+    with _sqlite_connection() as conn:
+        _ensure_scan_jobs_sqlite(conn)
+        conn.execute(
+            "INSERT INTO scan_jobs (job_id, universe, request_json, status) "
+            "VALUES (:job_id, :universe, :request_json, 'queued')",
+            {"job_id": job_id, "universe": universe, "request_json": request_json},
+        )
+
+
+def update_scan_job_progress(
+    job_id: str,
+    status: Optional[str] = None,
+    stage: Optional[str] = None,
+    current: Optional[int] = None,
+    total: Optional[int] = None,
+    message: Optional[str] = None,
+) -> None:
+    """Update a job's live progress. Any argument left as None leaves that
+    column unchanged. Called repeatedly over the life of one job (once per
+    stage transition, plus periodically during the per-ticker loop) from
+    inside the background scan execution — kept to a single UPDATE, no
+    read-modify-write, and never raises (a progress-write hiccup must not
+    crash an otherwise-successful scan)."""
+    sets = []
+    params: Dict[str, Any] = {"job_id": job_id}
+    if status is not None:
+        sets.append("status = :status")
+        params["status"] = status
+    if stage is not None:
+        sets.append("stage = :stage")
+        params["stage"] = stage
+    if current is not None:
+        sets.append("progress_current = :current")
+        params["current"] = current
+    if total is not None:
+        sets.append("progress_total = :total")
+        params["total"] = total
+    if message is not None:
+        sets.append("message = :message")
+        params["message"] = message
+    if not sets:
+        return
+
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            _exec(
+                f"UPDATE scan_jobs SET {', '.join(sets)}, updated_at = NOW() "
+                "WHERE job_id = :job_id",
+                params,
+            )
+            return
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            conn.execute(
+                f"UPDATE scan_jobs SET {', '.join(sets)}, "
+                "updated_at = CURRENT_TIMESTAMP WHERE job_id = :job_id",
+                params,
+            )
+    except Exception as e:
+        logger.warning("update_scan_job_progress(%s) failed: %s", job_id, e)
+
+
+def complete_scan_job(job_id: str, results: Any) -> None:
+    """Mark a job completed and store its final result payload — the exact
+    same JSON-serializable object /api/scan's synchronous response body
+    already returns, so GET /api/scan/jobs/{job_id}/results stays
+    byte-compatible with the old synchronous endpoint's response shape."""
+    results_json = json.dumps(results)
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            _exec(
+                "UPDATE scan_jobs SET status='completed', stage='completed', "
+                "results_json = CAST(:results AS JSONB), updated_at = NOW() "
+                "WHERE job_id = :job_id",
+                {"job_id": job_id, "results": results_json},
+            )
+            return
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            conn.execute(
+                "UPDATE scan_jobs SET status='completed', stage='completed', "
+                "results_json = :results, updated_at = CURRENT_TIMESTAMP "
+                "WHERE job_id = :job_id",
+                {"job_id": job_id, "results": results_json},
+            )
+    except Exception as e:
+        logger.error("complete_scan_job(%s) failed: %s", job_id, e)
+
+
+def fail_scan_job(job_id: str, error: str) -> None:
+    """Mark a job failed with a visible error message — a background task
+    that raises must never leave a job stuck in 'queued'/'running' forever
+    with no way for a poller to tell the difference from "still working"."""
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            _exec(
+                "UPDATE scan_jobs SET status='failed', stage='failed', error=:error, "
+                "updated_at = NOW() WHERE job_id = :job_id",
+                {"job_id": job_id, "error": error},
+            )
+            return
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            conn.execute(
+                "UPDATE scan_jobs SET status='failed', stage='failed', error=:error, "
+                "updated_at = CURRENT_TIMESTAMP WHERE job_id = :job_id",
+                {"job_id": job_id, "error": error},
+            )
+    except Exception as e:
+        logger.error("fail_scan_job(%s) failed: %s", job_id, e)
+
+
+def get_scan_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch one scan_jobs row as a plain dict, or None if job_id is
+    unknown. `results_json`/`request_json` are returned already-parsed
+    (dict/list), not as raw JSON text, on both backends."""
+    columns = (
+        "job_id, universe, request_json, status, stage, progress_current, "
+        "progress_total, message, results_json, error, created_at, updated_at"
+    )
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            rows = _query(
+                f"SELECT {columns} FROM scan_jobs WHERE job_id = :job_id",
+                {"job_id": job_id},
+            )
+            if not rows:
+                return None
+            return rows[0]
+
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            cur = conn.execute(
+                f"SELECT {columns} FROM scan_jobs WHERE job_id = :job_id",
+                {"job_id": job_id},
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            col_names = [d[0] for d in cur.description]
+            record = dict(zip(col_names, row))
+            for json_col in ("request_json", "results_json"):
+                if record.get(json_col):
+                    try:
+                        record[json_col] = json.loads(record[json_col])
+                    except (TypeError, ValueError):
+                        pass
+            return record
+    except Exception as e:
+        logger.error("get_scan_job(%s) failed: %s", job_id, e)
+        return None
+
+
 def bulk_insert_results(results_df, metrics_df, alerts_df=None):
     if not results_df.empty:
         log_scan_results(results_df, table_name="scan_entries")

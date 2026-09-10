@@ -7,7 +7,7 @@ const API_BASE =
 
 type ApiRecord = Record<string, unknown>;
 
-function asArray<T>(value: unknown, candidateKeys: string[] = []): T[] {
+export function asArray<T>(value: unknown, candidateKeys: string[] = []): T[] {
   if (Array.isArray(value)) {
     return value as T[];
   }
@@ -278,6 +278,35 @@ export interface SymbolSuggestion {
   name: string;
 }
 
+export interface ScanJobCreated {
+  job_id: string;
+  status: 'queued';
+}
+
+// Real pipeline stages a scan job reports progress through — see
+// engine/main.py's execute_scan() for where each one is emitted.
+export type ScanJobStage =
+  | 'universe'
+  | 'metadata'
+  | 'market_data'
+  | 'indicators'
+  | 'scoring'
+  | 'persistence'
+  | 'completed'
+  | 'failed';
+
+export interface ScanJobStatus {
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  stage: ScanJobStage | null;
+  progress: { current: number; total: number };
+  message: string | null;
+  universe: string | null;
+  error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export const scanApi = {
   getUniverses: async () =>
     asArray<string>(await api.get<unknown>('/api/universes'), [
@@ -290,6 +319,23 @@ export const scanApi = {
       await api.post<unknown>('/api/scan', payload, SCAN_TIMEOUT_MS),
       ['results', 'data', 'stocks', 'items']
     ),
+  // ── Async scan jobs (FORTRESS-P3) ─────────────────────────────────────────
+  // Same scan as runScan() above, but off the request path: POST creates a
+  // job and returns immediately, then the caller polls getScanJobStatus()
+  // for progress and getScanJobResults() once status is "completed". Job
+  // state is server-side (DB-backed), so a page reload just needs the
+  // job_id back (see the screener page's localStorage handling) to resume
+  // watching the same job — nothing scan-related is lost.
+  startScanJob: (payload: ScanPayload) =>
+    api.post<ScanJobCreated>('/api/scan/jobs', payload),
+  getScanJobStatus: (jobId: string) =>
+    api.get<ScanJobStatus>(`/api/scan/jobs/${encodeURIComponent(jobId)}/status`),
+  // Raw response: a completed job's body is the same shape runScan() itself
+  // returns (a bare array, or the aborted-early/no-results object); a job
+  // still in flight or one that failed returns a {status: ...} object
+  // instead — callers should check `status` on non-array responses.
+  getScanJobResults: (jobId: string) =>
+    api.get<unknown>(`/api/scan/jobs/${encodeURIComponent(jobId)}/results`),
   getSectorPulse: async (universe: string) =>
     asArray<ApiRecord>(
       await api.get<unknown>(
