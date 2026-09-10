@@ -273,17 +273,25 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
 
     if preference == "bhavcopy":
         df = _ohlcv_bhavcopy(symbol, period)
-        if df is not None and not df.empty:
-            if _bhavcopy_has_sufficient_coverage(df, period):
+        if df is not None and not df.empty and _validate_ohlcv_frame(df, "Bhav Copy", symbol):
+            if not _bhavcopy_has_sufficient_coverage(df, period):
+                logger.debug(
+                    "Bhav Copy has only %d rows for %s (%s) — below the coverage "
+                    "threshold for this period (likely mid-backfill), falling back",
+                    len(df),
+                    symbol,
+                    period,
+                )
+            elif _bhavcopy_is_stale(df):
+                logger.warning(
+                    "Bhav Copy's newest bar for %s is more than %d day(s) old — "
+                    "refusing to serve it as current data, falling back",
+                    symbol,
+                    _BHAVCOPY_MAX_STALENESS_DAYS,
+                )
+            else:
                 _record_ohlcv_source("bhavcopy")
                 return df
-            logger.debug(
-                "Bhav Copy has only %d rows for %s (%s) — below the coverage "
-                "threshold for this period (likely mid-backfill), falling back",
-                len(df),
-                symbol,
-                period,
-            )
         else:
             logger.debug(
                 "Bhav Copy has no OHLCV for %s (%s) yet, falling back", symbol, period
@@ -291,7 +299,7 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
 
     if _indstocks_available():
         df = _ohlcv_indstocks(symbol, period)
-        if df is not None and not df.empty:
+        if df is not None and not df.empty and _validate_ohlcv_frame(df, "INDstocks", symbol):
             _record_ohlcv_source("indstocks")
             return df
         logger.warning(
@@ -301,9 +309,10 @@ def get_ohlcv(symbol: str, period: str = "1y") -> pd.DataFrame:
         )
 
     df = _ohlcv_yfinance(symbol, period)
-    if not df.empty:
+    if not df.empty and _validate_ohlcv_frame(df, "yfinance", symbol):
         _record_ohlcv_source("yfinance")
-    return df
+        return df
+    return pd.DataFrame()
 
 
 # Period string -> lookback in days, for the Bhav Copy tier. Deliberately a
@@ -359,6 +368,62 @@ _BHAVCOPY_MIN_COVERAGE_RATIO = 0.5
 # new/other call sites have one place to import it from instead of
 # re-hardcoding the number.
 MIN_SCAN_HISTORY_ROWS = 210
+
+# FORTRESS-H2: Bhav Copy is a local DB cache — unlike INDstocks/yfinance, a
+# stale table doesn't fail or raise, it just silently answers with whatever
+# it last had, however old. `_bhavcopy_has_sufficient_coverage` above only
+# checks *how much* history is cached, not *how recent* the newest bar is —
+# a table that stopped backfilling a week ago (a cron failure, say) still
+# clears that bar easily and would otherwise be served as if it were
+# today's close. Anything older than this many calendar days is treated as
+# stale and falls through to INDstocks/yfinance instead, same as
+# insufficient coverage does.
+_BHAVCOPY_MAX_STALENESS_DAYS = 4  # tolerates a weekend + one holiday
+
+
+def _bhavcopy_is_stale(df: pd.DataFrame, max_age_days: int = _BHAVCOPY_MAX_STALENESS_DAYS) -> bool:
+    if df is None or df.empty:
+        return True
+    try:
+        latest = df.index.max()
+        if latest.tzinfo is not None:
+            latest = latest.tz_localize(None)
+        age_days = (datetime.now() - latest.to_pydatetime()).days
+        return age_days > max_age_days
+    except Exception:
+        # Can't determine age (unexpected index type) — fail safe: treat as
+        # stale rather than risk silently serving unverifiable data.
+        return True
+
+
+# FORTRESS-H2: a provider response that "succeeds" (no exception, non-empty
+# frame) but is missing required columns or has no usable prices is a
+# malformed response, not valid data — accepting it as-is would let garbage
+# silently reach scoring. Every OHLCV tier's return value is checked
+# against this before being accepted; a failure here falls through to the
+# next tier exactly like an empty/exception response does.
+_REQUIRED_OHLCV_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _validate_ohlcv_frame(df: Optional[pd.DataFrame], source: str, symbol: str) -> bool:
+    if df is None or df.empty:
+        return False
+    missing = [c for c in _REQUIRED_OHLCV_COLUMNS if c not in df.columns]
+    if missing:
+        logger.warning(
+            "%s OHLCV for %s missing required column(s) %s — treating as a "
+            "malformed response, not valid data",
+            source, symbol, missing,
+        )
+        return False
+    if pd.to_numeric(df["Close"], errors="coerce").isna().all():
+        logger.warning(
+            "%s OHLCV for %s has no numeric Close prices — treating as a "
+            "malformed response, not valid data",
+            source, symbol,
+        )
+        return False
+    return True
 
 
 def _bhavcopy_has_sufficient_coverage(df: pd.DataFrame, period: str) -> bool:
@@ -568,14 +633,17 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
     if preference == "bhavcopy":
         raw_result = _batch_ohlcv_bhavcopy(symbols, period)
         # Drop any symbol whose Bhav Copy history doesn't clear the coverage
-        # bar for this period (see _bhavcopy_has_sufficient_coverage) — those
-        # symbols fall through to the INDstocks tier below just like a
-        # symbol Bhav Copy had nothing for at all, instead of being served a
-        # thin partial history that downstream scoring would just reject.
+        # bar for this period (see _bhavcopy_has_sufficient_coverage), is
+        # stale (newest bar too old — see _bhavcopy_is_stale, FORTRESS-H2),
+        # or is malformed — those symbols fall through to the INDstocks tier
+        # below just like a symbol Bhav Copy had nothing for at all, instead
+        # of being served a thin/stale/broken history as if it were current.
         result = {
             sym: df
             for sym, df in raw_result.items()
             if _bhavcopy_has_sufficient_coverage(df, period)
+            and not _bhavcopy_is_stale(df)
+            and _validate_ohlcv_frame(df, "Bhav Copy", sym)
         }
         _record_ohlcv_source("bhavcopy", count=len(result))
         remaining = [s for s in symbols if s not in result]
@@ -585,7 +653,11 @@ def get_batch_ohlcv(symbols: list[str], period: str = "1y") -> dict[str, pd.Data
     if not remaining or not _indstocks_available():
         return result
 
-    indstocks_result = _batch_ohlcv_indstocks(remaining, period)
+    indstocks_result = {
+        sym: df
+        for sym, df in _batch_ohlcv_indstocks(remaining, period).items()
+        if _validate_ohlcv_frame(df, "INDstocks", sym)
+    }
     _record_ohlcv_source("indstocks", count=len(indstocks_result))
     result.update(indstocks_result)
     return result
@@ -665,7 +737,10 @@ def _ohlcv_yfinance(symbol: str, period: str) -> pd.DataFrame:
         import yfinance as yf  # type: ignore[import]
 
         ticker = _format_yf_ticker(symbol)
-        df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+        # FORTRESS-H2: explicit timeout — yfinance has no default request
+        # timeout, so a stalled connection would otherwise hang this call
+        # (and the request thread serving it) indefinitely.
+        df = yf.download(ticker, period=period, auto_adjust=True, progress=False, timeout=10)
         if df.empty:
             logger.warning("yfinance returned empty data for %s (%s)", ticker, period)
             return pd.DataFrame()
