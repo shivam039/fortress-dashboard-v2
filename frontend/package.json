@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:scan": "tsc -p tsconfig.scan-tests.json && node --test tests/scan.test.mjs"
+    "test:scan": "tsc -p tsconfig.scan-tests.json && node --test tests/scan.test.mjs",
+    "test:u2": "tsc -p tsconfig.u2-tests.json && node --test tests/score-evidence.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.32.0",

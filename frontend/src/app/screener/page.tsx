@@ -11,6 +11,9 @@ import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
 import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelligence';
 import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
+import FortressScoreCard from '@/components/FortressScoreCard';
+import HistoricalEvidenceCard from '@/components/HistoricalEvidenceCard';
+import { toFortressSignal, FIXTURE_HISTORICAL_EVIDENCE } from '@/lib/score-evidence';
 
 export default function ScreenerPage() {
   const { success, error } = useToast();
@@ -185,6 +188,14 @@ export default function ScreenerPage() {
       {searchResult.length > 0 && (
         <div className="section" style={{ marginBottom: '24px' }}>
           <h3 className="section-title">📌 Search Result — {searchedSymbol}</h3>
+          <div className="grid-2" style={{ gap: 16, marginBottom: 16, alignItems: 'start' }}>
+            <FortressScoreCard signal={toFortressSignal(searchResult[0])} />
+            {/* FORTRESS-U2: FORTRESS-R2 (historical backtest/ledger replay)
+                doesn't exist yet, so this is fixture data — clearly labeled
+                as such by HistoricalEvidenceCard itself, never presented as
+                if it were this specific symbol's real track record. */}
+            <HistoricalEvidenceCard evidence={FIXTURE_HISTORICAL_EVIDENCE} />
+          </div>
           <DataTable data={searchResult} />
         </div>
       )}
