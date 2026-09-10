@@ -29,8 +29,13 @@ export const ScanStatus = memo(function ScanStatus({ state }: { state: ScanState
     <div role={state.status === 'failed' || uncertain ? 'alert' : 'status'}>
       <strong>{labels[state.status]} — {state.universe}</strong>
       {running && <>
-        <p>Stage: awaiting scan response. Live server stages and counts are unavailable.</p>
-        <p>Results arrive when processing finishes. You can use existing results or navigate within Fortress while waiting.</p>
+        {/* FORTRESS-V4: real server-reported stage/progress from the async
+            job API — never a fabricated percentage. */}
+        <p>
+          Stage: {state.stage ?? 'starting'}
+          {state.progress ? ` — ${state.progress.current}/${state.progress.total} tickers` : ''}
+        </p>
+        <p>You can navigate within Fortress while this runs — refreshing this page reconnects to the same job.</p>
       </>}
       {state.message && <p>{state.message}</p>}
       {offline && <p>You are offline. Waiting for connectivity does not confirm that the server is still running. Scans are not automatically retried.</p>}

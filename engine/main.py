@@ -168,6 +168,7 @@ from routers.us_investing import router as us_investing_router
 from routers.investments import router as investments_router
 from routers.bhavcopy import router as bhavcopy_router
 from routers.research_evidence import router as research_evidence_router
+from routers.paper_trading import router as paper_trading_router
 
 
 @app.middleware("http")
@@ -232,6 +233,16 @@ _cors_origins = [
 # FORTRESS_CORS_ORIGINS=*.
 if is_production_environment():
     validate_cors_origins(_cors_origins)
+
+# FORTRESS-V4 / Blocker D: refuse to start in production if Neon/Postgres
+# is misconfigured or unreachable — see utils/db.validate_database_
+# configuration. Previously _can_use_neon() silently fell back to
+# ephemeral local SQLite in this exact case, which is unsafe in production
+# (that storage can disappear on restart). Dev/local (sqlite/local) is
+# unaffected.
+from utils.db import validate_database_configuration
+
+validate_database_configuration()
 
 app.add_middleware(
     CORSMiddleware,
@@ -416,11 +427,53 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
         message="Market data ready" if not fallback_active else "Market data fetch degraded, using per-ticker fallback",
     )
 
+    def _maybe_trip_breaker(reason: str):
+        """FORTRESS-V4: shared trip check for both the batch and per-ticker
+        fallback paths below, so the threshold is evaluated identically
+        everywhere scan_attempted/scan_failed change."""
+        nonlocal circuit_breaker_tripped
+        if circuit_breaker_tripped:
+            return
+        if (
+            scan_attempted >= _BREAKER_MIN_SAMPLE
+            and (scan_failed / scan_attempted) >= _BREAKER_FAILURE_RATE
+        ):
+            logger.error(
+                "run_scan: circuit breaker tripped for universe=%s (%s) — "
+                "%d/%d tickers failed/unusable (>=%.0f%% failure rate); "
+                "aborting the remaining %d tickers instead of grinding "
+                "through a likely provider outage",
+                req.universe,
+                reason,
+                scan_failed,
+                scan_attempted,
+                _BREAKER_FAILURE_RATE * 100,
+                len(tickers) - scan_attempted,
+            )
+            circuit_breaker_tripped = True
+
     def _record_result(ticker, hist):
-        nonlocal scan_attempted, scan_failed, circuit_breaker_tripped
+        nonlocal scan_attempted, scan_failed
         scan_attempted += 1
         try:
-            if not hist.empty and len(hist) >= 210:
+            # FORTRESS-V4: no usable market data is itself an evaluation
+            # failure — this is the exact "outage" signal V3 found silently
+            # invisible here, because check_institutional_fortress's own
+            # internal `len(data) < 210` early-return looked identical to a
+            # legitimate scoring rejection at this call site. Checking the
+            # length here, before calling it, keeps that function (scoring
+            # logic) completely untouched while still counting this
+            # correctly. A ticker that *does* clear this bar and is still
+            # rejected by check_institutional_fortress (e.g. the smallcap
+            # liquidity guard) used real data and is a legitimate scoring
+            # outcome — never counted as a provider failure.
+            if hist is None or hist.empty or len(hist) < 210:
+                scan_failed += 1
+                logger.warning(
+                    "No usable market data for %s (%d rows, need >=210)",
+                    ticker, 0 if hist is None else len(hist),
+                )
+            else:
                 res = check_institutional_fortress(
                     ticker,
                     hist,
@@ -436,22 +489,7 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
             logger.warning(f"Error scanning {ticker}: {e}")
             scan_failed += 1
 
-            if (
-                scan_attempted >= _BREAKER_MIN_SAMPLE
-                and (scan_failed / scan_attempted) >= _BREAKER_FAILURE_RATE
-            ):
-                logger.error(
-                    "run_scan: circuit breaker tripped for universe=%s — "
-                    "%d/%d tickers failed (>=%.0f%% failure rate); aborting "
-                    "the remaining %d tickers instead of grinding through a "
-                    "likely provider outage",
-                    req.universe,
-                    scan_failed,
-                    scan_attempted,
-                    _BREAKER_FAILURE_RATE * 100,
-                    len(tickers) - scan_attempted,
-                )
-                circuit_breaker_tripped = True
+        _maybe_trip_breaker("indicators")
         progress_cb(
             "indicators",
             current=scan_attempted,
@@ -489,18 +527,7 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
                     scan_attempted += 1
                     scan_failed += 1
                     logger.warning(f"Error scanning {ticker}: {fetch_exc}")
-                    if (
-                        scan_attempted >= _BREAKER_MIN_SAMPLE
-                        and (scan_failed / scan_attempted) >= _BREAKER_FAILURE_RATE
-                    ):
-                        logger.error(
-                            "run_scan: circuit breaker tripped for universe=%s "
-                            "(fallback fetch) — %d/%d tickers failed",
-                            req.universe,
-                            scan_failed,
-                            scan_attempted,
-                        )
-                        circuit_breaker_tripped = True
+                    _maybe_trip_breaker("fallback fetch")
                     progress_cb(
                         "indicators",
                         current=scan_attempted,
@@ -575,18 +602,31 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
             return
         progress_cb("persistence", current=0, total=1, message="Saving scan history")
         _t0_persist = time.monotonic()
+        # FORTRESS-V4: each write is independent and best-effort — a legacy
+        # scan_history_details failure (e.g. a fresh/partially-migrated DB
+        # missing that table) must not silently prevent T1's signal ledger
+        # or E1's research observations from being recorded for an
+        # otherwise-successful scan. Previously all three shared one try
+        # block, so the first failure silently skipped the rest.
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history_df = score_df.copy()
+        history_df["Universe"] = req.universe
+        scan_id = None
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             scan_id = register_scan(
                 timestamp, universe=req.universe, scan_type="STOCK", status="Completed"
             )
-            history_df = score_df.copy()
-            history_df["Universe"] = req.universe
             save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
-            _record_signal_ledger(history_df, scan_id, timestamp)
-            _record_research_observations(history_df, scan_id, timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to persist scan history: %s", e)
+        try:
+            _record_signal_ledger(history_df, scan_id, timestamp)
+        except Exception as e:
+            logger.warning("run_scan: failed to record signal ledger: %s", e)
+        try:
+            _record_research_observations(history_df, scan_id, timestamp)
+        except Exception as e:
+            logger.warning("run_scan: failed to record research observations: %s", e)
         finally:
             scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
             progress_cb("persistence", current=1, total=1, message="Scan history saved")
@@ -1245,6 +1285,7 @@ app.include_router(us_investing_router)
 app.include_router(investments_router)
 app.include_router(bhavcopy_router)
 app.include_router(research_evidence_router)
+app.include_router(paper_trading_router)
 
 
 @app.on_event("startup")

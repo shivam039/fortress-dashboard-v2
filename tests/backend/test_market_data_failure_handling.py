@@ -16,6 +16,11 @@ import utils.market_data_provider as mdp
 
 
 def _reset_prefs(monkeypatch):
+    # get_ohlcv_provider_preference() caches its resolved value for 30s
+    # (see market_data_provider.py) — well inside this whole suite's own
+    # runtime, so a stale cached value from an earlier test can otherwise
+    # survive past this monkeypatch entirely. Force a fresh read.
+    mdp.invalidate_ohlcv_provider_preference_cache()
     monkeypatch.setattr("utils.db.get_setting", lambda key, default=None: "bhavcopy")
 
 

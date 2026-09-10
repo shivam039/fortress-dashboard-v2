@@ -68,7 +68,62 @@ export default function ScreenerPage() {
   }, []);
   useEffect(() => { loadUniverses(); }, [loadUniverses]);
 
+  // FORTRESS-V4: poll interval for the active job — cleared on unmount, on
+  // job completion/failure, and when a new job starts. A ref (not state)
+  // because it's plumbing for the poll loop, not something the UI renders.
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const fetchSectorPulseAfterCompletion = useCallback((forUniverse: string) => {
+    setSectorPulse([]);
+    scanApi.getSectorPulse(forUniverse).then(sp => setSectorPulse(sp)).catch(() => {});
+  }, []);
+
+  // The single poll loop, reused both for a freshly-started job and for one
+  // resumed after a page refresh — never starts a second job on its own.
+  const pollJob = useCallback((jobId: string, forUniverse: string) => {
+    stopPolling();
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const job = await scanApi.getScanJobStatus(jobId);
+        store.updateJobStatus(job);
+        if (job.status === 'completed') {
+          stopPolling();
+          const results = await scanApi.getScanJobResults(jobId);
+          store.completeJob(results);
+          fetchSectorPulseAfterCompletion(forUniverse);
+        } else if (job.status === 'failed') {
+          stopPolling(); // store.updateJobStatus(job) above already recorded job.error
+        }
+      } catch (err: unknown) {
+        // A transient poll failure (e.g. one dropped request) must not kill
+        // an otherwise-healthy job — keep polling; only stop on a real 4xx.
+        const status = err && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+          stopPolling();
+          store.failJob((err as Error).message || 'Scan job not found.');
+        }
+      }
+    }, 2000);
+  }, [store, stopPolling, fetchSectorPulseAfterCompletion]);
+
+  // Resume polling an in-flight job after a refresh — never submits a new one.
+  useEffect(() => {
+    if (scan.status === 'running' && scan.jobId) {
+      pollJob(scan.jobId, scan.universe);
+    }
+    return stopPolling;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const runScan = useCallback(async () => {
+    if (scan.status === 'running') return; // one active job at a time
     try {
       const total = Math.max(weights.technical + weights.fundamental + weights.sentiment + weights.context, 1);
       const payload: ScanPayload = {
@@ -87,20 +142,13 @@ export default function ScreenerPage() {
         price_min: priceMin,
         broker,
       };
-      const completed = await store.start(universe, () => scanApi.runScanDetailed(payload));
-      if (!completed) return;
-      setSectorPulse([]);
-      const completedResult = store.getSnapshot().result;
-
-      // Also fetch sector pulse
-      try {
-        const sp = await scanApi.getSectorPulse(universe);
-        if (store.getSnapshot().result === completedResult) setSectorPulse(sp);
-      } catch {}
+      const { job_id } = await scanApi.startScanJob(payload);
+      if (!store.startJob(universe, job_id)) return; // another job won the race
+      pollJob(job_id, universe);
     } catch (err: unknown) {
-      error(`Scan failed: ${(err as Error).message}`);
+      error(`Could not start scan: ${(err as Error).message}`);
     }
-  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, store, error]);
+  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, store, error, scan.status, pollJob]);
 
   // Debounced search-as-you-type suggestions — waits for a pause in typing
   // before hitting the backend so every keystroke doesn't fire a request.
