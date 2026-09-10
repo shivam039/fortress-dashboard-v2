@@ -2,7 +2,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
-import { scanApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
+import { scanApi, researchEvidenceApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { emptyScanState, getScanStore } from '@/lib/scan-state';
@@ -13,7 +13,18 @@ import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelli
 import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
 import FortressScoreCard from '@/components/FortressScoreCard';
 import HistoricalEvidenceCard from '@/components/HistoricalEvidenceCard';
-import { toFortressSignal, FIXTURE_HISTORICAL_EVIDENCE } from '@/lib/score-evidence';
+import { toFortressSignal, fromRealEvidence, type HistoricalEvidence } from '@/lib/score-evidence';
+
+// FORTRESS-V2: single default horizon for historical evidence, per the
+// product decision documented in docs/research/score_forward_return_validation.md
+// — do not let per-symbol code choose whichever horizon looks best.
+const EVIDENCE_HORIZON_DAYS = 20;
+
+const UNAVAILABLE_EVIDENCE: HistoricalEvidence = fromRealEvidence({
+  available: false,
+  score_bucket: '',
+  horizon: EVIDENCE_HORIZON_DAYS,
+});
 
 export default function ScreenerPage() {
   const { success, error } = useToast();
@@ -45,6 +56,7 @@ export default function ScreenerPage() {
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<Record<string, unknown>[]>([]);
   const [searchedSymbol, setSearchedSymbol] = useState('');
+  const [historicalEvidence, setHistoricalEvidence] = useState<HistoricalEvidence>(UNAVAILABLE_EVIDENCE);
   const searchBoxRef = useRef<HTMLDivElement>(null);
 
   const loadUniverses = useCallback(() => {
@@ -122,11 +134,23 @@ export default function ScreenerPage() {
     if (!ticker) return;
     setSearching(true);
     setShowSuggestions(false);
+    setHistoricalEvidence(UNAVAILABLE_EVIDENCE); // never keep the previous symbol's evidence on screen mid-search
     try {
       const data = await scanApi.searchStock(ticker, universe || undefined);
       setSearchResult(data);
       setSearchedSymbol((data[0]?.Symbol as string) || ticker.toUpperCase());
       success(`Found ${(data[0]?.Symbol as string) || ticker}`);
+
+      // FORTRESS-V2: real R2 evidence for this symbol's current score/regime.
+      // A fetch failure or "available: false" both render as the honest
+      // insufficient-evidence state — never a fixture number.
+      if (data[0]) {
+        const signal = toFortressSignal(data[0]);
+        researchEvidenceApi
+          .get(signal.totalScore, EVIDENCE_HORIZON_DAYS, signal.marketRegime)
+          .then(resp => setHistoricalEvidence(fromRealEvidence(resp)))
+          .catch(() => setHistoricalEvidence(UNAVAILABLE_EVIDENCE));
+      }
     } catch (err: unknown) {
       setSearchResult([]);
       error(`Search failed: ${(err as Error).message}`);
@@ -190,11 +214,11 @@ export default function ScreenerPage() {
           <h3 className="section-title">📌 Search Result — {searchedSymbol}</h3>
           <div className="grid-2" style={{ gap: 16, marginBottom: 16, alignItems: 'start' }}>
             <FortressScoreCard signal={toFortressSignal(searchResult[0])} />
-            {/* FORTRESS-U2: FORTRESS-R2 (historical backtest/ledger replay)
-                doesn't exist yet, so this is fixture data — clearly labeled
-                as such by HistoricalEvidenceCard itself, never presented as
-                if it were this specific symbol's real track record. */}
-            <HistoricalEvidenceCard evidence={FIXTURE_HISTORICAL_EVIDENCE} />
+            {/* FORTRESS-V2: real GET /api/research-evidence result, mapped
+                by fromRealEvidence(). If no real R2 result exists yet for
+                this score bucket, this renders the honest "insufficient
+                evidence" state — never fixture/illustrative numbers. */}
+            <HistoricalEvidenceCard evidence={historicalEvidence} />
           </div>
           <DataTable data={searchResult} />
         </div>

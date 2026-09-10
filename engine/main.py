@@ -167,6 +167,7 @@ from routers.reit_invits import router as reit_invits_router
 from routers.us_investing import router as us_investing_router
 from routers.investments import router as investments_router
 from routers.bhavcopy import router as bhavcopy_router
+from routers.research_evidence import router as research_evidence_router
 
 
 @app.middleware("http")
@@ -1243,6 +1244,7 @@ app.include_router(reit_invits_router)
 app.include_router(us_investing_router)
 app.include_router(investments_router)
 app.include_router(bhavcopy_router)
+app.include_router(research_evidence_router)
 
 
 @app.on_event("startup")
