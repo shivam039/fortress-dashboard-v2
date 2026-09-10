@@ -29,6 +29,7 @@ from mf_lab.jobs import run_mf_background_job
 from mf_lab.logic import run_full_mf_scan
 from stock_scanner.logic import (
     DEFAULT_SCORING_CONFIG,
+    FORTRESS_SCAN_LOGIC_VERSION,
     apply_advanced_scoring,
     check_institutional_fortress,
     fetch_ohlcv_fallback_chunk,
@@ -47,6 +48,7 @@ from utils.db import (
     fetch_mf_cached_results,
     fetch_scan_history_list,
     get_scan_job,
+    record_signal_ledger_entries,
     register_scan,
     save_scan_results,
     update_scan_job_progress,
@@ -559,11 +561,69 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
             history_df = score_df.copy()
             history_df["Universe"] = req.universe
             save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
+            _record_signal_ledger(history_df, scan_id, timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to persist scan history: %s", e)
         finally:
             scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
             progress_cb("persistence", current=1, total=1, message="Scan history saved")
+
+    def _record_signal_ledger(history_df, scan_id, timestamp):
+        """FORTRESS-T1: append one immutable signal_ledger row per scored
+        ticker, capturing enough point-in-time state (the full scored row,
+        plus the specific fields most likely to be queried directly) to
+        reconstruct exactly what Fortress knew when the signal was
+        generated — independent of what a later re-scan says. Append-only:
+        record_signal_ledger_entries() only ever INSERTs, never UPDATEs, so
+        a re-scan of the same symbol adds a new row rather than overwriting
+        this one. Best-effort — a ledger-write failure must not affect the
+        scan response, same as scan-history persistence above (this is
+        already inside that function's own try/except)."""
+        try:
+            from utils.market_data_provider import provider_status
+            data_source = provider_status().get("ohlcv_source")
+        except Exception:
+            data_source = None
+
+        entries = []
+        for row in history_df.to_dict(orient="records"):
+            verdict = row.get("Verdict")
+            gate_failures = row.get("Quality_Gate_Failures") or ""
+            explanation = f"{verdict or 'N/A'} — {row.get('Strategy', 'N/A')}"
+            if gate_failures:
+                explanation += f" (gate failures: {gate_failures})"
+            entries.append({
+                "generated_at": timestamp,
+                "symbol": row.get("Symbol"),
+                "sector": row.get("Sector"),
+                "score": row.get("Score"),
+                "component_scores": _sanitize_json_value(row.get("sub_scores") or {}),
+                "market_regime": row.get("Market_Regime") or row.get("Regime"),
+                "regime_multiplier": row.get("Regime_Multiplier"),
+                "price_used": row.get("Price"),
+                "data_source": data_source,
+                "data_timestamp": row.get("Data_As_Of"),
+                "scan_id": scan_id,
+                "scan_version": FORTRESS_SCAN_LOGIC_VERSION,
+                "universe": req.universe,
+                "explanation": explanation,
+                "suggested_entry": row.get("Price"),
+                "stop_loss": row.get("Stop_Loss"),
+                "target": row.get("Target_10D"),
+                "risk_classification": verdict,
+                # The full scored row — the actual point-in-time
+                # reconstruction payload; every other field above is just a
+                # queryable projection of this.
+                "feature_snapshot": _sanitize_json_value(row),
+            })
+
+        if entries:
+            written = record_signal_ledger_entries(entries)
+            if written < len(entries):
+                logger.warning(
+                    "run_scan: signal ledger wrote %d/%d entries for scan_id=%s",
+                    written, len(entries), scan_id,
+                )
 
     if circuit_breaker_tripped:
         # Score whatever partial results came through before the breaker
