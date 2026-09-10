@@ -40,6 +40,7 @@ from stock_scanner.logic import (
 from options_algo.logic import fetch_option_chain, get_available_expiries, scan_strategies
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
+from utils.security_config import is_production_environment, validate_cors_origins
 from utils.db import (
     complete_scan_job,
     create_scan_job,
@@ -132,6 +133,17 @@ if os.environ.get("FORTRESS_LOG_STARTUP", "").strip().lower() in ("1", "true", "
     logger.info("Startup diagnostics: sys.path (first 20)=%s", sys.path[:20])
 
 # API key auth — set FORTRESS_API_KEY env var to enable. Unset = local dev (no auth).
+#
+# FORTRESS-H3: deliberately NOT required in production, unlike
+# FORTRESS_JWT_SECRET/FORTRESS_APP_PASSWORD. Every endpoint that returns
+# user/account data already requires a valid JWT (cookie or Bearer token —
+# see api_key_auth_middleware below and auth_utils.get_current_user), which
+# is the actual authentication boundary; FORTRESS_API_KEY is a *supplementary*
+# gate for non-browser/machine clients hitting the API directly. Forcing it
+# on would change the authentication model (a non-goal for this story) for
+# no additional safety on the JWT-protected surface. If a deployment wants
+# to lock out unauthenticated read-only endpoints too, set FORTRESS_API_KEY —
+# this stays a warning, not a startup failure, either way.
 _FORTRESS_API_KEY = os.environ.get("FORTRESS_API_KEY", "")
 if not _FORTRESS_API_KEY:
     logger.warning(
@@ -204,16 +216,25 @@ async def catch_exceptions_middleware(request, call_next):
         )
 
 
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "FORTRESS_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+# FORTRESS-H3: refuse to start in production with an unrestricted ("*")
+# CORS origin — see utils/security_config.validate_cors_origins. The
+# unset default above is already restricted to localhost, never a
+# wildcard; this only catches an operator explicitly (mis)configuring
+# FORTRESS_CORS_ORIGINS=*.
+if is_production_environment():
+    validate_cors_origins(_cors_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        origin.strip()
-        for origin in os.environ.get(
-            "FORTRESS_CORS_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000",
-        ).split(",")
-        if origin.strip()
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
