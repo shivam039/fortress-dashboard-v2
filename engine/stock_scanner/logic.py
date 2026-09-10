@@ -213,6 +213,7 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
                         group_by="ticker",
                         progress=False,
                         auto_adjust=False,
+                        timeout=10,  # FORTRESS-H2: bound a stalled connection
                     )
                     # INDstocks candles carry a tz-aware IST DatetimeIndex
                     # (see market_data_provider._candles_to_df); yfinance's
@@ -272,6 +273,7 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
                 group_by=group_by,
                 progress=False,
                 auto_adjust=False,
+                timeout=10,  # FORTRESS-H2: bound a stalled connection
             )
             if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
                 data.columns = data.columns.get_level_values(0)
@@ -386,6 +388,7 @@ def _download_close_series(symbol, period="1y", interval="1d"):
                 interval=interval,
                 progress=False,
                 auto_adjust=False,
+                timeout=10,  # FORTRESS-H2: bound a stalled connection
             )
             if isinstance(bench.columns, pd.MultiIndex):
                 bench.columns = bench.columns.get_level_values(0)
