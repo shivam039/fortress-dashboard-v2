@@ -2675,6 +2675,194 @@ def fetch_signal_ledger(
         return []
 
 
+# ─────────────────────────────────────────────
+# Paper trading (FORTRESS-T2)
+# ─────────────────────────────────────────────
+# Simulated positions only — no real broker execution anywhere in this
+# module. Unlike signal_ledger (append-only), a paper trade legitimately
+# transitions open -> closed in place (close_paper_trade() UPDATEs the same
+# row) — it's the same position's own lifecycle, not a historical
+# observation being rewritten.
+
+
+def _ensure_paper_trades_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            trade_id            BIGSERIAL PRIMARY KEY,
+            signal_id           BIGINT NOT NULL,
+            symbol              TEXT NOT NULL,
+            entry_timestamp     TEXT NOT NULL,
+            entry_price         NUMERIC NOT NULL,
+            quantity            NUMERIC NOT NULL,
+            notional            NUMERIC NOT NULL,
+            stop_price          NUMERIC,
+            target_price        NUMERIC,
+            status              TEXT NOT NULL DEFAULT 'open',
+            exit_timestamp      TEXT,
+            exit_price          NUMERIC,
+            exit_reason         TEXT,
+            gross_pnl           NUMERIC,
+            net_pnl             NUMERIC,
+            costs_modeled       NUMERIC,
+            holding_period_days INTEGER,
+            created_at          TIMESTAMPTZ DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_paper_trades_signal_id ON paper_trades(signal_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status)")
+
+
+def _ensure_paper_trades_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            trade_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            signal_id           INTEGER NOT NULL,
+            symbol              TEXT NOT NULL,
+            entry_timestamp     TEXT NOT NULL,
+            entry_price         REAL NOT NULL,
+            quantity            REAL NOT NULL,
+            notional            REAL NOT NULL,
+            stop_price          REAL,
+            target_price        REAL,
+            status              TEXT NOT NULL DEFAULT 'open',
+            exit_timestamp      TEXT,
+            exit_price          REAL,
+            exit_reason         TEXT,
+            gross_pnl           REAL,
+            net_pnl             REAL,
+            costs_modeled       REAL,
+            holding_period_days INTEGER,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_signal_id ON paper_trades(signal_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status)")
+
+
+def create_paper_trade(trade: Dict[str, Any]) -> Optional[int]:
+    """Insert a new open paper trade (see paper_trading.logic.open_position_from_signal
+    for the expected keys) and return its trade_id, or None on failure."""
+    payload = {
+        "signal_id": trade["signal_id"],
+        "symbol": trade["symbol"],
+        "entry_timestamp": trade["entry_timestamp"],
+        "entry_price": trade["entry_price"],
+        "quantity": trade["quantity"],
+        "notional": trade["notional"],
+        "stop_price": trade.get("stop_price"),
+        "target_price": trade.get("target_price"),
+    }
+    try:
+        if _can_use_neon():
+            _ensure_paper_trades_neon()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                res = conn.execute(
+                    text(
+                        "INSERT INTO paper_trades (signal_id, symbol, entry_timestamp, "
+                        "entry_price, quantity, notional, stop_price, target_price, status) "
+                        "VALUES (:signal_id, :symbol, :entry_timestamp, :entry_price, "
+                        ":quantity, :notional, :stop_price, :target_price, 'open') "
+                        "RETURNING trade_id"
+                    ),
+                    payload,
+                )
+                return int(res.scalar_one())
+
+        with _sqlite_connection() as conn:
+            _ensure_paper_trades_sqlite(conn)
+            cur = conn.execute(
+                "INSERT INTO paper_trades (signal_id, symbol, entry_timestamp, entry_price, "
+                "quantity, notional, stop_price, target_price, status) "
+                "VALUES (:signal_id, :symbol, :entry_timestamp, :entry_price, :quantity, "
+                ":notional, :stop_price, :target_price, 'open')",
+                payload,
+            )
+            return cur.lastrowid
+    except Exception as e:
+        logger.error("create_paper_trade failed for signal_id=%s: %s", trade.get("signal_id"), e)
+        return None
+
+
+def close_paper_trade(trade_id: int, closed_trade: Dict[str, Any]) -> bool:
+    """Transition an open trade to closed (see paper_trading.logic.simulate_exit
+    for the expected keys). Returns False (logged) on failure — never
+    raises into the caller."""
+    payload = {
+        "trade_id": trade_id,
+        "exit_timestamp": closed_trade["exit_timestamp"],
+        "exit_price": closed_trade["exit_price"],
+        "exit_reason": closed_trade["exit_reason"],
+        "gross_pnl": closed_trade["gross_pnl"],
+        "net_pnl": closed_trade["net_pnl"],
+        "costs_modeled": closed_trade.get("costs_modeled", 0.0),
+        "holding_period_days": closed_trade["holding_period_days"],
+    }
+    sql_common = (
+        "status = 'closed', exit_timestamp = :exit_timestamp, exit_price = :exit_price, "
+        "exit_reason = :exit_reason, gross_pnl = :gross_pnl, net_pnl = :net_pnl, "
+        "costs_modeled = :costs_modeled, holding_period_days = :holding_period_days"
+    )
+    try:
+        if _can_use_neon():
+            _ensure_paper_trades_neon()
+            _exec(
+                f"UPDATE paper_trades SET {sql_common}, updated_at = NOW() WHERE trade_id = :trade_id",
+                payload,
+            )
+            return True
+
+        with _sqlite_connection() as conn:
+            _ensure_paper_trades_sqlite(conn)
+            conn.execute(
+                f"UPDATE paper_trades SET {sql_common}, updated_at = CURRENT_TIMESTAMP "
+                "WHERE trade_id = :trade_id",
+                payload,
+            )
+        return True
+    except Exception as e:
+        logger.error("close_paper_trade(%s) failed: %s", trade_id, e)
+        return False
+
+
+def fetch_paper_trades(
+    status: Optional[str] = None,
+    symbol: Optional[str] = None,
+    signal_id: Optional[int] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Read back paper_trades rows, newest first. Filters are additive."""
+    where = []
+    params: Dict[str, Any] = {"limit": limit}
+    if status:
+        where.append("status = :status")
+        params["status"] = status
+    if symbol:
+        where.append("symbol = :symbol")
+        params["symbol"] = symbol
+    if signal_id is not None:
+        where.append("signal_id = :signal_id")
+        params["signal_id"] = signal_id
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    query = f"SELECT * FROM paper_trades {where_sql} ORDER BY trade_id DESC LIMIT :limit"
+
+    try:
+        if _can_use_neon():
+            _ensure_paper_trades_neon()
+            return _query(query, params)
+
+        with _sqlite_connection() as conn:
+            _ensure_paper_trades_sqlite(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_paper_trades failed: %s", e)
+        return []
+
+
 def bulk_insert_results(results_df, metrics_df, alerts_df=None):
     if not results_df.empty:
         log_scan_results(results_df, table_name="scan_entries")
