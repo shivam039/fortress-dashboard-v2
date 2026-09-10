@@ -48,3 +48,6 @@ CLAUDE.local.md
 # Runtime-generated env file from refresh_indstocks_token.py
 .env.local
 
+
+# Compiled scan UX tests
+frontend/.scan-tests/

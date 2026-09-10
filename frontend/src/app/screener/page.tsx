@@ -1,28 +1,16 @@
 // src/app/screener/page.tsx — Stock Screener (most complex page)
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { asArray, scanApi, type ScanPayload, type ScanJobStage, type SymbolSuggestion } from '@/lib/api';
+import React, { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { scanApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
+import { emptyScanState, getScanStore } from '@/lib/scan-state';
+import { ScanStatus } from '@/components/ScanStatus';
 import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
 import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelligence';
 import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
-
-// localStorage key mirroring the currently in-flight scan job's id, so a
-// page refresh/reconnect can resume polling it instead of losing track.
-const SCAN_JOB_STORAGE_KEY = 'fortress_active_scan_job';
-
-const SCAN_STAGE_LABELS: Record<string, string> = {
-  universe: 'Resolving universe',
-  metadata: 'Loading metadata',
-  market_data: 'Fetching market data',
-  indicators: 'Scoring tickers',
-  scoring: 'Computing scores',
-  persistence: 'Saving results',
-  completed: 'Done',
-  failed: 'Failed',
-};
 
 export default function ScreenerPage() {
   const { success, error } = useToast();
@@ -37,22 +25,15 @@ export default function ScreenerPage() {
   const [priceMin, setPriceMin] = useState(80.0);
   const [weights, setWeights] = useState({ technical: 50, fundamental: 25, sentiment: 15, context: 10 });
 
-  const [results, setResults] = useState<Record<string, unknown>[]>([]);
+  const { user } = useAuth();
+  const store = useMemo(() => getScanStore(user?.username ?? ''), [user?.username]);
+  const scan = useSyncExternalStore(store.subscribe, store.getSnapshot, () => emptyScanState);
+  const results = scan.result?.results ?? [];
+  const loading = scan.status === 'running';
+  useEffect(() => { if (user) store.restore(); }, [store, user]);
+  const [universeError, setUniverseError] = useState('');
   const [sectorPulse, setSectorPulse] = useState<Record<string, unknown>[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [elapsedSec, setElapsedSec] = useState(0);
-  // FORTRESS-P3: real progress from the scan job's status endpoint (stage +
-  // current/total ticker count), not just a heartbeat counter.
-  const [scanProgress, setScanProgress] = useState<{
-    stage: ScanJobStage | null;
-    current: number;
-    total: number;
-    message: string | null;
-  } | null>(null);
-  // Guards against a stale poll loop (from a job abandoned by a new scan,
-  // or from an unmounted component) still writing state.
-  const activeJobIdRef = useRef<string | null>(null);
 
   // ── Single-stock search ─────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,104 +44,16 @@ export default function ScreenerPage() {
   const [searchedSymbol, setSearchedSymbol] = useState('');
   const searchBoxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  const loadUniverses = useCallback(() => {
     scanApi.getUniverses().then(u => {
       setUniverses(u);
-      // Functional update: don't clobber a universe already restored by the
-      // job-resume effect below if this (network) fetch resolves after it.
-      setUniverse(prev => prev || (u.length > 0 ? u[0] : ''));
-    }).catch(() => {});
+      if (u.length > 0) { setUniverse(u[0]); setUniverseError(''); }
+      else setUniverseError('No scan universes are available.');
+    }).catch(() => setUniverseError('Could not load scan universes. Check your connection and retry.'));
   }, []);
-
-  // A scan of a large universe can genuinely take a while — a static spinner
-  // with no other signal looks identical whether it's 3s or 3min in, so
-  // there's no way to tell "still working" from "actually stuck". Counting
-  // up gives a visible heartbeat: as long as the number keeps climbing, the
-  // request is still in flight (not frozen), and it also makes clear how
-  // long a completed/failed scan actually took.
-  useEffect(() => {
-    if (!loading) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setElapsedSec(0);
-      return;
-    }
-    const start = Date.now();
-    const id = setInterval(() => setElapsedSec(Math.round((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [loading]);
-
-  // FORTRESS-P3: scans run as an async job (POST /api/scan/jobs) instead of
-  // one long blocking request, so this page polls for progress/results
-  // instead of awaiting a single call. The active job_id is mirrored to
-  // localStorage so a refresh/reconnect (see the resume effect below) picks
-  // the same job back up rather than losing track of an in-flight scan.
-  const clearActiveScanJob = useCallback(() => {
-    try { localStorage.removeItem(SCAN_JOB_STORAGE_KEY); } catch {}
-  }, []);
-
-  const pollScanJob = useCallback(async (jobId: string, universeForSectorPulse: string) => {
-    activeJobIdRef.current = jobId;
-    setLoading(true);
-
-    const poll = async (): Promise<void> => {
-      // A newer scan (or a stale resumed job) superseded this poll loop.
-      if (activeJobIdRef.current !== jobId) return;
-
-      let status;
-      try {
-        status = await scanApi.getScanJobStatus(jobId);
-      } catch (err: unknown) {
-        if (activeJobIdRef.current !== jobId) return;
-        error(`Lost track of the scan: ${(err as Error).message}`);
-        setLoading(false);
-        return;
-      }
-      if (activeJobIdRef.current !== jobId) return;
-
-      setScanProgress({
-        stage: status.stage,
-        current: status.progress.current,
-        total: status.progress.total,
-        message: status.message,
-      });
-
-      if (status.status === 'completed') {
-        try {
-          const raw = await scanApi.getScanJobResults(jobId);
-          const data = asArray<Record<string, unknown>>(raw, ['results', 'data', 'stocks', 'items']);
-          setResults(data);
-          success(`Scan completed — ${data.length} results`);
-          try {
-            const sp = await scanApi.getSectorPulse(universeForSectorPulse);
-            setSectorPulse(sp);
-          } catch {}
-        } catch (err: unknown) {
-          error(`Failed to fetch scan results: ${(err as Error).message}`);
-        } finally {
-          clearActiveScanJob();
-          setLoading(false);
-          setScanProgress(null);
-        }
-        return;
-      }
-
-      if (status.status === 'failed') {
-        error(`Scan failed: ${status.error || 'Unknown error'}`);
-        clearActiveScanJob();
-        setLoading(false);
-        setScanProgress(null);
-        return;
-      }
-
-      setTimeout(poll, 1500);
-    };
-
-    await poll();
-  }, [success, error, clearActiveScanJob]);
+  useEffect(() => { loadUniverses(); }, [loadUniverses]);
 
   const runScan = useCallback(async () => {
-    setLoading(true);
-    setScanProgress(null);
     try {
       const total = Math.max(weights.technical + weights.fundamental + weights.sentiment + weights.context, 1);
       const payload: ScanPayload = {
@@ -179,38 +72,20 @@ export default function ScreenerPage() {
         price_min: priceMin,
         broker,
       };
-      const { job_id } = await scanApi.startScanJob(payload);
+      const completed = await store.start(universe, () => scanApi.runScanDetailed(payload));
+      if (!completed) return;
+      setSectorPulse([]);
+      const completedResult = store.getSnapshot().result;
+
+      // Also fetch sector pulse
       try {
-        localStorage.setItem(SCAN_JOB_STORAGE_KEY, JSON.stringify({ job_id, universe }));
+        const sp = await scanApi.getSectorPulse(universe);
+        if (store.getSnapshot().result === completedResult) setSectorPulse(sp);
       } catch {}
-      await pollScanJob(job_id, universe);
     } catch (err: unknown) {
       error(`Scan failed: ${(err as Error).message}`);
-      setLoading(false);
     }
-  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, pollScanJob, error]);
-
-  // Resume an in-flight scan job after a page refresh/reconnect. Job state
-  // lives server-side (the scan_jobs DB table), so all this needs is the
-  // job_id back — no client-side scan state to reconstruct.
-  useEffect(() => {
-    let saved: { job_id?: string; universe?: string } | null = null;
-    try {
-      const raw = localStorage.getItem(SCAN_JOB_STORAGE_KEY);
-      saved = raw ? JSON.parse(raw) : null;
-    } catch {
-      saved = null;
-    }
-    if (!saved?.job_id) return;
-    if (saved.universe) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setUniverse(saved.universe);
-    }
-    pollScanJob(saved.job_id, saved.universe || universe);
-    // Deliberately mount-only: resuming a saved job shouldn't re-fire when
-    // later state (universe, weights, etc.) changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, store, error]);
 
   // Debounced search-as-you-type suggestions — waits for a pause in typing
   // before hitting the backend so every keystroke doesn't fire a request.
@@ -380,34 +255,15 @@ export default function ScreenerPage() {
           )}
         </div>
 
-        <button className="btn btn-primary btn-block" onClick={runScan} disabled={loading || !universe}>
-          {loading ? (
-            <>
-              <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} />
-              {scanProgress?.stage
-                ? `${SCAN_STAGE_LABELS[scanProgress.stage] || scanProgress.stage}${
-                    scanProgress.total > 0 ? ` (${scanProgress.current}/${scanProgress.total})` : ''
-                  }… ${elapsedSec}s`
-                : `Scanning… ${elapsedSec}s`}
-            </>
-          ) : (
-            '🔍 Run Screener'
-          )}
+        {universeError ? <p role="alert">{universeError} <button className="btn" onClick={() => { setUniverseError(''); loadUniverses(); }}>Retry loading universes</button></p> : universes.length === 0 && <p role="status">Stage: loading scan universes…</p>}
+        <button className="btn btn-primary btn-block" onClick={runScan} disabled={loading || !universe || !user}>
+          {loading ? 'Scan request in progress…' : scan.status === 'unknown' ? 'Start another scan' : '🔍 Run Screener'}
         </button>
-        {loading && scanProgress?.message && (
-          <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '8px', textAlign: 'center' }}>
-            {scanProgress.message}
-          </p>
-        )}
-        {loading && !scanProgress?.message && elapsedSec >= 15 && (
-          <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '8px', textAlign: 'center' }}>
-            Still working — larger universes (Midcap 150, Smallcap 250) can take a couple of minutes.
-            The counter above only keeps climbing while the request is actually still in flight.
-          </p>
-        )}
       </div>
 
-      {results.length === 0 && !loading && (
+      <ScanStatus state={scan} />
+
+      {results.length === 0 && scan.status === 'idle' && (
         <div className="empty-state">
           <div className="icon">🔍</div>
           <p>Run a scan to see actionable stock setups here.</p>
