@@ -1,9 +1,11 @@
 # engine/main.py
 # AI agents modifying this file: see /AI_AGENT_PROTOCOL.md — log every change
 # via engine/utils/ai_audit.py:log_ai_change().
+import asyncio
 import os
 import sys
-from typing import Dict, List, Optional
+import uuid
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 import uvicorn
@@ -38,11 +40,16 @@ from options_algo.logic import fetch_option_chain, get_available_expiries, scan_
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.db import (
+    complete_scan_job,
+    create_scan_job,
+    fail_scan_job,
     fetch_history_data,
     fetch_mf_cached_results,
     fetch_scan_history_list,
+    get_scan_job,
     register_scan,
     save_scan_results,
+    update_scan_job_progress,
 )
 
 
@@ -272,23 +279,38 @@ def get_market_data_status():
     }
 
 
-@app.post("/api/scan")
-def run_scan(req: ScanRequest):
-    # Plain `def`, not `async def`: everything in this handler (INDstocks/
-    # yfinance network calls, pandas/pandas_ta scoring) is synchronous
-    # blocking work. Declaring it `async def` with no `await` inside would
-    # run it directly on uvicorn's single event-loop thread, freezing the
-    # ENTIRE server — including unrelated requests like /api/health and the
-    # frontend's status polling — for the whole scan duration, which is
-    # exactly why a slow scan can look like the whole app hung rather than
-    # just "still scanning". A plain `def` route is run by FastAPI in its
-    # threadpool instead, so the event loop stays free to serve other
-    # requests concurrently while a scan is in flight.
+def _noop_progress(stage: str, current: Optional[int] = None, total: Optional[int] = None, message: Optional[str] = None) -> None:
+    pass
+
+
+def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = None) -> Any:
+    """Run one full stock scan: universe resolution, metadata prefetch,
+    market-data fetch, per-ticker indicator calc/scoring, scoring
+    normalization, and scan-history persistence — then return the exact
+    same JSON-serializable response shape `POST /api/scan` has always
+    returned (a bare list of scored records, or the aborted-early/
+    no-results dict).
+
+    Extracted out of the `POST /api/scan` route (FORTRESS-P3) so the exact
+    same scan logic — nothing about scoring, retries, or the circuit
+    breaker changed — can run either synchronously on the request path (the
+    existing `run_scan` route below) or off it, from a background task
+    driven by `POST /api/scan/jobs` (see `_run_scan_job`). `progress_cb`,
+    when given, is called at each real stage boundary (universe, metadata,
+    market_data, indicators, scoring, persistence) plus periodically during
+    the per-ticker loop; the synchronous route passes no callback at all
+    (`_noop_progress` is dependency-free and costs nothing extra).
+    """
+    if progress_cb is None:
+        progress_cb = _noop_progress
+
     from stock_scanner.pulse import get_current_regime
 
     tickers = TICKER_GROUPS.get(req.universe)
     if not tickers:
         raise HTTPException(status_code=404, detail="Universe not found")
+
+    progress_cb("universe", current=0, total=len(tickers), message=f"Resolved {len(tickers)} tickers for {req.universe}")
 
     # FORTRESS-P2 instrumentation: lightweight per-stage timings, logged as
     # one structured line at the end of the scan (see below) so before/after
@@ -331,6 +353,7 @@ def run_scan(req: ScanRequest):
     # full FORTRESS-P2 design), so the per-ticker loop below normally
     # consumes already-loaded metadata instead of making its own blocking
     # calls.
+    progress_cb("metadata", current=0, total=len(tickers), message="Prefetching ticker metadata")
     _t0 = time.monotonic()
     # `or {}`: defensive against test doubles / callers built against the
     # pre-P2 contract (prefetch_metadata() used to return None implicitly).
@@ -342,10 +365,18 @@ def run_scan(req: ScanRequest):
     scan_timings["metadata_fetch_successes"] = prefetch_stats.get("fetch_successes", 0)
     scan_timings["metadata_fetch_failures"] = prefetch_stats.get("fetch_failures", 0)
     scan_timings["metadata_persist_s"] = prefetch_stats.get("persist_duration_s", 0.0)
+    progress_cb(
+        "metadata",
+        current=len(tickers),
+        total=len(tickers),
+        message=f"Metadata ready ({prefetch_stats.get('cache_hits', 0)} cached, "
+        f"{prefetch_stats.get('fetch_successes', 0)} fetched)",
+    )
 
     # Keep the existing yfinance-based implementation, but make it resilient:
     # if the bulk download fails or returns partial data, fall back to per-symbol
     # fetches so one bad ticker does not fail the entire scan.
+    progress_cb("market_data", current=0, total=len(tickers), message="Fetching market data")
     _t0 = time.monotonic()
     batch_data = get_stock_data(
         tuple(tickers), period="1y", interval="1d", group_by="ticker"
@@ -354,6 +385,12 @@ def run_scan(req: ScanRequest):
     fallback_active = batch_data.empty
     if fallback_active:
         logger.warning("Bulk market data fetch returned no rows for %s", req.universe)
+    progress_cb(
+        "market_data",
+        current=len(tickers),
+        total=len(tickers),
+        message="Market data ready" if not fallback_active else "Market data fetch degraded, using per-ticker fallback",
+    )
 
     def _record_result(ticker, hist):
         nonlocal scan_attempted, scan_failed, circuit_breaker_tripped
@@ -391,8 +428,15 @@ def run_scan(req: ScanRequest):
                     len(tickers) - scan_attempted,
                 )
                 circuit_breaker_tripped = True
+        progress_cb(
+            "indicators",
+            current=scan_attempted,
+            total=len(tickers),
+            message=f"Scored {scan_attempted}/{len(tickers)} tickers ({len(results)} matched so far)",
+        )
 
     _t0 = time.monotonic()
+    progress_cb("indicators", current=0, total=len(tickers), message="Running indicator calculation and scoring")
     if fallback_active:
         # FORTRESS-P2: the batch fetch returned nothing, so every ticker
         # needs its own OHLCV fetch — previously fully serial. Fetch one
@@ -433,6 +477,12 @@ def run_scan(req: ScanRequest):
                             scan_attempted,
                         )
                         circuit_breaker_tripped = True
+                    progress_cb(
+                        "indicators",
+                        current=scan_attempted,
+                        total=len(tickers),
+                        message=f"Scored {scan_attempted}/{len(tickers)} tickers ({len(results)} matched so far)",
+                    )
                 else:
                     _record_result(ticker, hist if hist is not None else pd.DataFrame())
                 if circuit_breaker_tripped:
@@ -469,9 +519,11 @@ def run_scan(req: ScanRequest):
         )
         if req.weights:
             scoring_config["weights"] = req.weights
+        progress_cb("scoring", current=0, total=1, message="Computing scores")
         _t0_scoring = time.monotonic()
         scored = apply_advanced_scoring(score_df, scoring_config)
         scan_timings["scoring_s"] = round(time.monotonic() - _t0_scoring, 3)
+        progress_cb("scoring", current=1, total=1, message="Scoring complete")
         return scored
 
     def _log_scan_timings():
@@ -497,6 +549,7 @@ def run_scan(req: ScanRequest):
         response itself, since the results are already computed."""
         if score_df is None or score_df.empty:
             return
+        progress_cb("persistence", current=0, total=1, message="Saving scan history")
         _t0_persist = time.monotonic()
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -510,6 +563,7 @@ def run_scan(req: ScanRequest):
             logger.warning("run_scan: failed to persist scan history: %s", e)
         finally:
             scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
+            progress_cb("persistence", current=1, total=1, message="Scan history saved")
 
     if circuit_breaker_tripped:
         # Score whatever partial results came through before the breaker
@@ -549,6 +603,157 @@ def run_scan(req: ScanRequest):
     _persist_scan_history(score_df)
     _log_scan_timings()
     return _sanitize_json_value(score_df.to_dict(orient="records"))
+
+
+@app.post("/api/scan")
+def run_scan(req: ScanRequest):
+    # Plain `def`, not `async def`: everything execute_scan() does
+    # (INDstocks/yfinance network calls, pandas/pandas_ta scoring) is
+    # synchronous blocking work. Declaring it `async def` with no `await`
+    # inside would run it directly on uvicorn's single event-loop thread,
+    # freezing the ENTIRE server — including unrelated requests like
+    # /api/health and the frontend's status polling — for the whole scan
+    # duration. A plain `def` route is run by FastAPI in its threadpool
+    # instead, so the event loop stays free to serve other requests
+    # concurrently while a scan is in flight.
+    #
+    # Kept as the synchronous entry point for backward compatibility —
+    # existing callers of POST /api/scan see identical behavior and
+    # response shape. FORTRESS-P3 added POST /api/scan/jobs below for
+    # callers that want the same scan run off the request path entirely,
+    # with progress polling instead of one long blocking call.
+    return execute_scan(req)
+
+
+# ── Async scan jobs (FORTRESS-P3) ───────────────────────────────────────────
+# Moves a long-running scan off the synchronous request path:
+#   POST /api/scan/jobs                  -> {job_id, status: "queued"}
+#   GET  /api/scan/jobs/{job_id}/status  -> status/stage/progress/error
+#   GET  /api/scan/jobs/{job_id}/results -> the same shape POST /api/scan
+#                                            already returns, once completed
+#
+# Job state lives in the scan_jobs DB table (utils.db), not in memory, so a
+# browser refresh/reconnect just resumes polling the same job_id and sees
+# the same state — no client-side session/state to lose. Uses FastAPI's
+# BackgroundTasks + asyncio.to_thread (the same pattern engine/mf_lab/jobs.py
+# already uses for MF background jobs) rather than a new task queue —
+# nothing about the current deployment (a single persistent Render web
+# service) requires more than that for one background scan at a time per
+# request.
+
+_JOB_PROGRESS_UPDATES_PER_SCAN = 20  # throttle: ~20 DB writes/scan regardless of universe size
+
+
+def _make_job_progress_cb(job_id: str) -> Callable[..., None]:
+    """Build a progress_cb for execute_scan() that persists progress to the
+    scan_jobs table, throttled so a 500-ticker scan doesn't turn into 500
+    extra DB writes on top of its own work. Every call still marks the job
+    'running' (idempotent) so the first progress event is what flips a job
+    out of 'queued'."""
+    last_reported = {"current": -1}
+
+    def _cb(stage: str, current: Optional[int] = None, total: Optional[int] = None, message: Optional[str] = None) -> None:
+        if stage == "indicators" and current is not None and total:
+            step = max(1, total // _JOB_PROGRESS_UPDATES_PER_SCAN)
+            if current != total and (current - last_reported["current"]) < step:
+                return
+            last_reported["current"] = current
+        update_scan_job_progress(
+            job_id, status="running", stage=stage, current=current, total=total, message=message
+        )
+
+    return _cb
+
+
+async def _run_scan_job(job_id: str, req: ScanRequest) -> None:
+    """Background-task entry point for one scan job. Reuses execute_scan()
+    unchanged — the same scoring, retries, and circuit-breaker behavior as
+    the synchronous POST /api/scan — so job results are byte-compatible and
+    scoring itself is never touched here."""
+    progress_cb = _make_job_progress_cb(job_id)
+    try:
+        result = await asyncio.to_thread(execute_scan, req, progress_cb)
+        complete_scan_job(job_id, result)
+        logger.info("scan job %s completed", job_id)
+    except Exception as exc:
+        logger.error("scan job %s failed: %s", job_id, exc, exc_info=True)
+        fail_scan_job(job_id, str(exc))
+
+
+@app.post("/api/scan/jobs", status_code=202)
+async def create_scan_job_endpoint(req: ScanRequest, background_tasks: BackgroundTasks):
+    """Accept a scan request and run it off the request path. Returns
+    immediately with a job_id; poll GET /api/scan/jobs/{job_id}/status for
+    progress and GET /api/scan/jobs/{job_id}/results once completed."""
+    tickers = TICKER_GROUPS.get(req.universe)
+    if not tickers:
+        raise HTTPException(status_code=404, detail="Universe not found")
+
+    job_id = str(uuid.uuid4())
+    create_scan_job(job_id, req.universe, req.model_dump())
+    background_tasks.add_task(_run_scan_job, job_id, req)
+
+    logger.info(
+        "scan job %s queued for universe=%s (%d tickers)", job_id, req.universe, len(tickers)
+    )
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/scan/jobs/{job_id}/status")
+def get_scan_job_status(job_id: str):
+    job = get_scan_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "stage": job.get("stage"),
+        "progress": {
+            "current": job.get("progress_current") or 0,
+            "total": job.get("progress_total") or 0,
+        },
+        "message": job.get("message"),
+        "universe": job.get("universe"),
+        "error": job.get("error"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+    }
+
+
+@app.get("/api/scan/jobs/{job_id}/results")
+def get_scan_job_results(job_id: str):
+    job = get_scan_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    status = job["status"]
+    if status == "completed":
+        # Byte-compatible with POST /api/scan's own response shape — a bare
+        # list on a normal successful scan, or the aborted-early/no-results
+        # dict, exactly as complete_scan_job() stored it.
+        return job.get("results_json")
+
+    if status == "failed":
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "error": job.get("error") or "Scan failed"},
+        )
+
+    # queued/running — not ready yet. 202 (not an error) so pollers can
+    # distinguish "still working" from an actual failure without parsing
+    # the body first.
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": status,
+            "stage": job.get("stage"),
+            "progress": {
+                "current": job.get("progress_current") or 0,
+                "total": job.get("progress_total") or 0,
+            },
+            "message": job.get("message"),
+        },
+    )
 
 
 @app.get("/api/symbols/search")
