@@ -25,7 +25,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 
 import pandas as pd
 
@@ -831,3 +831,42 @@ def provider_status() -> dict[str, str]:
         "ohlcv_source": ohlcv_preference,
         "ohlcv_source_label": ohlcv_source_label,
     }
+
+
+# ---------------------------------------------------------------------------
+# Market Data Quality Contract Re-exports and Helpers
+# ---------------------------------------------------------------------------
+
+from utils.data_quality import (  # noqa: E402
+    DataQualityStatus,
+    IssueSeverity,
+    QualityContractConfig,
+    QualityIssue,
+    SymbolQualityReport,
+    UniverseQualityReport,
+    validate_market_universe,
+    validate_symbol_ohlcv,
+)
+
+
+def validate_ohlcv(
+    symbol: str,
+    df: Optional[pd.DataFrame],
+    source: str = "unknown",
+    config: Optional[QualityContractConfig] = None,
+) -> SymbolQualityReport:
+    """Validate historical OHLCV data against the Fortress Market Data Quality Contract."""
+    return validate_symbol_ohlcv(symbol=symbol, df=df, source=source, config=config)
+
+
+def validate_universe(
+    data: dict[str, pd.DataFrame] | pd.DataFrame,
+    expected_symbols: Sequence[str],
+    source: str = "unknown",
+    config: Optional[QualityContractConfig] = None,
+) -> UniverseQualityReport:
+    """Validate a market data universe/batch against the Fortress Market Data Quality Contract."""
+    return validate_market_universe(
+        data=data, expected_symbols=expected_symbols, source=source, config=config
+    )
+
