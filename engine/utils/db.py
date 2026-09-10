@@ -2479,6 +2479,202 @@ def get_scan_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ─────────────────────────────────────────────
+# Immutable signal ledger (FORTRESS-T1)
+# ─────────────────────────────────────────────
+# Append-only record of every Fortress signal, written once at scan-scoring
+# time and never updated afterward — a later scan that re-scores the same
+# symbol writes a NEW row rather than touching the old one, so a past
+# signal can always be reconstructed exactly as Fortress saw it at the
+# time, independent of what today's score says. No UPDATE/UPSERT path
+# exists on this table at all; every write here is a plain INSERT.
+
+
+def _ensure_signal_ledger_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS signal_ledger (
+            id                  BIGSERIAL PRIMARY KEY,
+            generated_at        TIMESTAMPTZ NOT NULL,
+            symbol              TEXT NOT NULL,
+            sector              TEXT,
+            score               NUMERIC,
+            component_scores    JSONB,
+            market_regime       TEXT,
+            regime_multiplier   NUMERIC,
+            price_used          NUMERIC,
+            data_source         TEXT,
+            data_timestamp      TEXT,
+            scan_id             BIGINT,
+            scan_version        TEXT,
+            universe            TEXT,
+            explanation         TEXT,
+            suggested_entry     NUMERIC,
+            stop_loss           NUMERIC,
+            target              NUMERIC,
+            risk_classification TEXT,
+            feature_snapshot    JSONB NOT NULL,
+            created_at          TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_signal_ledger_symbol ON signal_ledger(symbol)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_signal_ledger_scan_id ON signal_ledger(scan_id)")
+
+
+def _ensure_signal_ledger_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS signal_ledger (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            generated_at        TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            sector              TEXT,
+            score               REAL,
+            component_scores    TEXT,
+            market_regime       TEXT,
+            regime_multiplier   REAL,
+            price_used          REAL,
+            data_source         TEXT,
+            data_timestamp      TEXT,
+            scan_id             INTEGER,
+            scan_version        TEXT,
+            universe            TEXT,
+            explanation         TEXT,
+            suggested_entry     REAL,
+            stop_loss           REAL,
+            target              REAL,
+            risk_classification TEXT,
+            feature_snapshot    TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_ledger_symbol ON signal_ledger(symbol)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_ledger_scan_id ON signal_ledger(scan_id)")
+
+
+def record_signal_ledger_entries(entries: List[Dict[str, Any]]) -> int:
+    """Append `entries` to the signal ledger in one batched INSERT (never an
+    UPDATE/UPSERT — see module note above). Best-effort, matching every
+    other scan-persistence path in this module (`_persist_scan_history` in
+    engine/main.py): a ledger write failure is logged and swallowed, never
+    raised, so it can never fail the scan whose signals it's recording.
+
+    Each item in `entries` is a dict with (all optional except `symbol` and
+    `feature_snapshot`): generated_at, symbol, sector, score,
+    component_scores (dict), market_regime, regime_multiplier, price_used,
+    data_source, data_timestamp, scan_id, scan_version, universe,
+    explanation, suggested_entry, stop_loss, target, risk_classification,
+    feature_snapshot (dict — the full point-in-time record).
+
+    Returns the number of rows actually written (0 if the batch failed).
+    """
+    if not entries:
+        return 0
+
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payloads = [
+        {
+            "generated_at": e.get("generated_at") or now_iso,
+            "symbol": e["symbol"],
+            "sector": e.get("sector"),
+            "score": e.get("score"),
+            "component_scores": json.dumps(e.get("component_scores") or {}),
+            "market_regime": e.get("market_regime"),
+            "regime_multiplier": e.get("regime_multiplier"),
+            "price_used": e.get("price_used"),
+            "data_source": e.get("data_source"),
+            "data_timestamp": e.get("data_timestamp"),
+            "scan_id": e.get("scan_id"),
+            "scan_version": e.get("scan_version"),
+            "universe": e.get("universe"),
+            "explanation": e.get("explanation"),
+            "suggested_entry": e.get("suggested_entry"),
+            "stop_loss": e.get("stop_loss"),
+            "target": e.get("target"),
+            "risk_classification": e.get("risk_classification"),
+            "feature_snapshot": json.dumps(e.get("feature_snapshot") or {}),
+        }
+        for e in entries
+    ]
+
+    columns = (
+        "generated_at, symbol, sector, score, component_scores, market_regime, "
+        "regime_multiplier, price_used, data_source, data_timestamp, scan_id, "
+        "scan_version, universe, explanation, suggested_entry, stop_loss, target, "
+        "risk_classification, feature_snapshot"
+    )
+    placeholders = (
+        ":generated_at, :symbol, :sector, :score, "
+        + ("CAST(:component_scores AS JSONB)" if _can_use_neon() else ":component_scores")
+        + ", :market_regime, :regime_multiplier, :price_used, :data_source, "
+        ":data_timestamp, :scan_id, :scan_version, :universe, :explanation, "
+        ":suggested_entry, :stop_loss, :target, :risk_classification, "
+        + ("CAST(:feature_snapshot AS JSONB)" if _can_use_neon() else ":feature_snapshot")
+    )
+    insert_sql = f"INSERT INTO signal_ledger ({columns}) VALUES ({placeholders})"
+
+    try:
+        if _can_use_neon():
+            _ensure_signal_ledger_neon()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                conn.execute(text(insert_sql), payloads)
+            return len(payloads)
+
+        with _sqlite_connection() as conn:
+            _ensure_signal_ledger_sqlite(conn)
+            conn.executemany(insert_sql, payloads)
+        return len(payloads)
+    except Exception as e:
+        logger.error("record_signal_ledger_entries: failed to persist %d entries: %s", len(entries), e)
+        return 0
+
+
+def fetch_signal_ledger(
+    symbol: Optional[str] = None,
+    scan_id: Optional[int] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Read back signal_ledger rows, newest first, for inspection/
+    reconstruction — e.g. "what did Fortress know about RELIANCE.NS when it
+    generated this signal". Filters are additive (both may be given).
+    `component_scores`/`feature_snapshot` are returned already-parsed
+    (dict), not raw JSON text, on both backends."""
+    where = []
+    params: Dict[str, Any] = {"limit": limit}
+    if symbol:
+        where.append("symbol = :symbol")
+        params["symbol"] = symbol
+    if scan_id is not None:
+        where.append("scan_id = :scan_id")
+        params["scan_id"] = scan_id
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    query = (
+        "SELECT * FROM signal_ledger "
+        f"{where_sql} ORDER BY id DESC LIMIT :limit"
+    )
+
+    try:
+        if _can_use_neon():
+            _ensure_signal_ledger_neon()
+            return _query(query, params)
+
+        with _sqlite_connection() as conn:
+            _ensure_signal_ledger_sqlite(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+            for row in rows:
+                for json_col in ("component_scores", "feature_snapshot"):
+                    if row.get(json_col):
+                        try:
+                            row[json_col] = json.loads(row[json_col])
+                        except (TypeError, ValueError):
+                            pass
+            return rows
+    except Exception as e:
+        logger.error("fetch_signal_ledger failed: %s", e)
+        return []
+
+
 def bulk_insert_results(results_df, metrics_df, alerts_df=None):
     if not results_df.empty:
         log_scan_results(results_df, table_name="scan_entries")

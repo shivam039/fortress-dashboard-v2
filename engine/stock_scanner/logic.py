@@ -60,6 +60,13 @@ def _metadata_fetch_workers(item_count):
         "FORTRESS_METADATA_FETCH_WORKERS", _DEFAULT_METADATA_FETCH_WORKERS, item_count
     )
 
+# Bump whenever check_institutional_fortress/apply_advanced_scoring's
+# scoring math changes meaningfully — recorded on every signal_ledger row
+# (FORTRESS-T1) so a historical signal can be attributed to the exact
+# scoring logic that produced it, independent of whatever this constant is
+# today.
+FORTRESS_SCAN_LOGIC_VERSION = "v1"
+
 DEFAULT_SCORING_CONFIG = {
     "weights": {
         "technical": 0.50,
@@ -1583,6 +1590,16 @@ def check_institutional_fortress(
             "Sentiment_Raw": round(sentiment_raw, 2),
             "Context_Raw": round(context_raw, 2),
             "Regime_Multiplier": round(regime_multiplier, 2),
+            # Point-in-time provenance for the signal ledger (FORTRESS-T1):
+            # the as-of date of the OHLCV bar this signal was actually
+            # computed from, not "now" — stored as a plain string (not a
+            # pandas Timestamp) so it round-trips through json.dumps()
+            # unchanged wherever this dict is persisted.
+            "Data_As_Of": (
+                close.index[-1].strftime("%Y-%m-%d")
+                if hasattr(close.index[-1], "strftime")
+                else str(close.index[-1])
+            ),
         }
     except Exception as e:
         _logger.warning(f"check_institutional_fortress failed for {ticker}: {e}")
