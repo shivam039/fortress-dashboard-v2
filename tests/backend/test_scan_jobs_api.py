@@ -92,10 +92,14 @@ def test_execute_scan_reports_all_required_stages(monkeypatch):
 
 def test_execute_scan_progress_is_noop_safe_without_callback(monkeypatch):
     """The synchronous POST /api/scan route calls execute_scan() with no
-    progress_cb at all — must not raise."""
+    progress_cb at all — must not raise. Real (non-empty, >=210 row) market
+    data throughout: this test is about progress_cb safety across the full
+    universe, not the circuit breaker (FORTRESS-V4's fix correctly trips
+    the breaker on all-empty data, which would stop this scan at 10/50 —
+    see test_circuit_breaker_empty_data.py for that behavior)."""
     monkeypatch.setattr("stock_scanner.pulse.get_current_regime", _regime_patch)
     monkeypatch.setattr(main_mod, "prefetch_metadata", lambda tickers: None)
-    monkeypatch.setattr(main_mod, "get_stock_data", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(main_mod, "get_stock_data", lambda *a, **k: pd.DataFrame({"Close": range(250)}))
     monkeypatch.setattr(main_mod, "check_institutional_fortress", lambda *a, **k: None)
 
     req = main_mod.ScanRequest(universe="Nifty 50", portfolio_val=1_000_000, risk_pct=0.01)

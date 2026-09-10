@@ -1,0 +1,184 @@
+// src/app/paper-trading/page.tsx — FORTRESS-V4 / Blocker C: the smallest
+// usable surface for FORTRESS-T2's paper-trading engine. Every trade here
+// is PAPER TRADE — a simulation against real price data, never a real
+// broker order (see engine/routers/paper_trading.py).
+'use client';
+
+import React, { useCallback, useEffect, useState } from 'react';
+import { paperTradingApi, type FortressSignalLedgerRow, type PaperTrade, type PaperTradeMetrics } from '@/lib/api';
+import { useToast } from '@/contexts/ToastContext';
+import DataTable from '@/components/DataTable';
+import MetricCard from '@/components/MetricCard';
+
+export default function PaperTradingPage() {
+  const { success, error } = useToast();
+  const [open, setOpen] = useState<PaperTrade[]>([]);
+  const [closed, setClosed] = useState<PaperTrade[]>([]);
+  const [metrics, setMetrics] = useState<PaperTradeMetrics | null>(null);
+  const [signals, setSignals] = useState<FortressSignalLedgerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const loadData = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
+    Promise.all([
+      paperTradingApi.list('open'),
+      paperTradingApi.list('closed'),
+      paperTradingApi.metrics(),
+      paperTradingApi.signals(20),
+    ])
+      .then(([o, c, m, s]) => { setOpen(o); setClosed(c); setMetrics(m); setSignals(s); })
+      .catch((err: unknown) => setLoadError((err as Error).message || 'Unknown error'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadData();
+  }, [loadData]);
+
+  const handleOpen = async (signalId: number, symbol: string) => {
+    setBusyId(signalId);
+    try {
+      await paperTradingApi.open(signalId);
+      success(`PAPER TRADE opened for ${symbol}.`);
+      loadData();
+    } catch (err: unknown) {
+      error(`Could not open paper trade: ${(err as Error).message}`);
+    }
+    setBusyId(null);
+  };
+
+  const handleClose = async (tradeId: number, symbol: string) => {
+    setBusyId(tradeId);
+    try {
+      const result = await paperTradingApi.close(tradeId);
+      if ('status' in result && result.status === 'not_ready') {
+        error(`${symbol}: ${result.reason}`);
+      } else {
+        success(`PAPER TRADE closed for ${symbol}.`);
+        loadData();
+      }
+    } catch (err: unknown) {
+      error(`Could not close paper trade: ${(err as Error).message}`);
+    }
+    setBusyId(null);
+  };
+
+  const openSignalIds = new Set(open.map(t => t.signal_id));
+
+  return (
+    <>
+      <div className="page-header">
+        <h1 className="page-title">📝 Paper Trading</h1>
+        <p className="page-subtitle">
+          Every position below is a <strong>PAPER TRADE</strong> — a deterministic simulation against real
+          price data (FORTRESS-T2). No real broker order is ever placed here.
+        </p>
+      </div>
+
+      <div className="grid-5" style={{ marginBottom: '24px' }}>
+        <MetricCard label="Closed Trades" value={metrics?.trade_count ?? 0} />
+        <MetricCard label="Win Rate" value={metrics?.win_rate_pct != null ? `${metrics.win_rate_pct}%` : 'n/a'}
+          deltaType={metrics?.win_rate_pct != null ? (metrics.win_rate_pct >= 50 ? 'positive' : 'negative') : 'neutral'} />
+        <MetricCard label="Net P&L" value={metrics ? `${metrics.total_net_pnl}` : '0'}
+          deltaType={metrics ? (metrics.total_net_pnl >= 0 ? 'positive' : 'negative') : 'neutral'} />
+        <MetricCard label="Expectancy" value={metrics?.expectancy ?? 'n/a'} />
+        <MetricCard label="Max Drawdown" value={metrics ? `${metrics.max_drawdown}` : '0'} deltaType="negative" />
+      </div>
+
+      {loading ? (
+        <div className="loading-overlay">Loading paper trading data...</div>
+      ) : loadError ? (
+        <div className="empty-state">
+          <div className="icon">⚠️</div>
+          <p>Couldn&apos;t load paper trading data: {loadError}</p>
+          <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={loadData}>Retry</button>
+        </div>
+      ) : (
+        <>
+          <div className="section" style={{ marginBottom: '24px' }}>
+            <h3 className="section-title">Recent Fortress Signals — open an eligible PAPER TRADE</h3>
+            {signals.length === 0 ? (
+              <div className="empty-state"><p>No signals recorded yet. Run a scan first.</p></div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th>Score</th><th>Regime</th><th>Sector</th>
+                      <th>Entry</th><th>Stop</th><th>Target</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {signals.map(s => (
+                      <tr key={s.id}>
+                        <td>{s.symbol}</td>
+                        <td>{s.score ?? 'n/a'}</td>
+                        <td>{s.market_regime ?? 'n/a'}</td>
+                        <td>{s.sector ?? 'n/a'}</td>
+                        <td>{s.suggested_entry ?? 'n/a'}</td>
+                        <td>{s.stop_loss ?? 'n/a'}</td>
+                        <td>{s.target ?? 'n/a'}</td>
+                        <td>
+                          <button
+                            className="btn btn-secondary"
+                            disabled={busyId === s.id || openSignalIds.has(s.id)}
+                            onClick={() => handleOpen(s.id, s.symbol)}
+                          >
+                            {openSignalIds.has(s.id) ? 'Open position exists' : busyId === s.id ? 'Opening...' : 'Open PAPER TRADE'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="section" style={{ marginBottom: '24px' }}>
+            <h3 className="section-title">Open PAPER Positions ({open.length})</h3>
+            {open.length === 0 ? (
+              <div className="empty-state"><p>No open paper positions.</p></div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th>Signal ID</th><th>Entry</th><th>Stop</th><th>Target</th><th>Qty</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {open.map(t => (
+                      <tr key={t.trade_id}>
+                        <td>{t.symbol}</td>
+                        <td>#{t.signal_id}</td>
+                        <td>{t.entry_price}</td>
+                        <td>{t.stop_price ?? 'n/a'}</td>
+                        <td>{t.target_price ?? 'n/a'}</td>
+                        <td>{t.quantity}</td>
+                        <td>
+                          <button className="btn btn-secondary" disabled={busyId === t.trade_id} onClick={() => handleClose(t.trade_id, t.symbol)}>
+                            {busyId === t.trade_id ? 'Closing...' : 'Close PAPER TRADE'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="section">
+            <h3 className="section-title">Closed PAPER Trades ({closed.length})</h3>
+            <DataTable data={closed as unknown as Record<string, unknown>[]} emptyMessage="No closed paper trades yet." />
+          </div>
+        </>
+      )}
+    </>
+  );
+}

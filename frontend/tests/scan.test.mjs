@@ -93,8 +93,76 @@ test('status rendering covers running, completion, partial, unknown and failures
     const html = renderToStaticMarkup(React.createElement(ScanStatus, { state: { ...store.getSnapshot(), status, startedAt: Date.now(), universe: 'Test' } }));
     assert.match(html, /role="(?:status|alert)"/);
     assert.doesNotMatch(html, /aria-valuenow|\d+%/);
-    if (status === 'running') assert.match(html, /Stage: awaiting scan response/);
+    if (status === 'running') assert.match(html, /Stage: starting/);
     if (status === 'unknown') assert.match(html, /Scan History/);
     if (status === 'partial') assert.match(html, /Partial results/);
   }
+});
+
+// ── FORTRESS-V4: async scan job lifecycle ──────────────────────────────────
+
+test('startJob begins a running state with the real job id, and rejects a second job while one is active', () => {
+  const store = createScanStore('user', memory());
+  assert.equal(store.startJob('Nifty 50', 'job-1'), true);
+  assert.equal(store.getSnapshot().status, 'running');
+  assert.equal(store.getSnapshot().jobId, 'job-1');
+  assert.equal(store.startJob('Nifty 50', 'job-2'), false); // no duplicate submission
+  assert.equal(store.getSnapshot().jobId, 'job-1');
+});
+
+test('updateJobStatus reports real server stage/progress, never a fabricated percentage', () => {
+  const store = createScanStore('user', memory());
+  store.startJob('Nifty 50', 'job-1');
+  store.updateJobStatus({ status: 'running', stage: 'market_data', progress: { current: 12, total: 50 }, message: 'Fetching market data', error: null });
+  const html = renderToStaticMarkup(React.createElement(ScanStatus, { state: store.getSnapshot() }));
+  assert.match(html, /market_data/);
+  assert.match(html, /12\/50 tickers/);
+  assert.doesNotMatch(html, /\d+%/);
+});
+
+test('completeJob retrieves and stores the real results, ending the job', () => {
+  const store = createScanStore('user', memory());
+  store.startJob('Nifty 50', 'job-1');
+  store.completeJob([row]);
+  const snap = store.getSnapshot();
+  assert.equal(snap.status, 'completed');
+  assert.equal(snap.jobId, null);
+  assert.equal(snap.result.results.length, 1);
+});
+
+test('a failed job surfaces the failure and clears the job id', () => {
+  const store = createScanStore('user', memory());
+  store.startJob('Nifty 50', 'job-1');
+  store.updateJobStatus({ status: 'failed', stage: 'market_data', progress: null, message: null, error: 'Provider unavailable' });
+  const snap = store.getSnapshot();
+  assert.equal(snap.status, 'failed');
+  assert.equal(snap.jobId, null);
+  assert.equal(snap.message, 'Provider unavailable');
+});
+
+test('a refresh with an in-flight job id stays running (reconnectable), not unknown', () => {
+  const storage = memory();
+  const store = createScanStore('user', storage);
+  store.startJob('Nifty 50', 'job-1');
+  const resumed = createScanStore('user', storage);
+  resumed.restore();
+  assert.equal(resumed.getSnapshot().status, 'running');
+  assert.equal(resumed.getSnapshot().jobId, 'job-1');
+});
+
+test('a refresh with no job id (old synchronous shape) still degrades to unknown', () => {
+  const storage = memory();
+  const store = createScanStore('user', storage);
+  store.start('Nifty 50', () => new Promise(() => {})); // never resolves — status stays 'running', no jobId
+  const resumed = createScanStore('user', storage);
+  resumed.restore();
+  assert.equal(resumed.getSnapshot().status, 'unknown');
+});
+
+test('the screener page starts an async job, not the old synchronous scan', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../src/app/screener/page.tsx', import.meta.url), 'utf8');
+  assert.match(src, /scanApi\.startScanJob/);
+  assert.match(src, /scanApi\.getScanJobStatus/);
+  assert.match(src, /scanApi\.getScanJobResults/);
 });

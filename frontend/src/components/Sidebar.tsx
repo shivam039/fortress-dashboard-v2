@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: '/us-investing', icon: '🇺🇸', label: 'US Investing' },
   { href: '/orders', icon: '📋', label: 'Orders' },
   { href: '/picks', icon: '🎯', label: 'Picks Tracker' },
+  { href: '/paper-trading', icon: '📝', label: 'Paper Trading' },
   { href: '/commodities', icon: '🌍', label: 'Commodities' },
   { href: '/options', icon: '⚡', label: 'Options' },
   { href: '/history', icon: '🕐', label: 'Scan History' },

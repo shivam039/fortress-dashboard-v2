@@ -1,4 +1,9 @@
-// Scan lifecycle independent of page mounts; no polling or inferred progress.
+// Scan lifecycle independent of page mounts. FORTRESS-V4: the primary
+// screener path is now the async job API (POST /api/scan/jobs) — jobId/
+// stage/progress are the real, server-reported values a poller (see
+// screener/page.tsx) writes here; this module itself never polls or
+// infers progress. `start()` (old synchronous /api/scan) is left intact
+// for any other caller, unused by the screener now.
 export type ScanRow = Record<string, unknown>;
 export interface ScanResult {
   results: ScanRow[];
@@ -9,6 +14,8 @@ export interface ScanResult {
   universe: string;
   receivedAt: string;
 }
+export type ScanJobStageName =
+  | 'universe' | 'metadata' | 'market_data' | 'indicators' | 'scoring' | 'persistence' | 'completed' | 'failed';
 export interface ScanState {
   status: 'idle' | 'running' | 'completed' | 'partial' | 'failed' | 'unknown';
   startedAt: number | null;
@@ -16,9 +23,13 @@ export interface ScanState {
   result: ScanResult | null;
   message: string;
   cacheUnavailable: boolean;
+  jobId: string | null;
+  stage: ScanJobStageName | null;
+  progress: { current: number; total: number } | null;
 }
 export const emptyScanState: ScanState = {
   status: 'idle', startedAt: null, universe: '', result: null, message: '', cacheUnavailable: false,
+  jobId: null, stage: null, progress: null,
 };
 export function normalizeScanResponse(value: unknown) {
   const envelope = !Array.isArray(value) && value && typeof value === 'object'
@@ -63,11 +74,52 @@ export function createScanStore(user: string, storage?: Storage) {
           normalizeScanResponse(parsed.result);
           if (typeof parsed.result.universe !== 'string' || !Number.isFinite(Date.parse(parsed.result.receivedAt))) return;
         }
+        // A running *job* has a jobId the page can reconnect to and poll —
+        // unlike the old synchronous request, its outcome is not actually
+        // unknown after a refresh, so `status` is preserved as-is.
+        const reconnectable = parsed.status === 'running' && !!parsed.jobId;
         publish({ ...emptyScanState, ...parsed,
-          status: parsed.status === 'running' ? 'unknown' : parsed.status,
-          message: parsed.status === 'running' ? 'The page refreshed before the scan response arrived. Its server outcome is unknown.' : parsed.message,
+          status: parsed.status === 'running' && !reconnectable ? 'unknown' : parsed.status,
+          message: parsed.status === 'running' && !reconnectable
+            ? 'The page refreshed before the scan response arrived. Its server outcome is unknown.'
+            : parsed.message,
         });
       } catch { /* Invalid/unavailable browser storage must not block a scan. */ }
+    },
+    // ── FORTRESS-V4: async scan job lifecycle ──────────────────────────────
+    // startJob/updateJobStatus/completeJob/failJob are the only writers a
+    // job-polling loop needs; the poller itself lives in screener/page.tsx
+    // so this module stays free of timers/network calls.
+    startJob: (universe: string, jobId: string) => {
+      if (state.status === 'running') return false;
+      restored = true;
+      publish({ ...state, status: 'running', startedAt: Date.now(), universe, message: '',
+        jobId, stage: null, progress: null, result: null });
+      return true;
+    },
+    updateJobStatus: (job: { status: string; stage: string | null; progress: { current: number; total: number } | null; message: string | null; error: string | null }) => {
+      if (state.jobId === null) return; // superseded/cleared already — ignore a late poll response
+      if (job.status === 'failed') {
+        publish({ ...state, status: 'failed', message: job.error || job.message || 'Scan failed.', jobId: null, stage: 'failed' });
+        return;
+      }
+      publish({ ...state, stage: (job.stage as ScanJobStageName) ?? state.stage, progress: job.progress, message: job.message || state.message });
+    },
+    completeJob: (data: unknown) => {
+      if (state.jobId === null) return;
+      try {
+        const normalized = normalizeScanResponse(data);
+        publish({ ...state, status: normalized.partial ? 'partial' : 'completed',
+          result: { ...normalized, universe: state.universe, receivedAt: new Date().toISOString() },
+          message: normalized.summary ?? '', jobId: null, stage: 'completed', progress: null,
+        });
+      } catch (err) {
+        publish({ ...state, status: 'failed', message: (err as Error).message, jobId: null });
+      }
+    },
+    failJob: (message: string) => {
+      if (state.jobId === null) return;
+      publish({ ...state, status: 'failed', message, jobId: null, stage: 'failed' });
     },
     start: async (universe: string, request: () => Promise<unknown>) => {
       if (state.status === 'running') return false;
