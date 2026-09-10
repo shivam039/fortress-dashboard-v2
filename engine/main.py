@@ -584,6 +584,7 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
             history_df["Universe"] = req.universe
             save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
             _record_signal_ledger(history_df, scan_id, timestamp)
+            _record_research_observations(history_df, scan_id, timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to persist scan history: %s", e)
         finally:
@@ -646,6 +647,29 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
                     "run_scan: signal ledger wrote %d/%d entries for scan_id=%s",
                     written, len(entries), scan_id,
                 )
+
+    def _record_research_observations(history_df, scan_id, timestamp):
+        """FORTRESS-E1: append one research_observations row per
+        successfully-scored ticker (the full score_df, not just signals —
+        see docs/research/PROSPECTIVE_EVIDENCE_COLLECTION.md). Never runs
+        when the circuit breaker tripped: a provider-outage-truncated scan
+        must not masquerade as valid evidence. Best-effort, same as
+        _record_signal_ledger above."""
+        if circuit_breaker_tripped:
+            logger.info("run_scan: circuit breaker tripped — skipping research observation collection")
+            return
+        try:
+            from research.prospective_store import collect_from_scan
+            from utils.market_data_provider import provider_status
+            data_source = provider_status().get("ohlcv_source")
+            trading_date = timestamp.split(" ")[0]
+            result = collect_from_scan(
+                history_df.to_dict(orient="records"), scan_id, trading_date,
+                FORTRESS_SCAN_LOGIC_VERSION, data_source=data_source,
+            )
+            logger.info("run_scan: research observations for scan_id=%s: %s", scan_id, result)
+        except Exception as e:
+            logger.warning("run_scan: failed to record research observations: %s", e)
 
     if circuit_breaker_tripped:
         # Score whatever partial results came through before the breaker
