@@ -22,12 +22,22 @@ from auth_utils import (
     create_access_token,
     get_current_user,
 )
+from utils.security_config import (
+    DEFAULT_ADMIN_PASSWORD as _DEFAULT_ADMIN_PASSWORD,
+    is_production_environment,
+    validate_admin_password,
+)
 
 logger = logging.getLogger("fortress.routers.auth")
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_DEFAULT_ADMIN_PASSWORD = "fortress123"
-if not os.environ.get("FORTRESS_APP_PASSWORD"):
+# FORTRESS-H3: production must fail to start rather than silently accept
+# the hardcoded default admin password — see utils/security_config.py.
+# Development keeps the pre-existing warn-and-continue behavior.
+_app_password_env = os.environ.get("FORTRESS_APP_PASSWORD", "")
+if is_production_environment():
+    validate_admin_password(_app_password_env)
+elif not _app_password_env.strip() or _app_password_env.strip() == _DEFAULT_ADMIN_PASSWORD:
     logger.warning(
         "FORTRESS_APP_PASSWORD is not set — the admin account falls back to "
         "the hardcoded default password, which is public in this repo's "
