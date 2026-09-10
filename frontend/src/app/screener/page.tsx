@@ -1,9 +1,12 @@
 // src/app/screener/page.tsx — Stock Screener (most complex page)
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { scanApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
+import { emptyScanState, getScanStore } from '@/lib/scan-state';
+import { ScanStatus } from '@/components/ScanStatus';
 import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
 import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelligence';
@@ -22,11 +25,15 @@ export default function ScreenerPage() {
   const [priceMin, setPriceMin] = useState(80.0);
   const [weights, setWeights] = useState({ technical: 50, fundamental: 25, sentiment: 15, context: 10 });
 
-  const [results, setResults] = useState<Record<string, unknown>[]>([]);
+  const { user } = useAuth();
+  const store = useMemo(() => getScanStore(user?.username ?? ''), [user?.username]);
+  const scan = useSyncExternalStore(store.subscribe, store.getSnapshot, () => emptyScanState);
+  const results = scan.result?.results ?? [];
+  const loading = scan.status === 'running';
+  useEffect(() => { if (user) store.restore(); }, [store, user]);
+  const [universeError, setUniverseError] = useState('');
   const [sectorPulse, setSectorPulse] = useState<Record<string, unknown>[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [elapsedSec, setElapsedSec] = useState(0);
 
   // ── Single-stock search ─────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -37,32 +44,16 @@ export default function ScreenerPage() {
   const [searchedSymbol, setSearchedSymbol] = useState('');
   const searchBoxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  const loadUniverses = useCallback(() => {
     scanApi.getUniverses().then(u => {
       setUniverses(u);
-      if (u.length > 0) setUniverse(u[0]);
-    }).catch(() => {});
+      if (u.length > 0) { setUniverse(u[0]); setUniverseError(''); }
+      else setUniverseError('No scan universes are available.');
+    }).catch(() => setUniverseError('Could not load scan universes. Check your connection and retry.'));
   }, []);
-
-  // A scan of a large universe can genuinely take a while — a static spinner
-  // with no other signal looks identical whether it's 3s or 3min in, so
-  // there's no way to tell "still working" from "actually stuck". Counting
-  // up gives a visible heartbeat: as long as the number keeps climbing, the
-  // request is still in flight (not frozen), and it also makes clear how
-  // long a completed/failed scan actually took.
-  useEffect(() => {
-    if (!loading) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setElapsedSec(0);
-      return;
-    }
-    const start = Date.now();
-    const id = setInterval(() => setElapsedSec(Math.round((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [loading]);
+  useEffect(() => { loadUniverses(); }, [loadUniverses]);
 
   const runScan = useCallback(async () => {
-    setLoading(true);
     try {
       const total = Math.max(weights.technical + weights.fundamental + weights.sentiment + weights.context, 1);
       const payload: ScanPayload = {
@@ -81,21 +72,20 @@ export default function ScreenerPage() {
         price_min: priceMin,
         broker,
       };
-      const data = await scanApi.runScan(payload);
-      setResults(data);
-      success(`Scan completed — ${data.length} results`);
+      const completed = await store.start(universe, () => scanApi.runScanDetailed(payload));
+      if (!completed) return;
+      setSectorPulse([]);
+      const completedResult = store.getSnapshot().result;
 
       // Also fetch sector pulse
       try {
         const sp = await scanApi.getSectorPulse(universe);
-        setSectorPulse(sp);
+        if (store.getSnapshot().result === completedResult) setSectorPulse(sp);
       } catch {}
     } catch (err: unknown) {
       error(`Scan failed: ${(err as Error).message}`);
-    } finally {
-      setLoading(false);
     }
-  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, success, error]);
+  }, [universe, portfolioVal, riskPct, weights, enableRegime, liquidityMin, marketCapMin, priceMin, broker, store, error]);
 
   // Debounced search-as-you-type suggestions — waits for a pause in typing
   // before hitting the backend so every keystroke doesn't fire a request.
@@ -265,25 +255,15 @@ export default function ScreenerPage() {
           )}
         </div>
 
-        <button className="btn btn-primary btn-block" onClick={runScan} disabled={loading || !universe}>
-          {loading ? (
-            <>
-              <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} />
-              Scanning… {elapsedSec}s
-            </>
-          ) : (
-            '🔍 Run Screener'
-          )}
+        {universeError ? <p role="alert">{universeError} <button className="btn" onClick={() => { setUniverseError(''); loadUniverses(); }}>Retry loading universes</button></p> : universes.length === 0 && <p role="status">Stage: loading scan universes…</p>}
+        <button className="btn btn-primary btn-block" onClick={runScan} disabled={loading || !universe || !user}>
+          {loading ? 'Scan request in progress…' : scan.status === 'unknown' ? 'Start another scan' : '🔍 Run Screener'}
         </button>
-        {loading && elapsedSec >= 15 && (
-          <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '8px', textAlign: 'center' }}>
-            Still working — larger universes (Midcap 150, Smallcap 250) can take a couple of minutes.
-            The counter above only keeps climbing while the request is actually still in flight.
-          </p>
-        )}
       </div>
 
-      {results.length === 0 && !loading && (
+      <ScanStatus state={scan} />
+
+      {results.length === 0 && scan.status === 'idle' && (
         <div className="empty-state">
           <div className="icon">🔍</div>
           <p>Run a scan to see actionable stock setups here.</p>

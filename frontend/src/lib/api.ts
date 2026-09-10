@@ -279,6 +279,9 @@ export interface SymbolSuggestion {
 }
 
 export const scanApi = {
+  // Preserve the backend summary and circuit-breaker metadata for scan UX.
+  runScanDetailed: (payload: ScanPayload) =>
+    api.post<unknown>('/api/scan', payload, SCAN_TIMEOUT_MS),
   getUniverses: async () =>
     asArray<string>(await api.get<unknown>('/api/universes'), [
       'universes',
