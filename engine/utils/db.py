@@ -2863,6 +2863,358 @@ def fetch_paper_trades(
         return []
 
 
+# ── FORTRESS-E1: prospective research observations ──────────────────────────
+#
+# T1 (signal_ledger, above) means SIGNAL. research_observations is a
+# separate, append-only table capturing every successfully scored ticker in
+# a real scan — not only ones that became signals — so score buckets can be
+# compared later without survivorship bias. A research observation may exist
+# with no signal; linkage to signal_ledger/paper_trades is by
+# (scan_id, symbol) join, not a stored FK, so this never touches T1/T2's own
+# write paths. See docs/research/PROSPECTIVE_EVIDENCE_COLLECTION.md.
+
+RESEARCH_HORIZONS = (5, 10, 20, 60)
+
+
+def _ensure_research_observations_neon() -> None:
+    _exec("""
+        CREATE TABLE IF NOT EXISTS research_observations (
+            id                    BIGSERIAL PRIMARY KEY,
+            observation_id        TEXT NOT NULL UNIQUE,
+            scan_id               BIGINT,
+            symbol                TEXT NOT NULL,
+            exchange              TEXT,
+            trading_date          TEXT NOT NULL,
+            observation_timestamp TEXT NOT NULL,
+            fortress_score        NUMERIC,
+            component_scores      JSONB,
+            market_regime         TEXT,
+            sector                TEXT,
+            features_json         JSONB,
+            quality_gate_pass     BOOLEAN,
+            quality_gate_failures TEXT,
+            data_source           TEXT,
+            data_timestamp        TEXT,
+            reference_price       NUMERIC,
+            scoring_version       TEXT NOT NULL,
+            schema_version        TEXT NOT NULL,
+            git_sha               TEXT,
+            passed_criteria       BOOLEAN,
+            created_at            TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(trading_date, symbol, scoring_version)
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_research_obs_symbol ON research_observations(symbol)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_research_obs_date ON research_observations(trading_date)")
+
+
+def _ensure_research_observations_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS research_observations (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation_id        TEXT NOT NULL UNIQUE,
+            scan_id               INTEGER,
+            symbol                TEXT NOT NULL,
+            exchange              TEXT,
+            trading_date          TEXT NOT NULL,
+            observation_timestamp TEXT NOT NULL,
+            fortress_score        REAL,
+            component_scores      TEXT,
+            market_regime         TEXT,
+            sector                TEXT,
+            features_json         TEXT,
+            quality_gate_pass     INTEGER,
+            quality_gate_failures TEXT,
+            data_source           TEXT,
+            data_timestamp        TEXT,
+            reference_price       REAL,
+            scoring_version       TEXT NOT NULL,
+            schema_version        TEXT NOT NULL,
+            git_sha               TEXT,
+            passed_criteria       INTEGER,
+            created_at            TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(trading_date, symbol, scoring_version)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_obs_symbol ON research_observations(symbol)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_obs_date ON research_observations(trading_date)")
+
+
+def _ensure_research_outcomes_neon() -> None:
+    _exec("""
+        CREATE TABLE IF NOT EXISTS research_outcomes (
+            id                    BIGSERIAL PRIMARY KEY,
+            observation_id        TEXT NOT NULL,
+            horizon               INTEGER NOT NULL,
+            status                TEXT NOT NULL DEFAULT 'NOT_YET_MATURE',
+            target_trading_date   TEXT,
+            future_price          NUMERIC,
+            price_source          TEXT,
+            price_timestamp       TEXT,
+            forward_return        NUMERIC,
+            maturation_timestamp  TEXT,
+            failure_reason        TEXT,
+            created_at            TIMESTAMPTZ DEFAULT NOW(),
+            updated_at            TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(observation_id, horizon)
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_research_outcomes_status ON research_outcomes(status)")
+
+
+def _ensure_research_outcomes_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS research_outcomes (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation_id        TEXT NOT NULL,
+            horizon               INTEGER NOT NULL,
+            status                TEXT NOT NULL DEFAULT 'NOT_YET_MATURE',
+            target_trading_date   TEXT,
+            future_price          REAL,
+            price_source          TEXT,
+            price_timestamp       TEXT,
+            forward_return        REAL,
+            maturation_timestamp  TEXT,
+            failure_reason        TEXT,
+            created_at            TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at            TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(observation_id, horizon)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_outcomes_status ON research_outcomes(status)")
+
+
+def _ensure_research_tables(conn=None) -> None:
+    """conn is only used/required for the SQLite branch."""
+    if _can_use_neon():
+        _ensure_research_observations_neon()
+        _ensure_research_outcomes_neon()
+    else:
+        _ensure_research_observations_sqlite(conn)
+        _ensure_research_outcomes_sqlite(conn)
+
+
+def record_research_observations(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Append point-in-time research observations (FORTRESS-E1) — one per
+    successfully scored ticker in a real scan. Idempotent on
+    (trading_date, symbol, scoring_version): a rerun of the same scan
+    day/version skips duplicates instead of creating a second observation.
+    Each newly-inserted observation gets four NOT_YET_MATURE outcome
+    placeholders (5/10/20/60 sessions) — maturation fills these in later,
+    never here. Best-effort, matching every other scan-persistence path in
+    this module: a failure here must never fail the scan response.
+    """
+    if not entries:
+        return {"inserted": 0, "duplicates": 0}
+
+    neon = _can_use_neon()
+    columns = (
+        "observation_id, scan_id, symbol, exchange, trading_date, "
+        "observation_timestamp, fortress_score, component_scores, market_regime, "
+        "sector, features_json, quality_gate_pass, quality_gate_failures, "
+        "data_source, data_timestamp, reference_price, scoring_version, "
+        "schema_version, git_sha, passed_criteria"
+    )
+
+    def _cast(name: str) -> str:
+        return f"CAST(:{name} AS JSONB)" if neon else f":{name}"
+
+    placeholders = (
+        ":observation_id, :scan_id, :symbol, :exchange, :trading_date, "
+        f":observation_timestamp, :fortress_score, {_cast('component_scores')}, "
+        f":market_regime, :sector, {_cast('features_json')}, :quality_gate_pass, "
+        ":quality_gate_failures, :data_source, :data_timestamp, :reference_price, "
+        ":scoring_version, :schema_version, :git_sha, :passed_criteria"
+    )
+    insert_sql = (
+        f"INSERT INTO research_observations ({columns}) VALUES ({placeholders}) "
+        "ON CONFLICT (trading_date, symbol, scoring_version) DO NOTHING"
+    )
+    outcome_sql = (
+        "INSERT INTO research_outcomes (observation_id, horizon, status) "
+        "VALUES (:observation_id, :horizon, 'NOT_YET_MATURE') "
+        "ON CONFLICT (observation_id, horizon) DO NOTHING"
+    )
+
+    inserted = 0
+    duplicates = 0
+    try:
+        if neon:
+            _ensure_research_tables()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                for e in entries:
+                    payload = dict(e)
+                    payload["component_scores"] = json.dumps(e.get("component_scores") or {})
+                    payload["features_json"] = json.dumps(e.get("features_json") or {})
+                    result = conn.execute(text(insert_sql), payload)
+                    if (result.rowcount or 0) > 0:
+                        inserted += 1
+                        for h in RESEARCH_HORIZONS:
+                            conn.execute(text(outcome_sql), {"observation_id": e["observation_id"], "horizon": h})
+                    else:
+                        duplicates += 1
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_research_tables(conn)
+                for e in entries:
+                    payload = dict(e)
+                    payload["component_scores"] = json.dumps(e.get("component_scores") or {})
+                    payload["features_json"] = json.dumps(e.get("features_json") or {})
+                    cur = conn.execute(insert_sql, payload)
+                    if (cur.rowcount or 0) > 0:
+                        inserted += 1
+                        for h in RESEARCH_HORIZONS:
+                            conn.execute(outcome_sql, {"observation_id": e["observation_id"], "horizon": h})
+                    else:
+                        duplicates += 1
+    except Exception as ex:
+        logger.error("record_research_observations: failed to persist %d entries: %s", len(entries), ex)
+        return {"inserted": inserted, "duplicates": duplicates}
+
+    return {"inserted": inserted, "duplicates": duplicates}
+
+
+def fetch_pending_research_outcomes(limit: int = 5000) -> List[Dict[str, Any]]:
+    """Outcomes still NOT_YET_MATURE, joined with the fields maturation
+    needs from their observation (symbol, trading_date, reference_price).
+    Finalized rows (MATURED/MISSING_DATA) are never returned here — that is
+    what makes re-running maturation safe."""
+    query = """
+        SELECT ro.id, ro.observation_id, ro.horizon,
+               o.symbol, o.trading_date, o.reference_price
+        FROM research_outcomes ro
+        JOIN research_observations o ON o.observation_id = ro.observation_id
+        WHERE ro.status = 'NOT_YET_MATURE'
+        ORDER BY o.trading_date ASC
+        LIMIT :limit
+    """
+    try:
+        if _can_use_neon():
+            _ensure_research_tables()
+            return _query(query, {"limit": limit})
+        with _sqlite_connection() as conn:
+            _ensure_research_tables(conn)
+            cur = conn.execute(query, {"limit": limit})
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_pending_research_outcomes failed: %s", e)
+        return []
+
+
+def finalize_research_outcome(
+    outcome_id: int,
+    status: str,
+    target_trading_date: Optional[str] = None,
+    future_price: Optional[float] = None,
+    price_source: Optional[str] = None,
+    price_timestamp: Optional[str] = None,
+    forward_return: Optional[float] = None,
+    failure_reason: Optional[str] = None,
+) -> bool:
+    """Transition one outcome row from NOT_YET_MATURE to MATURED or
+    MISSING_DATA. The `WHERE status = 'NOT_YET_MATURE'` guard is the whole
+    idempotency/immutability mechanism: rerunning maturation on an
+    already-finalized row is a no-op, never a silent rewrite. Returns True
+    iff a row was actually updated."""
+    if status not in ("MATURED", "MISSING_DATA"):
+        raise ValueError(f"finalize_research_outcome: invalid terminal status {status!r}")
+
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sql = """
+        UPDATE research_outcomes
+        SET status = :status, target_trading_date = :target_trading_date,
+            future_price = :future_price, price_source = :price_source,
+            price_timestamp = :price_timestamp, forward_return = :forward_return,
+            failure_reason = :failure_reason, maturation_timestamp = :maturation_timestamp,
+            updated_at = :maturation_timestamp
+        WHERE id = :outcome_id AND status = 'NOT_YET_MATURE'
+    """
+    params = {
+        "status": status,
+        "target_trading_date": target_trading_date,
+        "future_price": future_price,
+        "price_source": price_source,
+        "price_timestamp": price_timestamp,
+        "forward_return": forward_return,
+        "failure_reason": failure_reason,
+        "maturation_timestamp": now_iso,
+        "outcome_id": outcome_id,
+    }
+    try:
+        if _can_use_neon():
+            _ensure_research_tables()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                result = conn.execute(text(sql), params)
+                return (result.rowcount or 0) > 0
+        with _sqlite_connection() as conn:
+            _ensure_research_tables(conn)
+            cur = conn.execute(sql, params)
+            return (cur.rowcount or 0) > 0
+    except Exception as e:
+        logger.error("finalize_research_outcome(%s) failed: %s", outcome_id, e)
+        return False
+
+
+def fetch_research_observations(
+    scoring_version: Optional[str] = None, limit: int = 20000
+) -> List[Dict[str, Any]]:
+    """Read back research_observations, oldest first (export/status order).
+    component_scores/features_json come back already-parsed on both
+    backends."""
+    where = "WHERE scoring_version = :scoring_version" if scoring_version else ""
+    query = f"SELECT * FROM research_observations {where} ORDER BY trading_date ASC LIMIT :limit"
+    params: Dict[str, Any] = {"limit": limit}
+    if scoring_version:
+        params["scoring_version"] = scoring_version
+    try:
+        if _can_use_neon():
+            _ensure_research_tables()
+            rows = _query(query, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_research_tables(conn)
+                cur = conn.execute(query, params)
+                col_names = [d[0] for d in cur.description]
+                rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_research_observations failed: %s", e)
+        return []
+
+    for row in rows:
+        for key in ("component_scores", "features_json"):
+            val = row.get(key)
+            if isinstance(val, str):
+                try:
+                    row[key] = json.loads(val)
+                except (TypeError, ValueError):
+                    row[key] = {}
+    return rows
+
+
+def fetch_research_outcomes(status: Optional[str] = None, limit: int = 80000) -> List[Dict[str, Any]]:
+    """Read back research_outcomes rows, any status."""
+    where = "WHERE status = :status" if status else ""
+    query = f"SELECT * FROM research_outcomes {where} ORDER BY observation_id ASC, horizon ASC LIMIT :limit"
+    params: Dict[str, Any] = {"limit": limit}
+    if status:
+        params["status"] = status
+    try:
+        if _can_use_neon():
+            _ensure_research_tables()
+            return _query(query, params)
+        with _sqlite_connection() as conn:
+            _ensure_research_tables(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_research_outcomes failed: %s", e)
+        return []
+
+
 def bulk_insert_results(results_df, metrics_df, alerts_df=None):
     if not results_df.empty:
         log_scan_results(results_df, table_name="scan_entries")
