@@ -452,6 +452,72 @@ export const picksApi = {
   summary: () => api.get<PickSummary>('/api/picks/summary'),
 };
 
+// ── Paper Trading (FORTRESS-V4) ───────────────────────────────────────────────
+//
+// PAPER TRADE only — engine/paper_trading/logic.py never places a real
+// broker order. Every trade here is a simulation against real price data.
+
+export interface PaperTrade {
+  trade_id: number;
+  signal_id: number;
+  symbol: string;
+  entry_timestamp: string;
+  entry_price: number;
+  quantity: number;
+  notional: number;
+  stop_price: number | null;
+  target_price: number | null;
+  status: 'open' | 'closed';
+  exit_timestamp?: string | null;
+  exit_price?: number | null;
+  exit_reason?: string | null;
+  gross_pnl?: number | null;
+  net_pnl?: number | null;
+  costs_modeled?: number | null;
+  holding_period_days?: number | null;
+}
+
+export interface PaperTradeMetrics {
+  trade_count: number;
+  total_gross_pnl: number;
+  total_net_pnl: number;
+  win_rate_pct: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  expectancy: number | null;
+  max_drawdown: number;
+  total_exposure: number;
+  turnover: number;
+  portfolio_return_pct: number | null;
+  benchmark_excess_return_pct: number | null;
+}
+
+export interface FortressSignalLedgerRow {
+  id: number;
+  generated_at: string;
+  symbol: string;
+  sector?: string | null;
+  score?: number | null;
+  market_regime?: string | null;
+  suggested_entry?: number | null;
+  stop_loss?: number | null;
+  target?: number | null;
+  explanation?: string | null;
+}
+
+export const paperTradingApi = {
+  list: (status?: 'open' | 'closed') =>
+    api.get<PaperTrade[]>(`/api/paper-trades${status ? `?status=${status}` : ''}`),
+  metrics: () => api.get<PaperTradeMetrics>('/api/paper-trades/metrics'),
+  signals: (limit = 20) => api.get<FortressSignalLedgerRow[]>(`/api/paper-trades/signals?limit=${limit}`),
+  open: (signalId: number) => api.post<PaperTrade & { label: string }>('/api/paper-trades', { signal_id: signalId }),
+  close: (tradeId: number) =>
+    api.post<(PaperTrade & { label: string }) | { status: 'not_ready'; reason: string; trade_id: number }>(
+      `/api/paper-trades/${tradeId}/close`,
+      {}
+    ),
+};
+
 // ── Scan History ─────────────────────────────────────────────────────────────
 
 export interface ScanHistoryEntry {

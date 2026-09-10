@@ -145,6 +145,42 @@ def get_db_backend() -> str:
     return "neon" if _can_use_neon() else "sqlite"
 
 
+def validate_database_configuration() -> None:
+    """FORTRESS-V4 / Blocker D: production must fail closed instead of
+    silently falling back to ephemeral local SQLite when Neon/Postgres is
+    misconfigured or unreachable (V3 found FORTRESS_DB_BACKEND=neon with no
+    valid DATABASE_URL did exactly that). Uses the same production-mode
+    convention as _can_use_neon() itself (FORTRESS_DB_BACKEND not
+    sqlite/local) — no second environment flag. Call once at app startup
+    (engine/main.py); _can_use_neon() itself is unchanged and keeps
+    returning a plain bool for its many existing callers. Never includes
+    the connection string or underlying driver error in the raised
+    message — only that it happened."""
+    if _sqlite_only_mode():
+        return  # dev/local: sqlite is the deliberate choice, nothing to validate
+
+    try:
+        url = _get_neon_url()
+    except Exception:
+        raise RuntimeError(
+            "FORTRESS_DB_BACKEND is not sqlite/local (production mode) but "
+            "DATABASE_URL is not set. Refusing to start rather than silently "
+            "falling back to ephemeral local SQLite storage."
+        ) from None
+
+    try:
+        engine = create_engine(url, pool_pre_ping=True)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        raise RuntimeError(
+            "FORTRESS_DB_BACKEND is not sqlite/local (production mode) but "
+            "the configured database is unreachable. Refusing to start "
+            "rather than silently falling back to ephemeral local SQLite "
+            "storage."
+        ) from None
+
+
 def get_table_name_from_universe(u):
     if "Mutual Funds" == u:
         return "scan_mf"
@@ -2631,13 +2667,19 @@ def record_signal_ledger_entries(entries: List[Dict[str, Any]]) -> int:
 def fetch_signal_ledger(
     symbol: Optional[str] = None,
     scan_id: Optional[int] = None,
+    signal_id: Optional[int] = None,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
     """Read back signal_ledger rows, newest first, for inspection/
     reconstruction — e.g. "what did Fortress know about RELIANCE.NS when it
-    generated this signal". Filters are additive (both may be given).
-    `component_scores`/`feature_snapshot` are returned already-parsed
-    (dict), not raw JSON text, on both backends."""
+    generated this signal". Filters are additive (any combination may be
+    given). `component_scores`/`feature_snapshot` are returned
+    already-parsed (dict), not raw JSON text, on both backends.
+
+    `signal_id` (FORTRESS-V4) looks up one specific row by its `id` — the
+    paper-trading router uses this to validate a real, existing signal
+    before opening a position from it, rather than trusting a caller-
+    supplied signal dict."""
     where = []
     params: Dict[str, Any] = {"limit": limit}
     if symbol:
@@ -2646,6 +2688,9 @@ def fetch_signal_ledger(
     if scan_id is not None:
         where.append("scan_id = :scan_id")
         params["scan_id"] = scan_id
+    if signal_id is not None:
+        where.append("id = :signal_id")
+        params["signal_id"] = signal_id
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     query = (
         "SELECT * FROM signal_ledger "

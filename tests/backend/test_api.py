@@ -113,7 +113,18 @@ def test_scan_no_circuit_breaker_when_most_tickers_succeed(monkeypatch):
         "Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0,
     })
     monkeypatch.setattr(main_mod, "prefetch_metadata", lambda tickers: None)
-    monkeypatch.setattr(main_mod, "get_stock_data", lambda *a, **k: pd.DataFrame())
+
+    def fake_get_stock_data(*a, **k):
+        # FORTRESS-V4: real (non-empty, >=210 row) per-ticker data, so this
+        # test actually exercises "occasional check_institutional_fortress
+        # failures," not the empty-market-data case (that's the circuit
+        # breaker's own concern now, covered separately below).
+        first_arg = a[0] if a else None
+        if isinstance(first_arg, tuple):
+            return pd.DataFrame()  # empty batch fetch -> per-ticker fallback
+        return pd.DataFrame({"Close": range(250)})
+
+    monkeypatch.setattr(main_mod, "get_stock_data", fake_get_stock_data)
 
     call_count = {"n": 0}
 
@@ -131,10 +142,9 @@ def test_scan_no_circuit_breaker_when_most_tickers_succeed(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    # get_stock_data is mocked empty, and check_institutional_fortress never
-    # returns a truthy result, so this ends up in the "no results" branch —
-    # but circuit_breaker_tripped must be False since the failure rate (1/50)
-    # never crossed the threshold.
+    # check_institutional_fortress never returns a truthy result, so this
+    # ends up in the "no results" branch — but circuit_breaker_tripped must
+    # be False since the failure rate (1/50) never crossed the threshold.
     assert body["circuit_breaker_tripped"] is False
     assert body["scanned"] == 50
 
