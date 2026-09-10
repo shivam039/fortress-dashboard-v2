@@ -272,7 +272,7 @@ Tests use explicitly synthetic inputs in temporary directories, not invented
 historical trading results. With the repository development environment active:
 
 ```bash
-python -m pytest tests/backend/test_historical_dataset.py \
+pytest tests/backend/test_historical_dataset.py \
   tests/backend/test_stock_scanner_scoring.py \
   tests/backend/test_scoring_equivalence_p2.py \
   tests/backend/test_conviction_regressions.py -q

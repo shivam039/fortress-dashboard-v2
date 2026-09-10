@@ -6,8 +6,7 @@ import sqlite3
 from datetime import date, timedelta
 
 import pytest
-
-from engine.research.historical_dataset import build_dataset
+from research.historical_dataset import build_dataset
 
 
 def write_jsonl(path, rows):
