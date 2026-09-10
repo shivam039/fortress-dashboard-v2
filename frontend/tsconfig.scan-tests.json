@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "noEmit": false,
+    "incremental": false,
+    "outDir": ".scan-tests",
+    "rootDir": "src",
+    "plugins": []
+  },
+  "include": ["src/lib/scan-state.ts", "src/components/ScanStatus.tsx"],
+  "exclude": ["node_modules"]
+}
