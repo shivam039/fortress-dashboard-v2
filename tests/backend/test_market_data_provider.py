@@ -17,8 +17,9 @@ client in unit tests — no live API calls in tests").
 """
 
 
-import pytest
+import time
 
+import pytest
 from utils import market_data_provider as mdp
 
 _ENV_KEYS = (
@@ -158,8 +159,16 @@ def _full_year_bhavcopy_df(n=260):
     only care about "Bhav Copy has an answer" (not the coverage-threshold
     behavior itself, which has its own dedicated tests below) should use
     this instead of a handful of _sample_candles rows, which now reads as
-    "mid-backfill / insufficient" and falls through to the next tier."""
-    return mdp._candles_to_df(_sample_candles(n))[["Open", "High", "Low", "Close", "Volume"]]
+    "mid-backfill / insufficient" and falls through to the next tier.
+
+    The newest row lands on "today" (base_ts computed backward from
+    time.time()), not a fixed historical timestamp — FORTRESS-H2's
+    staleness check (_bhavcopy_is_stale) would otherwise correctly reject a
+    fixture whose last bar is years old, which isn't what these tests are
+    exercising (see test_market_data_failure_handling.py for dedicated
+    staleness tests)."""
+    base_ts = int(time.time()) - (n - 1) * 86400
+    return mdp._candles_to_df(_sample_candles(n, base_ts=base_ts))[["Open", "High", "Low", "Close", "Volume"]]
 
 
 def test_get_batch_ohlcv_empty_when_unavailable():

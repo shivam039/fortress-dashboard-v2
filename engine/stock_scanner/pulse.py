@@ -44,6 +44,7 @@ def fetch_market_pulse_data():
             threads=True,
             progress=False,
             auto_adjust=False,
+            timeout=10,  # FORTRESS-H2: bound a stalled connection
         )
     except Exception:
         return out
@@ -234,6 +235,7 @@ def get_current_regime() -> dict:
             threads=True,
             progress=False,
             auto_adjust=False,
+            timeout=10,  # FORTRESS-H2: bound a stalled connection
         )
         if not isinstance(data.columns, pd.MultiIndex):
             return _default
