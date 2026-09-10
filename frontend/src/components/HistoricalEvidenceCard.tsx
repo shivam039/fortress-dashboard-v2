@@ -66,10 +66,23 @@ export default function HistoricalEvidenceCard({ evidence }: { evidence: Histori
         </span>
       </div>
 
-      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 4px' }}>
         How signals like this one performed historically — not a forecast for this signal, and
         not part of today&rsquo;s Fortress Score above.
       </p>
+
+      {(evidence.scoreBucket || evidence.generatedAt) && (
+        <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px' }}>
+          {evidence.scoreBucket && <>Score bucket {evidence.scoreBucket} &middot; </>}
+          {evidence.windowDays}D horizon
+          {evidence.generatedAt && (
+            <> &middot; as of {new Date(evidence.generatedAt).toLocaleDateString()}</>
+          )}
+          {evidence.stale && (
+            <span style={{ color: 'var(--color-warning)' }}> &middot; result may be stale</span>
+          )}
+        </p>
+      )}
 
       {!sufficient ? (
         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>

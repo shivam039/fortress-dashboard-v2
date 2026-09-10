@@ -10,6 +10,7 @@ const {
   FIXTURE_HISTORICAL_EVIDENCE,
   EMPTY_HISTORICAL_EVIDENCE,
   MIN_EVIDENCE_SAMPLE_SIZE,
+  fromRealEvidence,
 } = scoreEvidence;
 
 import fortressScoreCardModule from '../.u2-tests/components/FortressScoreCard.js';
@@ -114,4 +115,104 @@ test('HistoricalEvidenceCard would label real R2 data differently from fixture d
   const html = renderToStaticMarkup(React.createElement(HistoricalEvidenceCard, { evidence: r2Evidence }));
   assert.match(html, /MODEL-DERIVED \(R2\)/);
   assert.doesNotMatch(html, /ILLUSTRATIVE/);
+});
+
+// ── FORTRESS-V2: fromRealEvidence() mapping from the /api/research-evidence contract ──
+
+test('fromRealEvidence maps a valid R2 API response to real, correctly-scaled evidence', () => {
+  const evidence = fromRealEvidence({
+    available: true,
+    score_bucket: '80-89',
+    horizon: 20,
+    regime: null,
+    sample_size: 42,
+    win_rate: 0.62,
+    median_forward_return: 0.028,
+    benchmark_excess_return: 0.014,
+    source: 'r2',
+    dataset_version: 'abc123',
+    generated_at: '2026-08-01T00:00:00+00:00',
+    stale: false,
+  });
+  assert.equal(evidence.sampleSize, 42);
+  assert.equal(evidence.scoreBucket, '80-89');
+  assert.equal(evidence.windowDays, 20);
+  assert.equal(evidence.generatedAt, '2026-08-01T00:00:00+00:00');
+  assert.equal(evidence.stale, false);
+  assert.equal(evidence.historicalWinRatePct.value, 62);
+  assert.equal(evidence.historicalWinRatePct.source, 'r2');
+  assert.ok(Math.abs(evidence.medianForwardReturnPct.value - 2.8) < 1e-9);
+  assert.ok(Math.abs(evidence.benchmarkExcessReturnPct.value - 1.4) < 1e-9);
+});
+
+test('fromRealEvidence renders an unavailable result as insufficient, never a fabricated number', () => {
+  const evidence = fromRealEvidence({
+    available: false,
+    reason: 'no_r2_result',
+    score_bucket: '80-89',
+    horizon: 20,
+  });
+  assert.equal(evidence.sampleSize, 0);
+  assert.equal(evidence.historicalWinRatePct.value, null);
+  assert.equal(evidence.historicalWinRatePct.source, 'r2'); // checked, not a fixture placeholder
+  assert.equal(hasSufficientEvidence(evidence), false);
+
+  const html = renderToStaticMarkup(React.createElement(HistoricalEvidenceCard, { evidence }));
+  assert.match(html, /Insufficient historical sample/i);
+  assert.doesNotMatch(html, /ILLUSTRATIVE/);
+});
+
+test('fromRealEvidence surfaces a stale real result with a warning, not silence', () => {
+  const evidence = fromRealEvidence({
+    available: true,
+    score_bucket: '90-100',
+    horizon: 20,
+    sample_size: 30,
+    win_rate: 0.7,
+    median_forward_return: 0.04,
+    benchmark_excess_return: 0.02,
+    generated_at: '2020-01-01T00:00:00+00:00',
+    stale: true,
+  });
+  const html = renderToStaticMarkup(React.createElement(HistoricalEvidenceCard, { evidence }));
+  assert.match(html, /MODEL-DERIVED \(R2\)/);
+  assert.match(html, /stale/i);
+});
+
+test('fromRealEvidence at a score-bucket boundary carries the API-assigned bucket through unchanged', () => {
+  const evidence = fromRealEvidence({
+    available: true,
+    score_bucket: '90-100', // as assigned server-side for score=90.0 — never re-derived client-side
+    horizon: 20,
+    sample_size: 25,
+    win_rate: 0.8,
+    median_forward_return: 0.05,
+    benchmark_excess_return: 0.03,
+  });
+  assert.equal(evidence.scoreBucket, '90-100');
+});
+
+test('malformed/partial real evidence (missing numeric fields) never crashes and shows insufficient', () => {
+  const evidence = fromRealEvidence({ available: true, score_bucket: '70-79', horizon: 20 });
+  assert.equal(evidence.sampleSize, 0);
+  assert.equal(evidence.historicalWinRatePct.value, null);
+  assert.equal(hasSufficientEvidence(evidence), false);
+});
+
+test('production screener path never imports the fixture constant for its rendered evidence', () => {
+  // Guards against a future regression re-introducing FIXTURE_HISTORICAL_EVIDENCE
+  // into the production render path — fromRealEvidence() output must never
+  // equal the fixture's tagged values.
+  const real = fromRealEvidence({
+    available: true,
+    score_bucket: '80-89',
+    horizon: 20,
+    sample_size: 42,
+    win_rate: 0.585,
+    median_forward_return: 0.032,
+    benchmark_excess_return: 0.014,
+  });
+  assert.notEqual(real.historicalWinRatePct.source, 'fixture');
+  assert.notEqual(real.medianForwardReturnPct.source, 'fixture');
+  assert.notEqual(real.benchmarkExcessReturnPct.source, 'fixture');
 });

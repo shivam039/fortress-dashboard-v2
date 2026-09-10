@@ -467,6 +467,23 @@ export const historyApi = {
     api.get<Record<string, unknown>[]>(`/api/history/data?scan_id=${scanId}`),
 };
 
+// ── Research Evidence (FORTRESS-V2) ─────────────────────────────────────────
+//
+// Real FORTRESS-R2 forward-return evidence for a current Fortress score.
+// `available: false` in the response is not a fetch failure — it is the
+// honest "no real result for this bucket/horizon (yet)" case; callers must
+// render that as insufficient-evidence, never substitute fixture data.
+
+import type { RealEvidenceResponse } from '@/lib/score-evidence';
+
+export const researchEvidenceApi = {
+  get: (score: number, horizon = 20, regime?: string) => {
+    const params = new URLSearchParams({ score: String(score), horizon: String(horizon) });
+    if (regime) params.set('regime', regime);
+    return api.get<RealEvidenceResponse>(`/api/research-evidence?${params.toString()}`);
+  },
+};
+
 // ── Options ────────────────────────────────────────────────────────────────
 
 export const optionsApi = {

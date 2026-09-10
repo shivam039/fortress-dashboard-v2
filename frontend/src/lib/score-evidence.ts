@@ -41,6 +41,9 @@ export interface HistoricalEvidence {
   symbol: string;
   sampleSize: number;
   windowDays: number; // forward-return measurement window
+  scoreBucket?: string; // e.g. "80-89" — which R2 bucket this evidence is for
+  generatedAt?: string | null; // when the underlying R2 result was produced
+  stale?: boolean; // R2 result is older than the staleness window
   historicalWinRatePct: EvidenceValue;
   medianForwardReturnPct: EvidenceValue;
   benchmarkExcessReturnPct: EvidenceValue;
@@ -54,13 +57,12 @@ export function hasSufficientEvidence(evidence: HistoricalEvidence): boolean {
   return evidence.sampleSize >= MIN_EVIDENCE_SAMPLE_SIZE;
 }
 
-// FORTRESS-R2 is not available yet (per the U2 spec: "If R2 is not
-// available yet, use fixtures only"). This fixture is illustrative UI
-// content, not a claim about any real symbol's performance — every
-// consumer must render it through the same "Historical Evidence" section
-// used for real R2 data, so it's visibly separate from the current signal
-// above it, and the `source: 'fixture'` tag is what a live R2 integration
-// flips to `'r2'`.
+// FORTRESS-V2: production no longer uses this. It exists only for
+// tests/storybook/dev contexts that want illustrative content without a
+// backend — see `fromRealEvidence()` below for what the screener actually
+// renders now. This fixture is not a claim about any real symbol's
+// performance; the `source: 'fixture'` tag is what a real R2 result
+// flips to `'r2'`, and `HistoricalEvidenceCard` labels each accordingly.
 export const FIXTURE_HISTORICAL_EVIDENCE: HistoricalEvidence = {
   symbol: 'FIXTURE',
   sampleSize: 42,
@@ -116,5 +118,65 @@ export function toFortressSignal(row: Record<string, unknown>): FortressSignal {
     relativeStrength: num(row.RS_Score),
     riskFlags: flags,
     dataQuality,
+  };
+}
+
+// ── FORTRESS-V2: real evidence from GET /api/research-evidence ────────────
+//
+// Shape returned by engine/routers/research_evidence.py, which in turn
+// mirrors engine/utils/research_evidence.py's get_evidence(). `available:
+// false` is not an error — it's the honest "no real result (yet)" case,
+// and must render as the insufficient-sample state, never as a fixture.
+
+export interface RealEvidenceResponse {
+  available: boolean;
+  reason?: string;
+  score_bucket: string;
+  horizon: number;
+  regime?: string | null;
+  sample_size?: number;
+  win_rate?: number | null; // decimal, e.g. 0.62 = 62%
+  median_forward_return?: number | null; // decimal, e.g. 0.028 = 2.8%
+  benchmark_excess_return?: number | null; // decimal
+  source?: 'r2';
+  dataset_version?: string | null;
+  generated_at?: string | null;
+  stale?: boolean;
+}
+
+function asPct(decimal: number | null | undefined): number | null {
+  return decimal == null ? null : decimal * 100;
+}
+
+// Converts a real-evidence API response into the same HistoricalEvidence
+// shape HistoricalEvidenceCard already renders for fixtures — no component
+// redesign needed, only real `source: 'r2'` values (or nulls) flow through.
+export function fromRealEvidence(resp: RealEvidenceResponse): HistoricalEvidence {
+  const shared = {
+    symbol: '',
+    windowDays: resp.horizon,
+    scoreBucket: resp.score_bucket,
+  };
+
+  if (!resp.available) {
+    return {
+      ...shared,
+      sampleSize: 0,
+      generatedAt: null,
+      stale: false,
+      historicalWinRatePct: { value: null, source: 'r2' },
+      medianForwardReturnPct: { value: null, source: 'r2' },
+      benchmarkExcessReturnPct: { value: null, source: 'r2' },
+    };
+  }
+
+  return {
+    ...shared,
+    sampleSize: resp.sample_size ?? 0,
+    generatedAt: resp.generated_at ?? null,
+    stale: !!resp.stale,
+    historicalWinRatePct: { value: asPct(resp.win_rate), source: 'r2' },
+    medianForwardReturnPct: { value: asPct(resp.median_forward_return), source: 'r2' },
+    benchmarkExcessReturnPct: { value: asPct(resp.benchmark_excess_return), source: 'r2' },
   };
 }

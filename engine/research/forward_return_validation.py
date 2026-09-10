@@ -33,10 +33,12 @@ Strictly adheres to research disciplines:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sqlite3
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -623,7 +625,13 @@ def main() -> None:
     report = run_forward_return_validation(args.dataset, benchmark_symbol=args.benchmark)
     
     if args.json:
-        args.json.write_text(json.dumps(report.to_dict(), indent=2))
+        # dataset_version/generated_at are provenance for downstream API
+        # consumers (FORTRESS-V2) — not part of ValidationReport itself, so
+        # to_dict() stays a pure function of the analysis.
+        payload = report.to_dict()
+        payload["dataset_version"] = hashlib.sha256(args.dataset.read_bytes()).hexdigest()[:16]
+        payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+        args.json.write_text(json.dumps(payload, indent=2))
         print(f"Wrote JSON results to {args.json}")
 
     if args.markdown:

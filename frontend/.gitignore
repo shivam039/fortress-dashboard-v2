@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# compiled test-only output (see tsconfig.u2-tests.json / npm run test:u2)
+/.u2-tests/
