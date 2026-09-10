@@ -194,3 +194,17 @@ Rejected because the existing module is already the canonical backend entrypoint
 **Decision:** Scaffolded the full agent-room profile, including coordination protocols, principles.md, workflow-classifier.md, and configured .agent-room.json to use "profile": "full".
 **Why:** To ensure the workspace has all the recommended agent-room files and matches the specifications referenced in AGENTS.md.
 **Rejected:** Keeping the minimal profile. Rejected because AGENTS.md specifically directs agents to read .agent-room/principles.md and workflow-classifier.md, which were missing in the minimal profile.
+
+### 2026-09-10 — Keep R3 ablations evidence-gated
+
+**Decision:** Make feature ablations exact only when R1 rows contain explicit
+`Feature_Contributions`; otherwise emit `unsupported` rather than infer
+contributions from correlation or rebuild production scoring.
+
+**Why:** The repository contains the R1 schema and builder but no real R1
+dataset artifact, and archived final scores alone cannot identify exact
+per-feature effects. This preserves reproducibility and avoids inventing
+historical scores.
+
+**Rejected:** Recomputing scores from current scanner code or fitting a
+surrogate and presenting it as production ablation evidence.

@@ -55,6 +55,8 @@ def bundle(tmp_path):
                 'Fundamental_Score': 42, 'Sentiment_Score': 50,
                 'Context_Score': 23, 'Market_Regime': 'Range',
                 'Sector': 'Synthetic', 'RSI': 55,
+                'ADX_14': 28, 'Breakout_Confirmed': True,
+                'Feature_Contributions': {'ADX_14': 12},
                 'Quality_Gate_Pass': False,
                 'Quality_Gate_Failures': 'Price<50',
             },
@@ -95,7 +97,12 @@ def test_returns_use_exchange_sessions_and_preserve_scores(bundle):
         assert obs[0]['fortress_score'] == 0
         assert obs[0]['technical_score'] == 65.5
         assert obs[0]['quality_gate_pass'] == 0
-        assert json.loads(obs[0]['features_json']) == {'RSI': 55}
+        assert json.loads(obs[0]['features_json']) == {
+            'ADX_14': 28,
+            'Breakout_Confirmed': True,
+            'Feature_Contributions': {'ADX_14': 12},
+            'RSI': 55,
+        }
         assert obs[1]['status'] == 'missing_snapshot'
         assert obs[1]['fortress_score'] is None
         labels = db.execute(
