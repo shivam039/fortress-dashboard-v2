@@ -15,48 +15,34 @@ from typing import Optional
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from jose import JWTError, jwt
 
+from utils.security_config import (
+    DEFAULT_JWT_SECRET as _DEFAULT_DEV_SECRET,
+    is_production_environment,
+    validate_jwt_secret,
+)
+
 logger = logging.getLogger("fortress.auth")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-_DEFAULT_DEV_SECRET = "fortress-dev-jwt-secret-change-in-production-2024"
 SECRET_KEY = os.environ.get("FORTRESS_JWT_SECRET", _DEFAULT_DEV_SECRET)
 
-
-def _looks_like_local_dev() -> bool:
-    # Mirrors engine/utils/db.py's _sqlite_only_mode(): the codebase's
-    # established convention is that local dev must explicitly opt in via
-    # FORTRESS_DB_BACKEND=sqlite (or "local") — see DEPLOYMENT.md / README.md.
-    # Anything else (unset, or "neon") is treated as production-like, since
-    # that's also db.py's own default-to-Neon behavior.
-    return os.getenv("FORTRESS_DB_BACKEND", "").strip().lower() in {"sqlite", "local"}
-
-
-if SECRET_KEY == _DEFAULT_DEV_SECRET:
-    if _looks_like_local_dev():
-        logger.warning(
-            "FORTRESS_JWT_SECRET is not set — using the hardcoded dev default, "
-            "which is public in this repo's git history. Anyone who reads the "
-            "source can forge a valid JWT (including admin) against any "
-            "deployment still using this default. Set FORTRESS_JWT_SECRET to a "
-            "unique random value in any non-local environment (e.g. "
-            "`openssl rand -hex 32`)."
-        )
-    else:
-        # FORTRESS_DB_BACKEND isn't explicitly sqlite/local, so this looks
-        # like a real deployment (Render, or anything pointed at Neon) —
-        # refuse to start rather than silently serving forgeable JWTs.
-        # Local dev is unaffected: DEPLOYMENT.md/README.md already have
-        # everyone running locally set FORTRESS_DB_BACKEND=sqlite, and
-        # tests/conftest.py sets it too.
-        raise RuntimeError(
-            "FORTRESS_JWT_SECRET is not set and this doesn't look like local "
-            "dev (FORTRESS_DB_BACKEND is not 'sqlite'/'local'). Refusing to "
-            "start with the hardcoded dev JWT secret, which is public in "
-            "this repo's git history — anyone could forge a valid admin JWT "
-            "against this deployment. Set FORTRESS_JWT_SECRET to a unique "
-            "random value (e.g. `openssl rand -hex 32`), or set "
-            "FORTRESS_DB_BACKEND=sqlite if this really is a local/dev run."
-        )
+# FORTRESS-H3: production must fail to start rather than silently sign
+# forgeable JWTs — see utils/security_config.py for what counts as
+# "production" and what counts as an unsafe secret (never logged/raised
+# with its actual value). Development keeps the pre-existing
+# warn-and-continue behavior so the convenient hardcoded default still
+# works for `FORTRESS_DB_BACKEND=sqlite` local runs.
+if is_production_environment():
+    validate_jwt_secret(SECRET_KEY)
+elif not SECRET_KEY.strip() or SECRET_KEY.strip() == _DEFAULT_DEV_SECRET:
+    logger.warning(
+        "FORTRESS_JWT_SECRET is not set — using the hardcoded dev default, "
+        "which is public in this repo's git history. Anyone who reads the "
+        "source can forge a valid JWT (including admin) against any "
+        "deployment still using this default. Set FORTRESS_JWT_SECRET to a "
+        "unique random value in any non-local environment (e.g. "
+        "`openssl rand -hex 32`)."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("FORTRESS_JWT_EXPIRE_MINUTES", "1440")  # 24 hours default
