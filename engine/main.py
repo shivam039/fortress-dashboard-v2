@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import logging
 import traceback
 import math
+import time
 from datetime import datetime
 
 from commodities.logic import build_commodities_frame
@@ -28,8 +29,10 @@ from stock_scanner.logic import (
     DEFAULT_SCORING_CONFIG,
     apply_advanced_scoring,
     check_institutional_fortress,
+    fetch_ohlcv_fallback_chunk,
     get_stock_data,
     prefetch_metadata,
+    _ohlcv_fallback_workers,
 )
 from options_algo.logic import fetch_option_chain, get_available_expiries, scan_strategies
 from fortress_config import INDEX_BENCHMARKS
@@ -287,6 +290,13 @@ def run_scan(req: ScanRequest):
     if not tickers:
         raise HTTPException(status_code=404, detail="Universe not found")
 
+    # FORTRESS-P2 instrumentation: lightweight per-stage timings, logged as
+    # one structured line at the end of the scan (see below) so before/after
+    # comparisons don't need ad-hoc profiling. Never included in the HTTP
+    # response — this is server-side observability only, not an API change.
+    _t_scan_start = time.monotonic()
+    scan_timings = {}
+
     # ── Fetch live market regime ONCE for the entire scan ──────────────────────
     try:
         regime_data = get_current_regime()
@@ -316,37 +326,39 @@ def run_scan(req: ScanRequest):
     circuit_breaker_tripped = False
 
     # Pre-load fundamental/news/calendar/earnings metadata for the whole
-    # universe from the DB cache in one call, so tickers with a fresh-enough
-    # cached entry skip a live yfinance .info/.news/.calendar/.earnings_dates
-    # call in the loop below entirely. This doesn't change *where* that data
-    # ultimately comes from (INDstocks has no fundamentals/news endpoint —
-    # it always was and still is yfinance) but it cuts how often the loop
-    # actually has to hit yfinance live, and previously wasn't wired up here
-    # at all (only the legacy Streamlit UI did this).
-    prefetch_metadata(tickers)
+    # universe (DB cache first, then a bounded-concurrency live fetch for
+    # whatever's missing/stale — see prefetch_metadata()'s docstring for the
+    # full FORTRESS-P2 design), so the per-ticker loop below normally
+    # consumes already-loaded metadata instead of making its own blocking
+    # calls.
+    _t0 = time.monotonic()
+    # `or {}`: defensive against test doubles / callers built against the
+    # pre-P2 contract (prefetch_metadata() used to return None implicitly).
+    prefetch_stats = prefetch_metadata(tickers) or {}
+    scan_timings["metadata_prefetch_s"] = round(time.monotonic() - _t0, 3)
+    scan_timings["metadata_cache_hits"] = prefetch_stats.get("cache_hits", 0)
+    scan_timings["metadata_cache_misses"] = prefetch_stats.get("cache_misses", 0)
+    scan_timings["metadata_external_fetches"] = prefetch_stats.get("external_fetches", 0)
+    scan_timings["metadata_fetch_successes"] = prefetch_stats.get("fetch_successes", 0)
+    scan_timings["metadata_fetch_failures"] = prefetch_stats.get("fetch_failures", 0)
+    scan_timings["metadata_persist_s"] = prefetch_stats.get("persist_duration_s", 0.0)
 
     # Keep the existing yfinance-based implementation, but make it resilient:
     # if the bulk download fails or returns partial data, fall back to per-symbol
     # fetches so one bad ticker does not fail the entire scan.
+    _t0 = time.monotonic()
     batch_data = get_stock_data(
         tuple(tickers), period="1y", interval="1d", group_by="ticker"
     )
-    if batch_data.empty:
+    scan_timings["market_data_s"] = round(time.monotonic() - _t0, 3)
+    fallback_active = batch_data.empty
+    if fallback_active:
         logger.warning("Bulk market data fetch returned no rows for %s", req.universe)
 
-    for ticker in tickers:
+    def _record_result(ticker, hist):
+        nonlocal scan_attempted, scan_failed, circuit_breaker_tripped
         scan_attempted += 1
         try:
-            if batch_data.empty:
-                hist = get_stock_data(
-                    ticker, period="1y", interval="1d", group_by="column"
-                ).dropna()
-            else:
-                hist = (
-                    batch_data[ticker].dropna()
-                    if len(tickers) > 1 and ticker in batch_data.columns.get_level_values(0)
-                    else batch_data.dropna()
-                )
             if not hist.empty and len(hist) >= 210:
                 res = check_institutional_fortress(
                     ticker,
@@ -379,7 +391,65 @@ def run_scan(req: ScanRequest):
                     len(tickers) - scan_attempted,
                 )
                 circuit_breaker_tripped = True
+
+    _t0 = time.monotonic()
+    if fallback_active:
+        # FORTRESS-P2: the batch fetch returned nothing, so every ticker
+        # needs its own OHLCV fetch — previously fully serial. Fetch one
+        # bounded-size chunk at a time with a thread pool, then run that
+        # chunk through the exact same circuit-breaker accounting as the
+        # non-fallback path below before moving to the next chunk. Chunking
+        # (rather than fetching the whole universe concurrently up front)
+        # preserves the breaker's early-exit behavior: once it trips, no
+        # further chunks are fetched at all, not just not scored.
+        def _fallback_fetch_one(ticker):
+            # Routed through this module's own `get_stock_data` name (not
+            # stock_scanner.logic's) so tests/monkeypatches targeting
+            # main.get_stock_data keep working, and so this stays the exact
+            # same call the pre-P2 serial fallback made.
+            return get_stock_data(
+                ticker, period="1y", interval="1d", group_by="column"
+            ).dropna()
+
+        chunk_size = _ohlcv_fallback_workers(len(tickers))
+        for i in range(0, len(tickers), chunk_size):
+            chunk = tickers[i : i + chunk_size]
+            chunk_results = fetch_ohlcv_fallback_chunk(chunk, fetch_fn=_fallback_fetch_one)
+            for ticker in chunk:
+                hist, fetch_exc = chunk_results.get(ticker, (pd.DataFrame(), None))
+                if fetch_exc is not None:
+                    scan_attempted += 1
+                    scan_failed += 1
+                    logger.warning(f"Error scanning {ticker}: {fetch_exc}")
+                    if (
+                        scan_attempted >= _BREAKER_MIN_SAMPLE
+                        and (scan_failed / scan_attempted) >= _BREAKER_FAILURE_RATE
+                    ):
+                        logger.error(
+                            "run_scan: circuit breaker tripped for universe=%s "
+                            "(fallback fetch) — %d/%d tickers failed",
+                            req.universe,
+                            scan_failed,
+                            scan_attempted,
+                        )
+                        circuit_breaker_tripped = True
+                else:
+                    _record_result(ticker, hist if hist is not None else pd.DataFrame())
+                if circuit_breaker_tripped:
+                    break
+            if circuit_breaker_tripped:
                 break
+    else:
+        for ticker in tickers:
+            hist = (
+                batch_data[ticker].dropna()
+                if len(tickers) > 1 and ticker in batch_data.columns.get_level_values(0)
+                else batch_data.dropna()
+            )
+            _record_result(ticker, hist)
+            if circuit_breaker_tripped:
+                break
+    scan_timings["indicator_scoring_loop_s"] = round(time.monotonic() - _t0, 3)
 
     def _score_results(raw_results):
         """Shared scoring step for both the normal path and the
@@ -399,7 +469,21 @@ def run_scan(req: ScanRequest):
         )
         if req.weights:
             scoring_config["weights"] = req.weights
-        return apply_advanced_scoring(score_df, scoring_config)
+        _t0_scoring = time.monotonic()
+        scored = apply_advanced_scoring(score_df, scoring_config)
+        scan_timings["scoring_s"] = round(time.monotonic() - _t0_scoring, 3)
+        return scored
+
+    def _log_scan_timings():
+        scan_timings["total_scan_s"] = round(time.monotonic() - _t_scan_start, 3)
+        logger.info(
+            "scan_timing universe=%s tickers=%d scanned=%d failed=%d %s",
+            req.universe,
+            len(tickers),
+            scan_attempted,
+            scan_failed,
+            scan_timings,
+        )
 
     def _persist_scan_history(score_df):
         """Save this scan's scored results to scan_history_details so the
@@ -413,6 +497,7 @@ def run_scan(req: ScanRequest):
         response itself, since the results are already computed."""
         if score_df is None or score_df.empty:
             return
+        _t0_persist = time.monotonic()
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             scan_id = register_scan(
@@ -423,6 +508,8 @@ def run_scan(req: ScanRequest):
             save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to persist scan history: %s", e)
+        finally:
+            scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
 
     if circuit_breaker_tripped:
         # Score whatever partial results came through before the breaker
@@ -433,6 +520,7 @@ def run_scan(req: ScanRequest):
         # list, so this doesn't change how existing successful scans render).
         score_df = _score_results(results) if results else None
         _persist_scan_history(score_df)
+        _log_scan_timings()
         return {
             "results": _sanitize_json_value(score_df.to_dict(orient="records")) if score_df is not None else [],
             "summary": (
@@ -447,6 +535,7 @@ def run_scan(req: ScanRequest):
         }
 
     if not results:
+        _log_scan_timings()
         return {
             "results": [],
             "summary": "No tickers met criteria or market data was unavailable.",
@@ -458,6 +547,7 @@ def run_scan(req: ScanRequest):
     # Generate action links
     score_df = _score_results(results)
     _persist_scan_history(score_df)
+    _log_scan_timings()
     return _sanitize_json_value(score_df.to_dict(orient="records"))
 
 

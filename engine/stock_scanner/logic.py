@@ -1,4 +1,6 @@
+import concurrent.futures
 import logging
+import os
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -23,7 +25,11 @@ try:
     import json
     from threading import Lock
 
-    from utils.db import _read_df, upsert_ticker_metadata_cache
+    from utils.db import (
+        _read_df,
+        upsert_ticker_metadata_cache,
+        upsert_ticker_metadata_cache_batch,
+    )
 except ImportError:
     # Fallback for local testing or if utils.db structure differs
     def _read_df(*args, **kwargs):
@@ -31,6 +37,28 @@ except ImportError:
 
 
 _BENCHMARK_CACHE = {}
+
+# ── Concurrency configuration (FORTRESS-P2) ──────────────────────────────────
+# Bounded, configurable, and easy to disable (set to 1 for fully serial —
+# the pre-P2 behavior) via env var, without a code change. Capped at 16 to
+# rule out an uncontrolled pool regardless of what's in the environment, and
+# never exceeds the number of items being fetched (see the call sites).
+_DEFAULT_METADATA_FETCH_WORKERS = 4
+_MAX_CONCURRENCY_CEILING = 16
+
+
+def _bounded_worker_count(env_var, default, item_count):
+    try:
+        n = int(os.environ.get(env_var, default))
+    except (TypeError, ValueError):
+        n = default
+    return max(1, min(n, _MAX_CONCURRENCY_CEILING, max(item_count, 1)))
+
+
+def _metadata_fetch_workers(item_count):
+    return _bounded_worker_count(
+        "FORTRESS_METADATA_FETCH_WORKERS", _DEFAULT_METADATA_FETCH_WORKERS, item_count
+    )
 
 DEFAULT_SCORING_CONFIG = {
     "weights": {
@@ -264,6 +292,64 @@ def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
     return pd.DataFrame()
 
 
+def _ohlcv_fallback_workers(item_count):
+    return _bounded_worker_count(
+        "FORTRESS_OHLCV_FALLBACK_WORKERS", _DEFAULT_METADATA_FETCH_WORKERS, item_count
+    )
+
+
+def _fetch_single_ticker_ohlcv(ticker):
+    """Single-ticker OHLCV fetch — the exact call `/api/scan`'s per-ticker
+    loop already made inline when the batch fetch came back empty. Kept as
+    its own function only so it's safe to submit to a thread pool (see
+    `fetch_ohlcv_fallback_chunk`); no provider logic, retry behavior, or
+    precedence is different from before."""
+    return get_stock_data(ticker, period="1y", interval="1d", group_by="column").dropna()
+
+
+def fetch_ohlcv_fallback_chunk(tickers, max_workers=None, fetch_fn=None):
+    """Bounded-concurrency OHLCV fetch for a chunk of tickers, used by
+    `/api/scan` (engine/main.py) only when the batch market-data fetch
+    returned nothing at all and it must fall back to fetching symbols one
+    at a time (FORTRESS-P2 — previously fully serial).
+
+    `fetch_fn` (single ticker -> DataFrame, default `_fetch_single_ticker_ohlcv`)
+    is injectable so callers can supply their own single-ticker fetch
+    callable — main.py passes its own module-level `get_stock_data`
+    reference so tests that monkeypatch it keep working, rather than this
+    function reaching for `stock_scanner.logic.get_stock_data` directly.
+
+    Returns a dict of ``ticker -> (dataframe, exception)`` with exactly one
+    entry per input ticker — never both non-None. This only bounds the
+    *fetch*; the caller still runs its own try/except and circuit breaker
+    accounting per ticker exactly as before, by re-raising a captured
+    exception inside its existing loop. That's deliberate: it keeps the
+    circuit breaker's early-exit behavior intact by fetching one bounded
+    chunk at a time rather than the whole universe up front, so a real
+    provider outage still stops issuing new requests once the breaker trips
+    instead of a fully-parallel fetch racing ahead of it.
+
+    A single ticker's fetch failure is caught independently and never
+    affects any other ticker's result.
+    """
+    if not tickers:
+        return {}
+    fetch = fetch_fn if fetch_fn is not None else _fetch_single_ticker_ohlcv
+    workers = max_workers if max_workers is not None else _ohlcv_fallback_workers(len(tickers))
+    out = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="fortress-ohlcv-fallback"
+    ) as pool:
+        future_to_ticker = {pool.submit(fetch, t): t for t in tickers}
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            t = future_to_ticker[future]
+            try:
+                out[t] = (future.result(), None)
+            except Exception as exc:
+                out[t] = (None, exc)
+    return out
+
+
 @lru_cache(maxsize=32)
 def _download_close_series(symbol, period="1y", interval="1d"):
     """Download close price series.
@@ -337,10 +423,9 @@ def _safe_dict_to_df(d):
     return None
 
 
-def prefetch_metadata(symbols, max_age_hours=12):
+def prefetch_metadata(symbols, max_age_hours=12, max_workers=None):
     """Bulk-preload fundamental/news/calendar/earnings metadata for a whole
-    scan's worth of tickers from the DB cache in one call, before the
-    per-ticker scoring loop runs.
+    scan's worth of tickers, before the per-ticker scoring loop runs.
 
     Fundamental (market cap, debt-to-equity), sentiment (news), and context
     (earnings calendar) — 50% of the conviction score's weight combined —
@@ -350,96 +435,250 @@ def prefetch_metadata(symbols, max_age_hours=12):
     of which provider serves OHLCV, and always will unless a different
     fundamentals/news source is added.
 
-    What *is* fixable is that every `/api/scan` run was calling yfinance
-    live for `.info`/`.news`/`.calendar`/`.earnings_dates` — 4 requests per
-    ticker — for every single ticker, every single time, with no cross-run
-    caching and (see `_ensure_metadata_loaded`) a silent blank-on-failure
-    fallback if any of those 4 calls got rate-limited. A DB-backed cache
-    (`ticker_metadata` table, `bulk_fetch_metadata()`/
-    `upsert_ticker_metadata_cache()` in `utils/db.py`) already existed for
-    exactly this — but it was only ever wired into the legacy Streamlit UI's
-    scan loop (`stock_scanner/ui.py::_run_scan_fragment`), never into this
-    FastAPI-facing `logic.py`, so `/api/scan` and `/api/sector-pulse` (the
-    Next.js app's actual scan paths) never benefited from it.
+    Two-tier fill, both completed before this function returns:
+      1. A single batched DB read (`bulk_fetch_metadata`) for every symbol
+         with a cache entry newer than `max_age_hours`.
+      2. FORTRESS-P2: whatever's left (`missing`) is fetched *live* here,
+         using a bounded thread pool (see `_metadata_fetch_workers`), so a
+         cold-cache scan no longer pays for its 4-calls-per-ticker yfinance
+         cost serially inside the per-ticker scoring loop
+         (`_ensure_metadata_loaded`, still present as the fallback for any
+         ticker that reaches scoring without having gone through this
+         function — see its docstring). Successful live fetches are
+         persisted with one batched DB write (`upsert_ticker_metadata_cache_batch`)
+         instead of one round trip per ticker.
 
-    Call this once with the full ticker list before scoring a batch. Tickers
-    with a cache entry newer than `max_age_hours` are pre-filled into the
-    in-memory caches, so `_ensure_metadata_loaded` skips its live yfinance
-    call entirely for them; everything else still fetches live as before.
+    A single ticker's live-fetch failure never aborts the others (each is
+    awaited independently) and degrades to the same empty-cache fallback
+    `_ensure_metadata_loaded` has always used on failure.
+
+    If the DB read itself fails (Neon/SQLite unavailable), this function
+    aborts early with no live-fetch attempt — a DB outage means the whole
+    scan is already degraded, and retrying degrades gracefully via the
+    per-ticker lazy fallback in `_ensure_metadata_loaded` instead of forcing
+    a full-universe concurrent fetch on the read path's own failure.
 
     Args:
         symbols: Tickers about to be scanned.
         max_age_hours: Maximum cache age to accept (matches the legacy UI's
             default of 12h — fundamentals/news/earnings-calendar dates don't
             meaningfully change within a trading day).
+        max_workers: Override the concurrency bound (mainly for tests).
+            Defaults to `FORTRESS_METADATA_FETCH_WORKERS` (env, default 4).
+
+    Returns:
+        A stats dict for instrumentation/logging (all counts and durations
+        in seconds): ``cache_hits``, ``cache_misses``, ``external_fetches``,
+        ``fetch_successes``, ``fetch_failures``, ``concurrency``,
+        ``fetch_duration_s``, ``persist_duration_s``, ``total_duration_s``.
     """
+    t_start = time.monotonic()
+    stats = {
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "external_fetches": 0,
+        "fetch_successes": 0,
+        "fetch_failures": 0,
+        "concurrency": 0,
+        "fetch_duration_s": 0.0,
+        "persist_duration_s": 0.0,
+        "total_duration_s": 0.0,
+    }
+
     symbols = list(symbols)
     if not symbols:
-        return
+        return stats
 
     try:
         from utils.db import bulk_fetch_metadata
     except ImportError:
-        return
+        return stats
 
     try:
         cached = bulk_fetch_metadata(symbols, max_age_hours=max_age_hours)
     except Exception as exc:
         _logger.warning("prefetch_metadata: bulk_fetch_metadata failed: %s", exc)
-        return
+        stats["total_duration_s"] = time.monotonic() - t_start
+        return stats
 
-    if not cached:
-        return
+    if cached:
+        with _META_LOCK:
+            for sym, row in cached.items():
+                _INFO_CACHE[sym] = row.get("info_json") or {}
+                news = row.get("news_json")
+                _NEWS_CACHE[sym] = news if isinstance(news, list) else []
+                _CAL_CACHE[sym] = _safe_dict_to_df(row.get("cal_json"))
+                _EARN_CACHE[sym] = _safe_dict_to_df(row.get("earn_json"))
 
-    with _META_LOCK:
-        for sym, row in cached.items():
-            _INFO_CACHE[sym] = row.get("info_json") or {}
-            news = row.get("news_json")
-            _NEWS_CACHE[sym] = news if isinstance(news, list) else []
-            _CAL_CACHE[sym] = _safe_dict_to_df(row.get("cal_json"))
-            _EARN_CACHE[sym] = _safe_dict_to_df(row.get("earn_json"))
+    stats["cache_hits"] = len(cached)
+    missing = [s for s in symbols if s not in cached]
+    stats["cache_misses"] = len(missing)
+    stats["external_fetches"] = len(missing)
 
     _logger.info(
-        "prefetch_metadata: pre-filled %d/%d symbols from DB cache (skips live "
-        "yfinance metadata calls for those)",
+        "prefetch_metadata: %d/%d symbols served from DB cache, %d missing/stale",
         len(cached),
         len(symbols),
+        len(missing),
     )
+
+    if missing:
+        workers = (
+            max_workers
+            if max_workers is not None
+            else _metadata_fetch_workers(len(missing))
+        )
+        stats["concurrency"] = workers
+
+        t_fetch = time.monotonic()
+        successes, failures = _prefetch_metadata_concurrently(missing, workers)
+        stats["fetch_duration_s"] = time.monotonic() - t_fetch
+        stats["fetch_successes"] = len(successes)
+        stats["fetch_failures"] = len(failures)
+
+        if successes:
+            t_persist = time.monotonic()
+            try:
+                upsert_ticker_metadata_cache_batch(successes)
+            except Exception as exc:
+                _logger.warning(
+                    "prefetch_metadata: batch metadata persistence failed: %s", exc
+                )
+            stats["persist_duration_s"] = time.monotonic() - t_persist
+
+        _logger.info(
+            "prefetch_metadata: live-fetched %d/%d missing symbols (%d failed) "
+            "using %d worker(s) in %.2fs",
+            len(successes),
+            len(missing),
+            len(failures),
+            workers,
+            stats["fetch_duration_s"],
+        )
+
+    stats["total_duration_s"] = time.monotonic() - t_start
+    return stats
+
+
+def _fetch_metadata_live(symbol):
+    """Single-ticker, blocking yfinance metadata fetch. No cache/DB writes —
+    deliberately isolated so it's safe to call from a thread pool (see
+    `_prefetch_metadata_concurrently`) as well as inline from
+    `_ensure_metadata_loaded`. Raises on failure; callers decide how to
+    handle that."""
+    tkr = yf.Ticker(symbol)
+    info = tkr.info or {}
+    news = tkr.news or []
+    cal = tkr.calendar
+    earn = tkr.earnings_dates
+    return {
+        "info": info,
+        "news": news,
+        "cal_df": cal if isinstance(cal, pd.DataFrame) else None,
+        "earn_df": earn if isinstance(earn, pd.DataFrame) else None,
+    }
+
+
+def _store_metadata_success(symbol, result):
+    with _META_LOCK:
+        _INFO_CACHE[symbol] = result["info"]
+        _NEWS_CACHE[symbol] = result["news"]
+        _CAL_CACHE[symbol] = result["cal_df"]
+        _EARN_CACHE[symbol] = result["earn_df"]
+
+
+def _store_metadata_blank(symbol):
+    with _META_LOCK:
+        _INFO_CACHE[symbol] = {}
+        _NEWS_CACHE[symbol] = []
+        _CAL_CACHE[symbol] = None
+        _EARN_CACHE[symbol] = None
+
+
+def _prefetch_metadata_concurrently(symbols, workers):
+    """Bounded-thread-pool live metadata fetch for `symbols` (already known
+    cache misses/stale entries). Returns ``(successes, failures)``:
+    ``successes`` is a dict of symbol -> the DB-write-ready metadata dict
+    (for a single batched `upsert_ticker_metadata_cache_batch` call);
+    ``failures`` is a list of symbols whose fetch raised.
+
+    Each ticker's outcome is handled independently — one provider failure
+    is logged and that ticker falls back to the same blank defaults
+    `_ensure_metadata_loaded` has always used, without affecting any other
+    ticker's future or the batch as a whole. Results are mapped back to
+    their own symbol via the `future_to_symbol` dict, not fetch-completion
+    order, so the final cache state is deterministic regardless of which
+    request happens to finish first.
+    """
+    successes: dict = {}
+    failures: list = []
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="fortress-meta-fetch"
+    ) as pool:
+        future_to_symbol = {
+            pool.submit(_fetch_metadata_live, sym): sym for sym in symbols
+        }
+        for future in concurrent.futures.as_completed(future_to_symbol):
+            sym = future_to_symbol[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                _logger.warning(
+                    "prefetch_metadata: yfinance metadata fetch failed for %s: %s "
+                    "(fundamental/sentiment/context scores for this ticker will "
+                    "use empty/default values)",
+                    sym,
+                    exc,
+                )
+                _store_metadata_blank(sym)
+                failures.append(sym)
+                continue
+
+            _store_metadata_success(sym, result)
+            successes[sym] = {
+                "info_json": result["info"],
+                "news_json": result["news"],
+                "cal_json": _safe_df_to_dict(result["cal_df"]),
+                "earn_json": _safe_df_to_dict(result["earn_df"]),
+            }
+
+    return successes, failures
 
 
 def _ensure_metadata_loaded(symbol):
+    """Lazy, single-ticker fallback: fetches live metadata for `symbol` if
+    it isn't already in the in-memory caches.
+
+    In a normal scan this should rarely fire — `prefetch_metadata()` (see
+    its docstring) already populates the cache, concurrently, for every
+    ticker in the scan's universe, including blank defaults for tickers
+    whose live fetch failed. This function only still does a *live*,
+    blocking, single-ticker call (recreating the pre-P2 serial pattern for
+    that one ticker) when:
+      - `prefetch_metadata()` was never called for `symbol` at all — e.g.
+        `/api/scan/search`'s single-ticker path, which scores one symbol
+        outside the bulk `/api/scan` flow; or
+      - `prefetch_metadata()`'s own DB read failed, so it returned early
+        without attempting any live fetch (see its docstring) and every
+        ticker in that scan falls back to this per-ticker path.
+    """
     with _META_LOCK:
         if symbol in _INFO_CACHE:
             return
 
     try:
-        tkr = yf.Ticker(symbol)
-        info = tkr.info or {}
-        news = tkr.news or []
-        cal = tkr.calendar
-        earn = tkr.earnings_dates
-
-        # Save to memory cache immediately (thread safe)
-        cal_df = cal if isinstance(cal, pd.DataFrame) else None
-        earn_df = earn if isinstance(earn, pd.DataFrame) else None
-
-        with _META_LOCK:
-            _INFO_CACHE[symbol] = info
-            _NEWS_CACHE[symbol] = news
-            _CAL_CACHE[symbol] = cal_df
-            _EARN_CACHE[symbol] = earn_df
+        result = _fetch_metadata_live(symbol)
+        _store_metadata_success(symbol, result)
 
         # Persist so the next scan's prefetch_metadata() can skip this ticker.
-        cal_dict = _safe_df_to_dict(cal_df)
-        earn_dict = _safe_df_to_dict(earn_df)
-
         upsert_ticker_metadata_cache(
             symbol,
             {
-                "info_json": info,
-                "news_json": news,
-                "cal_json": cal_dict,
-                "earn_json": earn_dict,
+                "info_json": result["info"],
+                "news_json": result["news"],
+                "cal_json": _safe_df_to_dict(result["cal_df"]),
+                "earn_json": _safe_df_to_dict(result["earn_df"]),
             },
         )
     except Exception as exc:
@@ -456,11 +695,7 @@ def _ensure_metadata_loaded(symbol):
             symbol,
             exc,
         )
-        with _META_LOCK:
-            _INFO_CACHE[symbol] = {}
-            _NEWS_CACHE[symbol] = []
-            _CAL_CACHE[symbol] = None
-            _EARN_CACHE[symbol] = None
+        _store_metadata_blank(symbol)
 
 
 def _get_ticker_info(symbol):

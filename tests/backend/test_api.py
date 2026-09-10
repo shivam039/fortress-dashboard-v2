@@ -1,7 +1,6 @@
+import main as main_mod
 import pandas as pd
 from fastapi.testclient import TestClient
-
-import main as main_mod
 from main import app
 
 client = TestClient(app)
@@ -124,7 +123,6 @@ def test_scan_no_circuit_breaker_when_most_tickers_succeed(monkeypatch):
         # the 80% breaker threshold.
         if call_count["n"] == 1:
             raise RuntimeError("one delisted ticker")
-        return None  # no result, but not an error
 
     monkeypatch.setattr(main_mod, "check_institutional_fortress", mostly_succeeds)
 
@@ -139,6 +137,44 @@ def test_scan_no_circuit_breaker_when_most_tickers_succeed(monkeypatch):
     # never crossed the threshold.
     assert body["circuit_breaker_tripped"] is False
     assert body["scanned"] == 50
+
+
+def test_scan_fallback_fetch_failure_isolated_and_breaker_preserved(monkeypatch):
+    """FORTRESS-P2: the OHLCV fallback path (batch fetch empty) now fetches
+    each chunk concurrently. A single ticker's *fetch* raising (not just
+    check_institutional_fortress) must still be isolated to that ticker,
+    counted the same way the old fully-serial path counted it, and must not
+    trip the breaker when the overall failure rate stays low."""
+    monkeypatch.setattr("stock_scanner.pulse.get_current_regime", lambda: {
+        "Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0,
+    })
+    monkeypatch.setattr(main_mod, "prefetch_metadata", lambda tickers: None)
+
+    def fake_get_stock_data(*a, **k):
+        first_arg = a[0] if a else None
+        if isinstance(first_arg, tuple):
+            return pd.DataFrame()  # force the fallback path
+        ticker = first_arg
+        if ticker == "TCS.NS":
+            raise RuntimeError("simulated single-ticker provider failure")
+        return pd.DataFrame({"Close": range(250)})
+
+    monkeypatch.setattr(main_mod, "get_stock_data", fake_get_stock_data)
+    monkeypatch.setattr(
+        main_mod, "check_institutional_fortress", lambda *a, **k: None
+    )
+
+    payload = {"universe": "Nifty 50", "portfolio_val": 1000000, "risk_pct": 0.01}
+    response = client.post("/api/scan", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    # One failing ticker out of 50 (2%) must not trip the 80% breaker, and
+    # every other ticker must still have been attempted despite TCS.NS's
+    # fetch raising.
+    assert body["circuit_breaker_tripped"] is False
+    assert body["scanned"] == 50
+    assert body["failed"] == 1
 
 
 def test_scan_persists_to_history_so_the_history_page_can_see_it(monkeypatch):

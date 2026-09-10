@@ -558,6 +558,72 @@ def upsert_ticker_metadata_cache(symbol, metadata_dict):
         logger.error(f"Error upserting metadata for {symbol}: {e}")
 
 
+def upsert_ticker_metadata_cache_batch(records: Dict[str, Dict[str, Any]]) -> None:
+    """Batched counterpart to `upsert_ticker_metadata_cache()`: persists many
+    tickers' metadata in one executemany-style statement / one transaction,
+    instead of one DB round trip per ticker (FORTRESS-P2 — the cold-cache
+    metadata prefetch path used to call `upsert_ticker_metadata_cache()`
+    once per ticker in a loop). Same upsert semantics (ON CONFLICT update,
+    `updated_at` refreshed) on both backends.
+
+    `upsert_ticker_metadata_cache()` itself is unchanged and still used by
+    the single-ticker lazy-fallback path (`_ensure_metadata_loaded`).
+
+    Args:
+        records: dict of symbol -> metadata_dict, same per-item shape as
+            `upsert_ticker_metadata_cache()`'s `metadata_dict` argument.
+    """
+    if not records:
+        return
+
+    payloads = [
+        {
+            "symbol": symbol,
+            "info_json": json.dumps(metadata_dict.get("info_json", {})),
+            "news_json": json.dumps(metadata_dict.get("news_json", [])),
+            "cal_json": json.dumps(metadata_dict.get("cal_json", {})),
+            "earn_json": json.dumps(metadata_dict.get("earn_json", {})),
+        }
+        for symbol, metadata_dict in records.items()
+    ]
+
+    try:
+        if _can_use_neon():
+            query = """
+            INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
+            VALUES (:symbol, CAST(:info_json AS JSONB), CAST(:news_json AS JSONB), CAST(:cal_json AS JSONB), CAST(:earn_json AS JSONB), NOW())
+            ON CONFLICT (symbol) DO UPDATE SET
+                info_json = EXCLUDED.info_json,
+                news_json = EXCLUDED.news_json,
+                cal_json = EXCLUDED.cal_json,
+                earn_json = EXCLUDED.earn_json,
+                updated_at = EXCLUDED.updated_at
+            """
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                conn.execute(text(query), payloads)
+            return
+
+        # SQLite path — one transaction, one executemany call.
+        with _sqlite_connection() as conn:
+            _ensure_ticker_metadata_sqlite(conn)
+            conn.executemany(
+                """
+                INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
+                VALUES (:symbol, :info_json, :news_json, :cal_json, :earn_json, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    info_json = excluded.info_json,
+                    news_json = excluded.news_json,
+                    cal_json = excluded.cal_json,
+                    earn_json = excluded.earn_json,
+                    updated_at = excluded.updated_at
+                """,
+                payloads,
+            )
+    except Exception as e:
+        logger.error(f"Error batch-upserting metadata for {len(records)} symbols: {e}")
+
+
 # ─────────────────────────────────────────────
 # OHLCV time-series cache  (mf_lab + commodities)
 # ─────────────────────────────────────────────
