@@ -1,0 +1,71 @@
+# Provider-neutral agent configuration example.
+#
+# Copy to config/agents.yaml (gitignored — do not commit a real one with
+# provider-specific account details) and adjust as needed. See
+# docs/agents/PROVIDERS.md for what "provider" means here and
+# docs/agents/USAGE.md for how this is consumed.
+#
+# No API keys belong in this file. Provider adapters resolve credentials
+# from the environment at execution time (AGENT1B), not from this config.
+
+# Project-wide ceilings. A per-agent budget above these fails validation.
+ceilings:
+  max_input_tokens: 12000
+  max_output_tokens: 4000
+
+# Applied to any agent that doesn't override a field below.
+defaults:
+  provider: codex
+  model: default
+  input_budget: 8000
+  output_budget: 2500
+
+agents:
+  coordinator:
+    input_budget: 6000
+    output_budget: 1500
+
+  backend:
+    input_budget: 9000
+    output_budget: 3000
+
+  frontend:
+    input_budget: 8000
+    output_budget: 2500
+
+  qa:
+    input_budget: 7000
+    output_budget: 2200
+
+  performance:
+    input_budget: 10000
+    output_budget: 3500
+
+  infra:
+    input_budget: 9000
+    output_budget: 3000
+    # Infra Agent is defined but must not be invoked for live execution
+    # against production during AGENT1A/INFRA4 — see agents/infra.md.
+    production_access: false
+
+  research:
+    input_budget: 9000
+    output_budget: 3000
+
+  docs:
+    input_budget: 4500
+    output_budget: 1800
+
+  reviewer:
+    input_budget: 6000
+    output_budget: 2200
+
+# Example of overriding provider/model per agent without touching the
+# agent's role definition (agents/*.md never names a provider):
+#
+# agents:
+#   performance:
+#     provider: anthropic
+#     model: default
+#     input_budget: 10000
+#     output_budget: 3500

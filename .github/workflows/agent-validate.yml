@@ -1,0 +1,59 @@
+name: Agent Framework Validate (AGENT1A)
+
+# Validate-only scaffolding for the AGENT1A provider-neutral agent
+# framework (agents/*.md, config/agents.example.yaml, scripts/agent/*).
+#
+# This workflow is safe to run at any time, including during INFRA4:
+# it never calls a model API, never modifies code, never opens a PR,
+# and never touches Oracle/Vercel/Render or any scheduler target. It
+# only validates the agent config/role files and (optionally) renders a
+# dry-run prompt artifact for inspection.
+#
+# See docs/agents/GOVERNANCE.md for why AGENT1A stops here — live agent
+# execution is a separate, later story (AGENT1B), gated on INFRA4 being
+# in a safe state.
+
+on:
+  workflow_dispatch:
+    inputs:
+      render_example_prompt:
+        description: 'Also render the example task dry-run prompt as an artifact'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate agent config and role files
+        run: node scripts/agent/validate-agent-config.js
+
+      - name: Validate token budgets for every required agent
+        run: |
+          set -e
+          for agent in coordinator backend frontend qa performance infra research docs reviewer; do
+            echo "--- $agent ---"
+            node scripts/agent/validate-budget.js "$agent"
+          done
+
+      - name: Run agent framework tests
+        run: node --test scripts/agent/agent-system.test.js
+
+      - name: Render example dry-run prompt (artifact only, no model call)
+        if: ${{ github.event.inputs.render_example_prompt != 'false' }}
+        run: |
+          node scripts/agent/build-agent-prompt.js backend .agent-tasks/example-task.yaml \
+            > agent-prompt-dry-run.txt
+
+      - name: Upload dry-run artifact
+        if: ${{ github.event.inputs.render_example_prompt != 'false' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-prompt-dry-run
+          path: agent-prompt-dry-run.txt
+          retention-days: 7

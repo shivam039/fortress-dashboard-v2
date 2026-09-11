@@ -10,6 +10,7 @@ venv/
 .env
 .env.oracle.staging
 .env.oracle.production
+config/agents.yaml
 
 # Build / Logs
 build/
