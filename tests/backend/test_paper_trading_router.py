@@ -155,6 +155,29 @@ def test_paper_trade_metrics_still_works(monkeypatch):
     assert response.json()["trade_count"] == 0
 
 
+def test_open_position_valuation_is_read_only_and_enriched(monkeypatch):
+    trade = {
+        "trade_id": 41, "signal_id": 42, "symbol": "ZZVALUE.NS",
+        "entry_timestamp": "2026-09-08 10:00:00", "entry_price": 100.0,
+        "quantity": 2.0, "notional": 200.0, "stop_price": 90.0,
+        "target_price": 120.0, "status": "open",
+    }
+    signal = {"id": 42, "symbol": "ZZVALUE.NS", "score": 91.0,
+              "market_regime": "Bull", "sector": "Energy"}
+    monkeypatch.setattr("utils.db.fetch_paper_trades", lambda **_: [trade])
+    monkeypatch.setattr("utils.db.fetch_signal_ledger", lambda **_: [signal])
+    monkeypatch.setattr("utils.db.fetch_policy_decisions", lambda **_: [])
+    monkeypatch.setattr("utils.market_data_provider.get_batch_ltp", lambda _: {"ZZVALUE.NS": 110.0})
+
+    response = client.get("/api/paper-trades/open/valuation")
+    body = response.json()[0]
+    assert response.status_code == 200
+    assert body["current_price"] == 110.0
+    assert body["unrealized_pnl"] == 20.0
+    assert body["unrealized_return_pct"] == 10.0
+    assert body["signal"]["score"] == 91.0
+
+
 def test_invalid_auth_returns_401_not_500():
     app.dependency_overrides.pop(get_current_user, None)
     try:

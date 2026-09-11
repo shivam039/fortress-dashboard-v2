@@ -13,6 +13,7 @@ metrics) is T2's existing, tested logic; this router only wires it to
 signal_ledger/paper_trades persistence and HTTP.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -64,6 +65,47 @@ async def paper_trade_metrics(user: dict = Depends(get_current_user)):
             detail="Paper trade data is temporarily unavailable",
         ) from exc
     return compute_metrics(closed_trades)
+
+
+@router.get("/open/valuation")
+async def open_position_valuation(user: dict = Depends(get_current_user)):
+    """Return open trades enriched with non-persistent latest valuation data."""
+    from utils.db import (
+        fetch_paper_trades,
+        fetch_policy_decisions,
+        fetch_signal_ledger,
+        normalize_paper_trade_for_json,
+    )
+    from utils.market_data_provider import get_batch_ltp
+
+    trades = fetch_paper_trades(status="open")
+    prices = get_batch_ltp([t["symbol"] for t in trades if t.get("symbol")]) if trades else {}
+    policies = {p.get("trade_id"): p for p in fetch_policy_decisions(limit=500)}
+    result = []
+    for trade in trades:
+        item = normalize_paper_trade_for_json(trade)
+        current = prices.get(trade.get("symbol"))
+        entry = float(trade.get("entry_price") or 0)
+        quantity = float(trade.get("quantity") or 0)
+        item["current_price"] = current
+        item["unrealized_pnl"] = round((current - entry) * quantity, 2) if current is not None and entry else None
+        item["unrealized_return_pct"] = round(((current / entry) - 1) * 100, 2) if current is not None and entry else None
+        stop = trade.get("stop_price")
+        target = trade.get("target_price")
+        item["distance_to_stop_pct"] = round(((current - float(stop)) / current) * 100, 2) if current and stop else None
+        item["distance_to_target_pct"] = round(((float(target) - current) / current) * 100, 2) if current and target else None
+        try:
+            started = datetime.fromisoformat(str(trade.get("entry_timestamp")).replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            item["holding_period_days"] = max(0, (datetime.now(timezone.utc) - started).days)
+        except (TypeError, ValueError):
+            item["holding_period_days"] = None
+        signal_rows = fetch_signal_ledger(signal_id=trade.get("signal_id"), limit=1)
+        item["signal"] = normalize_paper_trade_for_json(signal_rows[0]) if signal_rows else None
+        item["policy_version"] = policies.get(trade.get("trade_id"), {}).get("policy_version")
+        result.append(item)
+    return result
 
 
 @router.get("/signals")
