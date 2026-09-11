@@ -12,6 +12,11 @@ name: NSE Bhav Copy Daily Refresh
 # workflow (a retry, or workflow_dispatch) is always safe — it's a no-op if
 # today's file is already fetched.
 #
+# Wakes the backend (bounded retries) before triggering, same reasoning and
+# thresholds as auto-scan-eod.yml — this job runs earlier in the day and
+# the service may equally be asleep/cold. Trigger failures are retried only
+# when transient (5xx/connect failure); 401/403 fail immediately.
+#
 # Required repo secrets:
 #   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
 #   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
@@ -28,29 +33,78 @@ on:
     - cron: '0 15 * * 1-5'
   workflow_dispatch: # allow manual triggering, e.g. for a backfill kickoff
 
+concurrency:
+  group: fortress-bhavcopy-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: POST /api/bhavcopy/refresh
+      - name: Wake backend, then POST /api/bhavcopy/refresh
         run: |
+          set -u
+
           if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
             echo "FORTRESS_BACKEND_URL secret is not set — skipping (nothing to call)."
             exit 0
           fi
 
-          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
-            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/bhavcopy/refresh" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
-            -d '{"force": false}')
+          BASE_URL="${{ secrets.FORTRESS_BACKEND_URL }}"
+          API_KEY="${{ secrets.FORTRESS_API_KEY }}"
+          CONNECT_TIMEOUT=10
+          REQUEST_TIMEOUT=30
 
-          echo "Response body:"
-          cat /tmp/response.json
-          echo ""
-          echo "HTTP status: $http_status"
-
-          if [ "$http_status" -ge 300 ]; then
-            echo "Bhav Copy refresh request failed (HTTP $http_status)"
+          WAKE_ATTEMPTS=12
+          WAKE_WAIT_SECONDS=15
+          awake=0
+          for i in $(seq 1 "$WAKE_ATTEMPTS"); do
+            status=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              "$BASE_URL/api/health" || echo "000")
+            echo "Wake attempt $i/$WAKE_ATTEMPTS: HTTP $status"
+            if [ "$status" = "200" ]; then
+              awake=1
+              break
+            fi
+            sleep "$WAKE_WAIT_SECONDS"
+          done
+          if [ "$awake" -ne 1 ]; then
+            echo "FAILURE: backend did not wake after $WAKE_ATTEMPTS attempts (last status: $status)"
             exit 1
           fi
+          echo "Backend is awake."
+
+          TRIGGER_ATTEMPTS=5
+          TRIGGER_WAIT_SECONDS=15
+          for i in $(seq 1 "$TRIGGER_ATTEMPTS"); do
+            http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
+              --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              -X POST "$BASE_URL/api/bhavcopy/refresh" \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: $API_KEY" \
+              -d '{"force": false}')
+            echo "Trigger attempt $i/$TRIGGER_ATTEMPTS: HTTP $http_status"
+
+            if [ "$http_status" = "401" ] || [ "$http_status" = "403" ]; then
+              echo "FAILURE: POST /api/bhavcopy/refresh returned $http_status (auth/config error — not retrying)"
+              exit 1
+            fi
+            if [ "$http_status" -ge 400 ] && [ "$http_status" -lt 500 ] && [ "$http_status" != "429" ]; then
+              echo "FAILURE: POST /api/bhavcopy/refresh returned $http_status (client error — not retrying)"
+              cat /tmp/response.json
+              exit 1
+            fi
+            if [ "$http_status" -lt 300 ]; then
+              echo "Response body:"
+              cat /tmp/response.json
+              echo ""
+              exit 0
+            fi
+            if [ "$i" -lt "$TRIGGER_ATTEMPTS" ]; then
+              sleep "$TRIGGER_WAIT_SECONDS"
+            fi
+          done
+
+          echo "FAILURE: POST /api/bhavcopy/refresh did not succeed after $TRIGGER_ATTEMPTS attempts (last status: $http_status)"
+          exit 1

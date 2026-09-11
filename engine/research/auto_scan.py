@@ -14,6 +14,7 @@ docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md.
 """
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -27,17 +28,42 @@ from utils.db import (
     update_auto_scan_run,
 )
 
+logger = logging.getLogger("fortress.research.auto_scan")
+
 # Explicit, conservative default — NOT "every configured universe" — so an
 # unset env var never silently scans the entire ticker database.
 DEFAULT_AUTO_SCAN_UNIVERSES: Tuple[str, ...] = ("Nifty 50",)
+# The intended production set — see docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md
+# "Required production universe configuration". Documented here only for the
+# startup warning below; FORTRESS_AUTO_SCAN_UNIVERSES must still be set
+# explicitly in the deployment env — this constant does not change the
+# conservative default above.
+_INTENDED_PRODUCTION_UNIVERSES = (
+    "Nifty 50", "Nifty Next 50", "Nifty Midcap 150", "Nifty Smallcap 250",
+)
 _MIN_HISTORY_ROWS = 210  # same bar execute_scan's own circuit breaker uses
 
 
 def resolve_configured_universes() -> List[str]:
     """FORTRESS_AUTO_SCAN_UNIVERSES: comma-separated universe names matching
-    fortress_config.TICKER_GROUPS keys. Unset/empty -> DEFAULT_AUTO_SCAN_UNIVERSES."""
+    fortress_config.TICKER_GROUPS keys. Unset/empty -> DEFAULT_AUTO_SCAN_UNIVERSES
+    (logging an operational warning in production, since the intended
+    production set is all four Nifty universes, not just Nifty 50)."""
     raw = os.getenv("FORTRESS_AUTO_SCAN_UNIVERSES", "").strip()
     if not raw:
+        try:
+            from utils.security_config import is_production_environment
+            if is_production_environment():
+                logger.warning(
+                    "FORTRESS_AUTO_SCAN_UNIVERSES is not set — automated EOD "
+                    "scanning is running with only the conservative default "
+                    "universe %s, not the intended production set %s. Set "
+                    "FORTRESS_AUTO_SCAN_UNIVERSES=%s in the deployment env.",
+                    DEFAULT_AUTO_SCAN_UNIVERSES, _INTENDED_PRODUCTION_UNIVERSES,
+                    ",".join(_INTENDED_PRODUCTION_UNIVERSES),
+                )
+        except Exception:
+            pass
         return list(DEFAULT_AUTO_SCAN_UNIVERSES)
     return [name.strip() for name in raw.split(",") if name.strip()]
 

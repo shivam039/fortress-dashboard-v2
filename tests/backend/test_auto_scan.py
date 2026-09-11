@@ -116,6 +116,14 @@ def test_resolve_configured_universes_env_and_default(monkeypatch):
     assert resolve_configured_universes() == ["Nifty 50", "Nifty 100"]
 
 
+def test_resolve_configured_universes_warns_in_production_when_unset(monkeypatch, caplog):
+    monkeypatch.delenv("FORTRESS_AUTO_SCAN_UNIVERSES", raising=False)
+    monkeypatch.setattr("utils.security_config.is_production_environment", lambda: True)
+    with caplog.at_level("WARNING", logger="fortress.research.auto_scan"):
+        resolve_configured_universes()
+    assert any("FORTRESS_AUTO_SCAN_UNIVERSES is not set" in r.message for r in caplog.records)
+
+
 # ── data-health gate ─────────────────────────────────────────────────────────
 
 def test_check_data_health_healthy(monkeypatch):

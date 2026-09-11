@@ -2,21 +2,31 @@ name: Automated Multi-Universe EOD Scan (FORTRESS-E3)
 
 # Triggers the daily FULL UNIVERSE SCAN -> E1 -> T1 -> E2 -> MATURATION
 # pipeline on the deployed backend (POST /api/auto-scan/run — see
-# engine/routers/auto_scan.py), the same HTTP-call-cron shape
-# bhavcopy-refresh.yml already established for scheduled work against this
-# repo's single Render web service.
+# engine/routers/auto_scan.py) and verifies it actually reached a terminal
+# status via the durable auto_scan_runs record (GET /api/auto-scan/runs/{run_id}).
+# A 202 alone only proves the request was accepted, not that data health
+# passed, E1/T1/E2/maturation ran, or the run finished COMPLETE/DEGRADED —
+# see docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md "Cold/sleeping
+# backend behavior" and docs/research/AUTO_SCAN_SCHEDULER_RELIABILITY.md.
 #
-# Scheduled after both bhavcopy-refresh.yml runs (13:30 UTC / 15:00 UTC)
-# so today's Bhav Copy is already fetched by the time the scan's own
-# data-health gate checks it — see docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md
-# "Scheduling". The gate itself aborts (no partial evidence) if the file
-# still isn't ready; re-running this workflow (workflow_dispatch, or a
-# retry) is always safe — research.auto_scan.run_daily_auto_scan() is
-# idempotent per trading date.
+# WAKE (bounded retries against a sleeping/cold Render service) -> TRIGGER
+# (retried on transient failures only) -> CAPTURE run_id -> POLL the
+# durable run -> VERIFY terminal status. Manual workflow_dispatch runs the
+# exact same steps as the schedule.
+#
+# Scheduled after both bhavcopy-refresh.yml runs (13:30 UTC / 15:00 UTC) so
+# today's Bhav Copy is already fetched by the time the scan's own
+# data-health gate checks it. The gate itself aborts (no partial evidence)
+# if the file still isn't ready; re-running this workflow is always safe —
+# research.auto_scan.run_daily_auto_scan() is idempotent per trading date.
 #
 # Required repo secrets (same as bhavcopy-refresh.yml):
 #   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
 #   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+#
+# Required production env on the backend itself (Render), documented here
+# because this workflow does not and should not set it:
+#   FORTRESS_AUTO_SCAN_UNIVERSES=Nifty 50,Nifty Next 50,Nifty Midcap 150,Nifty Smallcap 250
 
 on:
   schedule:
@@ -24,29 +34,131 @@ on:
     - cron: '45 15 * * 1-5'
   workflow_dispatch:
 
+concurrency:
+  group: fortress-auto-scan-eod
+  cancel-in-progress: false # never cancel an evidence run already in flight
+
 jobs:
   auto-scan:
     runs-on: ubuntu-latest
     steps:
-      - name: POST /api/auto-scan/run
+      - name: Wake backend, trigger E3, poll to terminal status
         run: |
+          set -u
+
           if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
             echo "FORTRESS_BACKEND_URL secret is not set — skipping (nothing to call)."
             exit 0
           fi
 
-          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
-            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/auto-scan/run" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
-            -d '{}')
+          BASE_URL="${{ secrets.FORTRESS_BACKEND_URL }}"
+          API_KEY="${{ secrets.FORTRESS_API_KEY }}"
+          CONNECT_TIMEOUT=10
+          REQUEST_TIMEOUT=30
 
-          echo "Response body:"
-          cat /tmp/response.json
-          echo ""
-          echo "HTTP status: $http_status"
-
-          if [ "$http_status" -ge 300 ]; then
-            echo "Auto-scan trigger failed (HTTP $http_status)"
+          # ── PART 1: wake the backend ─────────────────────────────────────
+          WAKE_ATTEMPTS=12
+          WAKE_WAIT_SECONDS=15
+          awake=0
+          for i in $(seq 1 "$WAKE_ATTEMPTS"); do
+            status=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              "$BASE_URL/api/health" || echo "000")
+            echo "Wake attempt $i/$WAKE_ATTEMPTS: HTTP $status"
+            if [ "$status" = "200" ]; then
+              awake=1
+              break
+            fi
+            sleep "$WAKE_WAIT_SECONDS"
+          done
+          if [ "$awake" -ne 1 ]; then
+            echo "FAILURE: backend did not wake after $WAKE_ATTEMPTS attempts (last status: $status)"
             exit 1
           fi
+          echo "Backend is awake."
+
+          # ── PART 2/3: trigger the run, retrying only transient failures ──
+          TRIGGER_ATTEMPTS=5
+          TRIGGER_WAIT_SECONDS=15
+          run_id=""
+          for i in $(seq 1 "$TRIGGER_ATTEMPTS"); do
+            http_status=$(curl -sS -o /tmp/trigger_response.json -w "%{http_code}" \
+              --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              -X POST "$BASE_URL/api/auto-scan/run" \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: $API_KEY" \
+              -d '{}')
+            echo "Trigger attempt $i/$TRIGGER_ATTEMPTS: HTTP $http_status"
+
+            if [ "$http_status" = "401" ] || [ "$http_status" = "403" ]; then
+              echo "FAILURE: POST /api/auto-scan/run returned $http_status (auth/config error — not retrying)"
+              exit 1
+            fi
+            if [ "$http_status" -ge 400 ] && [ "$http_status" -lt 500 ] && [ "$http_status" != "429" ]; then
+              echo "FAILURE: POST /api/auto-scan/run returned $http_status (client error — not retrying)"
+              cat /tmp/trigger_response.json
+              exit 1
+            fi
+            if [ "$http_status" = "200" ] || [ "$http_status" = "202" ]; then
+              run_id=$(jq -er '.run_id // empty' /tmp/trigger_response.json 2>/dev/null || echo "")
+              if [ -n "$run_id" ]; then
+                break
+              fi
+              echo "Accepted response missing run_id — treating as a failed trigger."
+            fi
+            # 5xx, connect failure (curl status "000"), or a 2xx with no run_id: retry.
+            if [ "$i" -lt "$TRIGGER_ATTEMPTS" ]; then
+              sleep "$TRIGGER_WAIT_SECONDS"
+            fi
+          done
+
+          if [ -z "$run_id" ]; then
+            echo "FAILURE: could not obtain a run_id from POST /api/auto-scan/run after $TRIGGER_ATTEMPTS attempts"
+            exit 1
+          fi
+          echo "Triggered auto-scan run_id=$run_id"
+
+          # ── PART 4/5: poll the durable run to a terminal status ──────────
+          POLL_INTERVAL_SECONDS=30
+          MAX_POLLS=60 # ~30 minutes
+          status_value=""
+          run_json=""
+          for i in $(seq 1 "$MAX_POLLS"); do
+            sleep "$POLL_INTERVAL_SECONDS"
+            run_json=$(curl -sS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              -H "X-API-Key: $API_KEY" \
+              "$BASE_URL/api/auto-scan/runs/$run_id" || echo "")
+            status_value=$(echo "$run_json" | jq -er '.status // empty' 2>/dev/null || echo "")
+            elapsed=$((i * POLL_INTERVAL_SECONDS))
+            echo "Poll $i/$MAX_POLLS (${elapsed}s elapsed): status=${status_value:-<unavailable>}"
+            case "$status_value" in
+              COMPLETE|DEGRADED|FAILED)
+                break
+                ;;
+            esac
+          done
+
+          case "$status_value" in
+            COMPLETE|DEGRADED) ;;
+            FAILED) ;;
+            *)
+              echo "FAILURE: auto-scan run $run_id did not reach a terminal state within $((MAX_POLLS * POLL_INTERVAL_SECONDS / 60)) minutes (last known status: ${status_value:-<unavailable>})"
+              exit 1
+              ;;
+          esac
+
+          # ── PART 6: verify final status ───────────────────────────────────
+          echo "$run_json" | jq '{
+            run_id, trading_date, status, configured_universes, resolved_universes,
+            unresolved_universes, unique_symbol_count, observations_inserted,
+            signals_generated, paper_opened, paper_closed, circuit_breaker_tripped, reason
+          }' 2>/dev/null || echo "$run_json"
+
+          if [ "$status_value" = "FAILED" ]; then
+            echo "FAILURE: auto-scan run $run_id reached FAILED."
+            exit 1
+          fi
+          if [ "$status_value" = "DEGRADED" ]; then
+            echo "WARNING: auto-scan run $run_id completed DEGRADED — see 'reason'/'unresolved_universes' above."
+          fi
+          echo "Auto-scan run $run_id finished with status $status_value."
