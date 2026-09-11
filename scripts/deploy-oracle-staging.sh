@@ -20,15 +20,21 @@ fi
 
 export FORTRESS_IMAGE="$IMAGE_REF"
 
-docker compose -f "$COMPOSE_FILE" pull
-docker compose -f "$COMPOSE_FILE" up -d
+COMPOSE=(
+  docker compose
+  --env-file .env.oracle.staging
+  -f "$COMPOSE_FILE"
+)
+
+"${COMPOSE[@]}" pull
+"${COMPOSE[@]}" up -d
 
 echo "Waiting for backend health at $HEALTH_URL"
 for attempt in $(seq 1 30); do
   status="$(curl -fsS -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
   if [ "$status" = "200" ]; then
     echo "Oracle staging backend is healthy."
-    docker compose -f "$COMPOSE_FILE" ps
+    "${COMPOSE[@]}" ps
     exit 0
   fi
   echo "Health attempt $attempt/30 returned ${status:-unreachable}"
@@ -36,6 +42,6 @@ for attempt in $(seq 1 30); do
 done
 
 echo "Staging deploy failed health verification."
-docker compose -f "$COMPOSE_FILE" ps
-docker compose -f "$COMPOSE_FILE" logs --tail=150 fortress-backend
+"${COMPOSE[@]}" ps
+"${COMPOSE[@]}" logs --tail=150 fortress-backend
 exit 1
