@@ -22,6 +22,23 @@ Implemented in `engine/research/auto_scan.py:run_daily_auto_scan()`.
 or empty resolves to the explicit, conservative
 `DEFAULT_AUTO_SCAN_UNIVERSES = ("Nifty 50",)` — never silently "everything".
 
+**Required production configuration.** The intended automated production
+universe set is all four of:
+
+```
+FORTRESS_AUTO_SCAN_UNIVERSES=Nifty 50,Nifty Next 50,Nifty Midcap 150,Nifty Smallcap 250
+```
+
+(exact canonical names from `fortress_config.TICKER_GROUPS` — no aliases).
+This must be set explicitly in the production deployment env; the code
+default deliberately stays at the single conservative `"Nifty 50"` universe
+rather than silently defaulting to all four. If a production deployment
+(`utils.security_config.is_production_environment()`) runs with this env
+var unset, `resolve_configured_universes()` logs an operational warning
+naming the missing config and the intended value — it does not raise or
+change behavior, since the conservative single-universe default is still
+a safe (if narrower-than-intended) fallback.
+
 ## Overlap deduplication
 
 `build_symbol_union()` resolves every configured universe's membership
@@ -80,6 +97,47 @@ Uses the repository's existing HTTP-call-cron pattern
 `.github/workflows/auto-scan-eod.yml` runs at 15:45 UTC (21:15 IST)
 weekdays — after both scheduled Bhav Copy refresh attempts — and POSTs to
 `/api/auto-scan/run` on the deployed backend.
+
+### Cold/sleeping backend behavior
+
+A `POST /api/auto-scan/run` returning 202 only proves the request was
+accepted — not that data health passed, the scan finished, E1/T1/E2/
+maturation ran, or the run reached a terminal status. The workflow
+verifies the durable `auto_scan_runs` record end to end:
+
+1. **Wake** — probes `GET /api/health` with up to 12 attempts, 15s apart
+   (~3 minutes), before triggering anything. Fails the workflow with a
+   concise message if the backend never responds `200`.
+2. **Trigger** — `POST /api/auto-scan/run` with an explicit
+   `--connect-timeout 10 --max-time 30` (never curl's unbounded default).
+   Retried up to 5 times, 15s apart, only for transient outcomes (a
+   connect failure, `5xx`, or `429`). A `401`/`403` fails immediately —
+   never retried. A 200/202 response is not success by itself: the body
+   must parse (via `jq`) to a non-empty `run_id`, or that attempt is
+   treated as failed and retried.
+3. **Poll** — `GET /api/auto-scan/runs/{run_id}` every 30s, up to 60 times
+   (~30 minutes — sized for a ~500-symbol scan). `RUNNING` (or any other
+   non-terminal value) keeps polling; `COMPLETE`/`DEGRADED`/`FAILED` stop
+   it. Reaching the poll limit without a terminal status fails the
+   workflow and reports the run_id, last known status, and elapsed time —
+   it never assumes silent failure or success.
+4. **Verify** — `COMPLETE` succeeds and prints the compact run record
+   (trading_date, universes, symbol/observation/signal counts, paper
+   opens/closes, circuit-breaker state). `DEGRADED` succeeds but prints a
+   clear warning with the reason (e.g. one unresolved configured
+   universe) — never silently treated as `COMPLETE`. `FAILED` fails the
+   workflow and prints the run_id, reason, and circuit-breaker state.
+
+`workflow_dispatch` (manual trigger) runs through this exact same
+wake -> trigger -> poll -> verify path — there is no separate manual
+code path. A `concurrency` group (`fortress-auto-scan-eod`,
+`cancel-in-progress: false`) prevents two scheduled/manual invocations
+from running the orchestrator at the same time, without ever cancelling
+an evidence run already in flight. No secret value (API key, JWT secret,
+DB URL, admin password) is ever echoed or passed through a curl
+verbose/trace flag. `.github/workflows/bhavcopy-refresh.yml` uses the
+same wake+bounded-retry pattern (shared reasoning, simple duplicated
+shell — no shared custom action was introduced for this).
 
 ## API
 
