@@ -2126,7 +2126,18 @@ def log_scan_results(df, table_name="scan_results"):
 
     if _can_use_neon():
         engine = get_db_engine()
-        df.to_sql(table_name, engine, if_exists="append", index=False)
+        # method="multi" batches rows into multi-row INSERT statements instead
+        # of one round trip per row, which dominates scan persistence time on
+        # a remote Neon connection. chunksize bounds each statement's bound
+        # parameter count regardless of table width or universe size.
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+            chunksize=500,
+        )
         return
 
     # SQLite fallback with retries and schema evolution
@@ -2261,7 +2272,17 @@ def save_scan_results(scan_id, df, scan_timestamp=None):
         if pd.isna(regime):
             regime = None
 
-        # Serialize the full row to JSON for raw_data column
+        # Serialize the full row to JSON for raw_data column. NaN/Infinity
+        # are invalid JSON and previously caused Postgres to reject the row
+        # (pre-existing, same as the sanitization already applied to
+        # mf_scan_results above) — with batched inserts a single bad value
+        # now fails the whole chunk instead of just one row, so this must
+        # be sanitized before serialization, not after.
+        sanitized_row = {
+            k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
+            for k, v in row.items()
+        }
+
         records.append(
             {
                 "scan_id": scan_id,
@@ -2272,18 +2293,40 @@ def save_scan_results(scan_id, df, scan_timestamp=None):
                 "conviction_score": score,
                 "price": price,
                 "regime": regime,
-                "raw_data": json.dumps(row),
+                "raw_data": json.dumps(sanitized_row, default=str),
             }
         )
 
     if _can_use_neon():
-        # Neon: Explicit INSERT with properly typed values
-        for rec in records:
-            _exec(
-                "INSERT INTO scan_history_details (scan_id, scan_timestamp, symbol, conviction_score, price, regime, raw_data) "
-                "VALUES (:scan_id, :scan_timestamp, :symbol, :conviction_score, :price, :regime, CAST(:raw_data AS JSONB))",
-                rec,
-            )
+        # Neon: batch into multi-row INSERTs instead of one round trip per
+        # row — this was the dominant scan-persistence cost (each row also
+        # carries the full serialized raw_data JSON payload).
+        engine = get_db_engine()
+        CHUNK = 300
+        with engine.begin() as conn:
+            for start in range(0, len(records), CHUNK):
+                chunk = records[start : start + CHUNK]
+                value_groups = []
+                row_params: Dict[str, Any] = {}
+                for i, rec in enumerate(chunk):
+                    value_groups.append(
+                        f"(:scan_id_{i}, :scan_timestamp_{i}, :symbol_{i}, "
+                        f":conviction_score_{i}, :price_{i}, :regime_{i}, "
+                        f"CAST(:raw_data_{i} AS JSONB))"
+                    )
+                    row_params[f"scan_id_{i}"] = rec["scan_id"]
+                    row_params[f"scan_timestamp_{i}"] = rec["scan_timestamp"]
+                    row_params[f"symbol_{i}"] = rec["symbol"]
+                    row_params[f"conviction_score_{i}"] = rec["conviction_score"]
+                    row_params[f"price_{i}"] = rec["price"]
+                    row_params[f"regime_{i}"] = rec["regime"]
+                    row_params[f"raw_data_{i}"] = rec["raw_data"]
+                batch_sql = (
+                    "INSERT INTO scan_history_details (scan_id, scan_timestamp, symbol, "
+                    "conviction_score, price, regime, raw_data) VALUES "
+                    + ", ".join(value_groups)
+                )
+                conn.execute(text(batch_sql), row_params)
         return
 
     # SQLite: Use to_sql but with the prepared simple DataFrame
@@ -2844,8 +2887,32 @@ def record_signal_ledger_entries(entries: List[Dict[str, Any]]) -> int:
         if _can_use_neon():
             _ensure_signal_ledger_neon()
             engine = get_db_engine()
+            # Build one multi-row INSERT per chunk instead of relying on
+            # SQLAlchemy's list-of-params executemany, which is one round
+            # trip per row under psycopg — this table is append-only (no
+            # ON CONFLICT skip) so every scan writes a full new row per
+            # ticker every time; that was the dominant remaining scan
+            # persistence cost after batching research_observations.
+            col_names = [c.strip() for c in columns.split(",")]
+            json_cols = {"component_scores", "feature_snapshot"}
+            CHUNK = 300
             with engine.begin() as conn:
-                conn.execute(text(insert_sql), payloads)
+                for start in range(0, len(payloads), CHUNK):
+                    chunk = payloads[start : start + CHUNK]
+                    value_groups = []
+                    row_params: Dict[str, Any] = {}
+                    for i, payload in enumerate(chunk):
+                        group = []
+                        for name in col_names:
+                            key = f"{name}_{i}"
+                            group.append(f"CAST(:{key} AS JSONB)" if name in json_cols else f":{key}")
+                            row_params[key] = payload.get(name)
+                        value_groups.append(f"({', '.join(group)})")
+                    batch_sql = (
+                        f"INSERT INTO signal_ledger ({columns}) VALUES "
+                        + ", ".join(value_groups)
+                    )
+                    conn.execute(text(batch_sql), row_params)
             return len(payloads)
 
         with _sqlite_connection() as conn:
@@ -3764,18 +3831,58 @@ def record_research_observations(entries: List[Dict[str, Any]]) -> Dict[str, int
         if neon:
             _ensure_research_tables()
             engine = get_db_engine()
+            col_names = [c.strip() for c in columns.split(",")]
+            json_cols = {"component_scores", "features_json"}
+            # Batch into one multi-row INSERT (+ one multi-row outcome INSERT)
+            # per chunk instead of one round trip per row/horizon — this was
+            # the dominant cost in scan persistence (up to 1 + len(RESEARCH_HORIZONS)
+            # round trips per ticker). RETURNING observation_id tells us
+            # exactly which rows the ON CONFLICT DO NOTHING actually inserted,
+            # so outcome placeholders are still only created for those —
+            # same semantics as the previous per-row loop.
+            CHUNK = 300
             with engine.begin() as conn:
-                for e in entries:
-                    payload = dict(e)
-                    payload["component_scores"] = json.dumps(e.get("component_scores") or {})
-                    payload["features_json"] = json.dumps(e.get("features_json") or {})
-                    result = conn.execute(text(insert_sql), payload)
-                    if (result.rowcount or 0) > 0:
-                        inserted += 1
-                        for h in RESEARCH_HORIZONS:
-                            conn.execute(text(outcome_sql), {"observation_id": e["observation_id"], "horizon": h})
-                    else:
-                        duplicates += 1
+                for start in range(0, len(entries), CHUNK):
+                    chunk = entries[start : start + CHUNK]
+                    value_groups = []
+                    row_params: Dict[str, Any] = {}
+                    for i, e in enumerate(chunk):
+                        payload = dict(e)
+                        payload["component_scores"] = json.dumps(e.get("component_scores") or {})
+                        payload["features_json"] = json.dumps(e.get("features_json") or {})
+                        group = []
+                        for name in col_names:
+                            key = f"{name}_{i}"
+                            group.append(f"CAST(:{key} AS JSONB)" if name in json_cols else f":{key}")
+                            row_params[key] = payload.get(name)
+                        value_groups.append(f"({', '.join(group)})")
+                    batch_sql = (
+                        f"INSERT INTO research_observations ({columns}) VALUES "
+                        + ", ".join(value_groups)
+                        + " ON CONFLICT (trading_date, symbol, scoring_version) DO NOTHING "
+                        "RETURNING observation_id"
+                    )
+                    result = conn.execute(text(batch_sql), row_params)
+                    inserted_ids = [row[0] for row in result]
+                    inserted += len(inserted_ids)
+                    duplicates += len(chunk) - len(inserted_ids)
+
+                    if inserted_ids:
+                        outcome_groups = []
+                        outcome_params: Dict[str, Any] = {}
+                        idx = 0
+                        for obs_id in inserted_ids:
+                            for h in RESEARCH_HORIZONS:
+                                outcome_groups.append(f"(:oid_{idx}, :h_{idx}, 'NOT_YET_MATURE')")
+                                outcome_params[f"oid_{idx}"] = obs_id
+                                outcome_params[f"h_{idx}"] = h
+                                idx += 1
+                        outcome_batch_sql = (
+                            "INSERT INTO research_outcomes (observation_id, horizon, status) VALUES "
+                            + ", ".join(outcome_groups)
+                            + " ON CONFLICT (observation_id, horizon) DO NOTHING"
+                        )
+                        conn.execute(text(outcome_batch_sql), outcome_params)
         else:
             with _sqlite_connection() as conn:
                 _ensure_research_tables(conn)
