@@ -1,8 +1,13 @@
-# Oracle Production Cutover Plan
+# Oracle Production Cutover Plan (HISTORICAL — executed)
 
-This is a future plan only. Do not execute it during `FORTRESS-INFRA1`.
+> **This plan has been executed.** Production has been cut over to
+> Oracle. For current-reality production architecture, see
+> `docs/deployment/ORACLE_MIGRATION_STATUS.md` — that document is the
+> source of truth if anything below disagrees with it. This file is kept
+> for its procedural detail, not as a live description of "what's about
+> to happen."
 
-Production currently remains:
+Production at the time this plan was written:
 
 - Vercel frontend
 - Render backend
