@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 logger = logging.getLogger("fortress.security")
 
@@ -55,7 +55,7 @@ def is_production_environment() -> bool:
     return os.getenv("FORTRESS_DB_BACKEND", "").strip().lower() not in {"sqlite", "local"}
 
 
-def validate_jwt_secret(secret: Optional[str]) -> None:
+def validate_jwt_secret(secret: str | None) -> None:
     """Raise RuntimeError if `secret` is missing/blank or a known-unsafe
     value. Callers decide whether this applies (production only) — this
     function itself has no notion of dev vs. prod, it just says whether the
@@ -77,7 +77,7 @@ def validate_jwt_secret(secret: Optional[str]) -> None:
         )
 
 
-def validate_admin_password(password: Optional[str]) -> None:
+def validate_admin_password(password: str | None) -> None:
     """Raise RuntimeError if `password` is missing/blank or a known-unsafe
     value. Never includes the password's value in the message."""
     normalized = (password or "").strip()
@@ -112,11 +112,48 @@ def validate_cors_origins(origins: Iterable[str]) -> None:
         )
 
 
+def validate_staging_database_isolation(
+    fortress_env: str | None,
+    database_url: str | None,
+    production_markers: str | None,
+) -> None:
+    """Refuse staging startup when the DB URL matches a configured prod marker.
+
+    The markers are operator-provided substrings from the real production
+    database URL, such as the production host or database name. This keeps
+    secrets out of source while giving Oracle staging a simple fail-closed
+    guard against accidental production writes.
+    """
+    if (fortress_env or "").strip().lower() != "staging":
+        return
+
+    markers = [
+        marker.strip().lower()
+        for marker in (production_markers or "").split(",")
+        if marker.strip()
+    ]
+    if not markers:
+        raise RuntimeError(
+            "FORTRESS_ENV=staging requires FORTRESS_PRODUCTION_DB_MARKERS. "
+            "Set it to one or more comma-separated production database host "
+            "or database-name markers so staging can refuse accidental "
+            "production DATABASE_URL values."
+        )
+
+    normalized_url = (database_url or "").strip().lower()
+    if any(marker in normalized_url for marker in markers):
+        raise RuntimeError(
+            "FORTRESS_ENV=staging DATABASE_URL matches a configured "
+            "production database marker. Refusing to start because Oracle "
+            "staging must use an isolated staging database."
+        )
+
+
 def validate_security_configuration(
-    jwt_secret: Optional[str],
-    admin_password: Optional[str],
+    jwt_secret: str | None,
+    admin_password: str | None,
     cors_origins: Iterable[str],
-    production: Optional[bool] = None,
+    production: bool | None = None,
 ) -> None:
     """The centralized entry point: validates every production-sensitive
     security value together, so there is exactly one place documenting
@@ -158,3 +195,8 @@ def validate_security_configuration(
     validate_jwt_secret(jwt_secret)
     validate_admin_password(admin_password)
     validate_cors_origins(cors_origins)
+    validate_staging_database_isolation(
+        os.getenv("FORTRESS_ENV"),
+        os.getenv("DATABASE_URL"),
+        os.getenv("FORTRESS_PRODUCTION_DB_MARKERS"),
+    )
