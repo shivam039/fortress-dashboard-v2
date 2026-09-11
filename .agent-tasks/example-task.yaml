@@ -1,0 +1,16 @@
+# Example task definition — see docs/agents/USAGE.md for the full schema.
+# This file is a working fixture for `node scripts/agent/build-agent-prompt.js`
+# dry runs; it does not represent real work to be done.
+
+id: example-001
+title: "Add a unit test for an existing pure function"
+agent: backend
+priority: low
+allowed_files: [tests/backend/test_example.py]
+forbidden_files: [engine/main.py]
+input_budget: 9000
+output_budget: 3000
+acceptance_criteria: [new test file exists, test passes, no other file changed]
+dependencies: []
+production_access: false
+docs_required: false
