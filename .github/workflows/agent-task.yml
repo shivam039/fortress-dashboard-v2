@@ -59,10 +59,10 @@ jobs:
       - name: Validate agent framework (AGENT1A regression)
         run: node scripts/agent/validate-agent-config.js
 
-      - name: Run AGENT1B plan
+      - name: Run unified AGENT3 plan
         id: plan
         run: |
-          node scripts/agent/orchestrate-task.js plan "${{ github.event.inputs.task_file }}" \
+          node scripts/agent/agent.js plan "${{ github.event.inputs.task_file }}" \
             > agent-plan-output.txt
           cat agent-plan-output.txt
 
@@ -70,7 +70,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agent-plan-${{ github.event.inputs.issue_number }}
-          path: agent-plan-output.txt
+          path: |
+            agent-plan-output.txt
+            .agent-room/sessions/*.manifest.json
+            .agent-room/sessions/*.prompt.md
           retention-days: 14
 
       - name: Comment plan summary on the issue
@@ -89,5 +92,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number(${{ github.event.inputs.issue_number }}),
-              body: '### AGENT1B plan\n\n```json\n' + summaryOnly.trim() + '\n```\n\nFull generated prompt is attached as a workflow artifact. No branch, PR, or code change has been made automatically.',
+              body: '### Unified agent plan\n\n```json\n' + summaryOnly.trim() + '\n```\n\nThe canonical manifest and generated prompt are attached as workflow artifacts. Follow the manual-action commands to import and resume this same run. No branch, PR, production action, or merge has been performed.',
             });

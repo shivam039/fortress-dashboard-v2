@@ -1,7 +1,8 @@
 # AGENT1B Integration Request
 
-AGENT2 does not modify AGENT1B-owned execution files. When AGENT1B is ready,
-the evaluator can consume run records if they expose these stable fields:
+AGENT3 now integrates AGENT2 with AGENT1B through the canonical versioned JSON
+run manifest. The evaluator consumes only stable fields and remains independent
+of prompt construction and provider adapter internals:
 
 - `run_id`
 - `task_id`
@@ -24,3 +25,9 @@ the evaluator can consume run records if they expose these stable fields:
 
 Provider outputs may be automated, manually imported, or disabled. Static evals
 must continue to pass with no API key.
+
+`scripts/agent-eval/run-gate.js` selects only the manifest's `eval_groups`.
+Backend runs use backend/security/reviewer; infra uses infra/security/reviewer;
+docs uses docs/reviewer; coordinator uses coordinator/security. Changes to the
+agent framework select the full static suite. Hard failures always block, while
+WARN is intentionally passed to Reviewer as visible evidence.

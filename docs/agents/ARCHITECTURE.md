@@ -1,10 +1,14 @@
-# Agent Framework Architecture (AGENT1A + AGENT1B)
+# Agent Framework Architecture (AGENT1A through AGENT3)
 
 **AGENT1A** = role/provider/budget definition + dry-run prompt building
 (agent contracts, config resolution, prompt generation — no execution).
 **AGENT1B** = the controlled execution layer on top: task lifecycle,
 approval gate, provider adapters, branch/scope isolation, and PR
 creation — still no auto-merge, still no automated production access.
+**AGENT2** = provider-neutral static and imported-result evaluation.
+**AGENT3** = the integration layer: one canonical run manifest, resumable
+manual-provider handoff, test/eval/review/docs gates, and advisory provider
+quality evidence.
 
 ## Flow (current — this is what's actually implemented, see GOVERNANCE.md)
 
@@ -28,9 +32,15 @@ Specialist execution — AUTOMATED where a provider adapter reports
      ↓                  default, in this repo — see PROVIDERS.md); MANUAL_EXPORT
      ↓                  otherwise: a human/external agent session pastes the
      ↓                  generated prompt into their own provider and returns a diff
+Provider result import       (untrusted JSON; governance remains manifest-owned)
+     ↓
+Resume same run              (scripts/agent/agent.js)
+     ↓
 Scope validation (scripts/agent/scope-check.js — allowed_files/forbidden_files)
      ↓
 Tests (task-defined, or the specialist contract's default set)
+     ↓
+AGENT2 evaluation            (PASS/WARN proceeds; FAIL/hard safety blocks)
      ↓
 Reviewer Agent (verdicts, never implements — bounded one correction cycle)
      ↓
@@ -40,6 +50,11 @@ PR (scripts/agent/pr-body.js — structured summary, no secrets, no full prompt 
      ↓
 Human merge (mandatory — no auto-merge exists anywhere in this pipeline)
 ```
+
+The JSON file `.agent-room/sessions/<run-id>.manifest.json` is the canonical
+run state. Markdown run records remain human-readable audit summaries; they
+are not a second state machine. Runtime manifests, prompts, and provider
+results are ignored by Git and should travel as short-retention artifacts.
 
 AGENT1A alone builds everything up to and including "dry run." AGENT1B
 adds the state machine, approval gate, provider adapters, scope

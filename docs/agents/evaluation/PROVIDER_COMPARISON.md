@@ -28,3 +28,16 @@ Research or lower-cost capability for Docs.
 When token metadata is available, record input tokens and output tokens and
 compare quality score per 1k tokens. Do not estimate token counts when they
 are unavailable.
+
+AGENT3's advisory scoreboard accepts compact, non-secret quality records:
+
+```bash
+node scripts/agent/agent.js scoreboard quality-records.json
+node scripts/agent/agent.js recommend-provider backend quality-records.json
+```
+
+Fewer than five successful samples for a role/provider reports
+`INSUFFICIENT_EVIDENCE`. Five, ten, and twenty samples correspond to LOW,
+MEDIUM, and HIGH evidence confidence. The ranking prioritizes evaluated
+quality rather than price, excludes hard-safety failures from recommendation
+evidence, and never changes `config/agents.yaml`.

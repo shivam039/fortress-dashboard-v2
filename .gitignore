@@ -57,3 +57,7 @@ frontend/.scan-tests/
 frontend/.ux1-tests/
 frontend/playwright-report/
 frontend/test-results/
+
+# AGENT3 runtime artifacts (canonical manifests, prompts, imported results)
+.agent-room/sessions/*.json
+.agent-room/sessions/*.md
