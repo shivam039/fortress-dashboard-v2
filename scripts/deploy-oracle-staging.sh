@@ -26,7 +26,11 @@ COMPOSE=(
   -f "$COMPOSE_FILE"
 )
 
-"${COMPOSE[@]}" pull
+if [ "${FORTRESS_SKIP_IMAGE_PULL:-0}" = "1" ]; then
+  echo "Skipping image pull; using prebuilt local image $IMAGE_REF."
+else
+  "${COMPOSE[@]}" pull
+fi
 "${COMPOSE[@]}" up -d
 
 echo "Waiting for backend health at $HEALTH_URL"

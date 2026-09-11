@@ -6,9 +6,9 @@ existing scheduled GitHub Actions remain live and unchanged.
 
 ## Architecture
 
-GitHub Actions builds an ARM64 Docker image, pushes it to GitHub Container
-Registry, SSHes into the Oracle VM, starts `fortress-backend` with Docker
-Compose, and verifies `GET /api/health`.
+GitHub Actions uploads the checked-out source to the Oracle VM, builds an ARM64
+Docker image natively on the VM, starts `fortress-backend` with Docker Compose,
+and verifies `GET /api/health`.
 
 Traffic flows like this:
 
@@ -129,11 +129,9 @@ Add these repository secrets:
 - `ORACLE_KNOWN_HOSTS`: output from `ssh-keyscan staging-api.example.com` or
   `ssh-keyscan YOUR_ORACLE_PUBLIC_IP`, reviewed before saving.
 - `ORACLE_STAGING_BACKEND_URL`: `https://staging-api.example.com`.
-- `GHCR_USERNAME`: your GitHub username.
-- `GHCR_READ_TOKEN`: a GitHub token with `read:packages` access so the Oracle
-  VM can pull the backend image.
-
-The workflow uses GitHub's built-in token to push `ghcr.io` images.
+No staging application secrets are stored in GitHub Actions. The VM's
+`/opt/fortress-dashboard/.env.oracle.staging` remains the staging runtime
+configuration source.
 
 ## Deploy
 
@@ -143,7 +141,7 @@ Run the manual GitHub workflow:
 Actions -> Deploy Oracle Staging -> Run workflow
 ```
 
-The workflow builds:
+The workflow builds this immutable local image on the Oracle VM:
 
 ```text
 ghcr.io/shivam039/fortress-dashboard-v2/fortress-backend:<git-sha>
@@ -154,6 +152,7 @@ and runs:
 
 ```bash
 FORTRESS_IMAGE=ghcr.io/shivam039/fortress-dashboard-v2/fortress-backend:<git-sha> \
+FORTRESS_SKIP_IMAGE_PULL=1 \
 ORACLE_STAGING_BACKEND_URL=https://staging-api.example.com/api/health \
 /opt/fortress-dashboard/deploy-oracle-staging.sh
 ```

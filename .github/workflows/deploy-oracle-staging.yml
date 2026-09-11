@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: oracle-staging-deploy
@@ -20,29 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push ARM64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Create source archive
+        run: git archive --format=tar.gz --output=fortress-source.tgz HEAD
 
       - name: Prepare SSH
         env:
@@ -57,7 +35,7 @@ jobs:
           chmod 600 ~/.ssh/oracle_staging
           printf '%s\n' "$ORACLE_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: Upload deployment files
+      - name: Upload source and deployment files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -66,24 +44,31 @@ jobs:
           test -n "$ORACLE_HOST"
           test -n "$ORACLE_USER"
           ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" "sudo mkdir -p /opt/fortress-dashboard && sudo chown $ORACLE_USER:$ORACLE_USER /opt/fortress-dashboard"
+          ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" "mkdir -p /opt/fortress-dashboard/source/${{ github.sha }}"
+          scp -i ~/.ssh/oracle_staging fortress-source.tgz "$ORACLE_USER@$ORACLE_HOST:/opt/fortress-dashboard/source/${{ github.sha }}/"
+          ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" "cd /opt/fortress-dashboard/source/${{ github.sha }} && tar -xzf fortress-source.tgz && rm fortress-source.tgz"
           scp -i ~/.ssh/oracle_staging docker-compose.oracle-staging.yml Caddyfile "$ORACLE_USER@$ORACLE_HOST:/opt/fortress-dashboard/"
           scp -i ~/.ssh/oracle_staging scripts/deploy-oracle-staging.sh "$ORACLE_USER@$ORACLE_HOST:/opt/fortress-dashboard/deploy-oracle-staging.sh"
           ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" "chmod +x /opt/fortress-dashboard/deploy-oracle-staging.sh"
+
+      - name: Build ARM64 image on Oracle VM
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          FORTRESS_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" \
+            "cd /opt/fortress-dashboard/source/${{ github.sha }} && docker build -t '$FORTRESS_IMAGE' ."
 
       - name: Deploy and verify health
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
           ORACLE_STAGING_BACKEND_URL: ${{ secrets.ORACLE_STAGING_BACKEND_URL }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           FORTRESS_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
           set -euo pipefail
           test -n "$ORACLE_STAGING_BACKEND_URL"
-          test -n "$GHCR_USERNAME"
-          test -n "$GHCR_READ_TOKEN"
-          printf '%s' "$GHCR_READ_TOKEN" | ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" \
-            "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
           ssh -i ~/.ssh/oracle_staging "$ORACLE_USER@$ORACLE_HOST" \
-            "FORTRESS_IMAGE='$FORTRESS_IMAGE' ORACLE_STAGING_BACKEND_URL='$ORACLE_STAGING_BACKEND_URL/api/health' /opt/fortress-dashboard/deploy-oracle-staging.sh"
+            "FORTRESS_IMAGE='$FORTRESS_IMAGE' FORTRESS_SKIP_IMAGE_PULL=1 ORACLE_STAGING_BACKEND_URL='$ORACLE_STAGING_BACKEND_URL/api/health' /opt/fortress-dashboard/deploy-oracle-staging.sh"
