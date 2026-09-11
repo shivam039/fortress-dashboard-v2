@@ -1,0 +1,28 @@
+name: agent-eval
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "agents/**"
+      - "agent-evals/**"
+      - "scripts/agent-eval/**"
+      - "scripts/agent/**"
+      - "config/agents.example.yaml"
+      - "docs/agents/**"
+      - ".github/workflows/agent-eval.yml"
+
+jobs:
+  static-agent-evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Validate fixtures
+        run: node scripts/agent-eval/validate-case.js
+      - name: Run static evals
+        run: node scripts/agent-eval/run-eval.js --mode=static --out=agent-evals/expected/static-summary.json
+      - name: Run harness tests
+        run: node --test tests/agent-eval/*.test.js
