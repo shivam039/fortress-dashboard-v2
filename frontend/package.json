@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test:scan": "tsc -p tsconfig.scan-tests.json && node --test tests/scan.test.mjs",
     "test:u2": "tsc -p tsconfig.u2-tests.json && node --test tests/score-evidence.test.mjs",
-    "test:ux1": "tsc -p tsconfig.ux1-tests.json && node --test tests/scan-history.test.mjs"
+    "test:ux1": "tsc -p tsconfig.ux1-tests.json && node --test tests/scan-history.test.mjs",
+    "test:e2e": "playwright test --project=chromium-ci --project=mobile-ci",
+    "test:e2e:smoke": "playwright test --project=deployed-smoke"
   },
   "dependencies": {
     "lucide-react": "^1.32.0",
@@ -19,6 +21,8 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@playwright/test": "1.55.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

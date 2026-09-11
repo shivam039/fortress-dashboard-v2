@@ -22,12 +22,20 @@ const NAV_ITEMS = [
   { href: '/profile', icon: '👤', label: 'Profile' },
 ];
 
-export default function Sidebar() {
+interface SidebarProps {
+  // Mobile only — on desktop the sidebar (`.sidebar`, no `.open` needed)
+  // is always visible; see the `@media (max-width: 768px)` rule in
+  // globals.css that positions it off-screen until `.open` is added.
+  open?: boolean;
+  onNavigate?: () => void;
+}
+
+export default function Sidebar({ open = false, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${open ? 'open' : ''}`}>
       <div className="sidebar-header">
         <span style={{ fontSize: '1.5rem' }}>🏹</span>
         <span className="sidebar-logo">Fortress</span>
@@ -35,12 +43,13 @@ export default function Sidebar() {
 
       <SystemStatus />
 
-      <nav className="sidebar-nav">
+      <nav className="sidebar-nav" aria-label="Primary">
         {NAV_ITEMS.map((item) => (
           <Link
             key={item.href}
             href={item.href}
             className={`nav-item ${pathname === item.href ? 'active' : ''}`}
+            onClick={onNavigate}
           >
             <span className="nav-icon">{item.icon}</span>
             <span>{item.label}</span>

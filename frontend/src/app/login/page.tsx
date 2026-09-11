@@ -90,12 +90,12 @@ export default function LoginPage() {
         {tab === 'login' && (
           <form onSubmit={handleLogin}>
             <div className="input-group" style={{ marginBottom: '16px' }}>
-              <label>Username</label>
-              <input className="input" value={loginUser} onChange={e => setLoginUser(e.target.value)} required />
+              <label htmlFor="login-username">Username</label>
+              <input id="login-username" className="input" value={loginUser} onChange={e => setLoginUser(e.target.value)} required />
             </div>
             <div className="input-group" style={{ marginBottom: '24px' }}>
-              <label>Password</label>
-              <input className="input" type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} required />
+              <label htmlFor="login-password">Password</label>
+              <input id="login-password" className="input" type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} required />
             </div>
             <button className="btn btn-primary btn-block" type="submit" disabled={loading}>
               {loading ? <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> : 'Sign In'}
@@ -106,20 +106,20 @@ export default function LoginPage() {
         {tab === 'signup' && (
           <form onSubmit={handleSignup}>
             <div className="input-group" style={{ marginBottom: '12px' }}>
-              <label>Username *</label>
-              <input className="input" value={signupUser} onChange={e => setSignupUser(e.target.value)} required />
+              <label htmlFor="signup-username">Username *</label>
+              <input id="signup-username" className="input" value={signupUser} onChange={e => setSignupUser(e.target.value)} required />
             </div>
             <div className="input-group" style={{ marginBottom: '12px' }}>
-              <label>Full Name</label>
-              <input className="input" value={signupName} onChange={e => setSignupName(e.target.value)} />
+              <label htmlFor="signup-fullname">Full Name</label>
+              <input id="signup-fullname" className="input" value={signupName} onChange={e => setSignupName(e.target.value)} />
             </div>
             <div className="input-group" style={{ marginBottom: '12px' }}>
-              <label>Email</label>
-              <input className="input" type="email" value={signupEmail} onChange={e => setSignupEmail(e.target.value)} />
+              <label htmlFor="signup-email">Email</label>
+              <input id="signup-email" className="input" type="email" value={signupEmail} onChange={e => setSignupEmail(e.target.value)} />
             </div>
             <div className="input-group" style={{ marginBottom: '24px' }}>
-              <label>Password *</label>
-              <input className="input" type="password" value={signupPass} onChange={e => setSignupPass(e.target.value)} required />
+              <label htmlFor="signup-password">Password *</label>
+              <input id="signup-password" className="input" type="password" value={signupPass} onChange={e => setSignupPass(e.target.value)} required />
             </div>
             <button className="btn btn-primary btn-block" type="submit" disabled={loading}>
               {loading ? <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> : 'Create Account'}

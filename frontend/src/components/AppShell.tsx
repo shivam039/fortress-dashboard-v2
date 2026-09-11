@@ -1,7 +1,7 @@
 // src/components/AppShell.tsx — Conditional layout: login screen vs app with sidebar
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Sidebar from './Sidebar';
@@ -9,6 +9,9 @@ import Sidebar from './Sidebar';
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
   const pathname = usePathname();
+  // Mobile-only nav toggle — desktop ignores this entirely (the sidebar
+  // has no `.open` requirement above the 768px breakpoint).
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Show loading screen while checking auth
   if (isLoading) {
@@ -32,7 +35,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Authenticated — show sidebar + content
   return (
     <div className="app-layout">
-      <Sidebar />
+      <button
+        className="mobile-menu-toggle"
+        aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+        aria-expanded={sidebarOpen}
+        onClick={() => setSidebarOpen(v => !v)}
+      >
+        {sidebarOpen ? '✕' : '☰'}
+      </button>
+      {sidebarOpen && (
+        <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+      )}
+      <Sidebar open={sidebarOpen} onNavigate={() => setSidebarOpen(false)} />
       <main className="main-content">{children}</main>
     </div>
   );
