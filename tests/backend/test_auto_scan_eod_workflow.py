@@ -14,6 +14,7 @@ import yaml
 
 _WORKFLOW_PATH = ".github/workflows/auto-scan-eod.yml"
 _BHAVCOPY_WORKFLOW_PATH = ".github/workflows/bhavcopy-refresh.yml"
+_WATCHDOG_WORKFLOW_PATH = ".github/workflows/auto-scan-watchdog.yml"
 
 
 def _load_workflow(path):
@@ -124,3 +125,34 @@ def test_bhavcopy_workflow_also_has_wake_retry_and_bounded_poll_is_not_required(
 def test_bhavcopy_workflow_shell_syntax_is_valid():
     result = subprocess.run(["bash", "-n"], input=_script(_BHAVCOPY_WORKFLOW_PATH), text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+
+
+# ── FORTRESS-O1 watchdog ─────────────────────────────────────────────────
+
+def test_watchdog_workflow_yaml_parses_shell_valid_and_concurrency_set():
+    doc = _load_workflow(_WATCHDOG_WORKFLOW_PATH)
+    assert "workflow_dispatch" in doc[True]
+    assert doc["concurrency"]["cancel-in-progress"] is False
+    result = subprocess.run(["bash", "-n"], input=_script(_WATCHDOG_WORKFLOW_PATH), text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_watchdog_workflow_never_prints_secrets_or_uses_trace_flags():
+    script = _script(_WATCHDOG_WORKFLOW_PATH)
+    for forbidden in ("-v ", "--verbose", "--trace", "echo $API_KEY", 'echo "$API_KEY"'):
+        assert forbidden not in script
+
+
+def test_watchdog_workflow_recovery_attempt_is_single_bounded_not_a_loop():
+    script = _script(_WATCHDOG_WORKFLOW_PATH)
+    assert script.count("POST \"$BASE_URL/api/auto-scan/run\"") == 1
+    assert "while true" not in script
+    assert "until false" not in script
+
+
+def test_watchdog_workflow_distinguishes_ok_warning_and_alert_levels():
+    script = _script(_WATCHDOG_WORKFLOW_PATH)
+    assert '"$level" = "OK"' in script
+    assert '"$level" = "WARNING"' in script
+    assert "::warning::" in script
+    assert "::error::" in script
