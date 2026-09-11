@@ -246,3 +246,5 @@ using the validation period to silently fit new scoring parameters.
 **Rejected:** Wiring up a real provider call behind a flag "for testing" (defeats the point of dry-run validation being free and safe); a second, parallel session-logging/handoff format instead of referencing `.agent-room/coordination/*`.
 
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
+
+<!-- no-log: routine change, no decision or anti-pattern worth recording -->
