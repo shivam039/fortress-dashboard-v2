@@ -2354,7 +2354,19 @@ def update_scan_status(scan_id, status):
 # a load balancer, can resume polling the same job_id and see the same state.
 
 
+@functools.lru_cache(maxsize=1)
 def _ensure_scan_jobs_neon():
+    # Called from 7 call sites (create/get/update/complete/fail scan_jobs),
+    # including update_scan_job_progress which fires up to ~20 times per
+    # scan — without memoizing, every one of those re-ran a CREATE TABLE IF
+    # NOT EXISTS DDL statement (an extra round trip, on top of the actual
+    # UPDATE) even though the table already exists after the first call.
+    # This was the dominant hidden cost in the "indicators" stage timing
+    # (which wraps the per-ticker loop, including its throttled progress
+    # writes) — measured flat at ~40-48s regardless of universe size
+    # (50-181 tickers), matching ~20 throttled progress updates x ~2s/call
+    # rather than any actual per-ticker indicator computation cost.
+    # lru_cache mirrors _can_use_neon's own one-time-check pattern above.
     _exec("""
         CREATE TABLE IF NOT EXISTS scan_jobs (
             job_id            TEXT PRIMARY KEY,
