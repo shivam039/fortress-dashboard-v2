@@ -54,6 +54,12 @@ const ADAPTERS = {
       return process.env.XAI_API_KEY ? 'SUPPORTED' : 'NOT_CONFIGURED';
     },
   },
+  gemini: {
+    name: 'gemini',
+    status() {
+      return process.env.GEMINI_API_KEY ? 'SUPPORTED' : 'NOT_CONFIGURED';
+    },
+  },
 };
 
 function providerStatus(providerName) {

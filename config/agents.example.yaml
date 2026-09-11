@@ -20,6 +20,12 @@ defaults:
   input_budget: 8000
   output_budget: 2500
 
+# Gemini credential is read from GEMINI_API_KEY in the environment. Keep the
+# provider in MANUAL_EXPORT until a reviewed automated adapter is available.
+providers:
+  gemini:
+    mode: MANUAL_EXPORT
+
 agents:
   coordinator:
     input_budget: 6000

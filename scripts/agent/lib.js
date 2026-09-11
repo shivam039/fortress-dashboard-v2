@@ -21,7 +21,7 @@ const REQUIRED_AGENTS = [
 ];
 const CLASSIFICATION_ONLY_AGENTS = new Set(['coordinator']);
 const NON_IMPLEMENTATION_AGENTS = new Set(['coordinator', 'reviewer']);
-const KNOWN_PROVIDERS = new Set(['codex', 'anthropic', 'xai']);
+const KNOWN_PROVIDERS = new Set(['codex', 'anthropic', 'xai', 'gemini']);
 
 function parseScalar(raw) {
   const v = raw.trim();
