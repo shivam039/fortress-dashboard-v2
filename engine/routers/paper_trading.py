@@ -65,8 +65,6 @@ async def paper_trade_metrics(user: dict = Depends(get_current_user)):
             detail="Paper trade data is temporarily unavailable",
         ) from exc
     return compute_metrics(closed_trades)
-
-
 @router.get("/open/valuation")
 async def open_position_valuation(user: dict = Depends(get_current_user)):
     """Return open trades enriched with non-persistent latest valuation data."""
@@ -106,7 +104,6 @@ async def open_position_valuation(user: dict = Depends(get_current_user)):
         item["policy_version"] = policies.get(trade.get("trade_id"), {}).get("policy_version")
         result.append(item)
     return result
-
 
 @router.get("/signals")
 async def eligible_signals(
