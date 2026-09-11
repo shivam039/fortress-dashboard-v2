@@ -238,6 +238,7 @@ def test_scan_persists_to_history_so_the_history_page_can_see_it(monkeypatch):
     assert len(entries) > 0, "scan just ran but no entry appeared in history"
     assert entries[0]["scan_type"] == "STOCK"
     assert entries[0]["universe"] == "Nifty 50"
+    assert entries[0]["num_scanned"] == 50, "FORTRESS-UX1: lightweight per-run count for the history list"
 
     data_response = client.get(f"/api/history/data?scan_id={entries[0]['scan_id']}")
     assert data_response.status_code == 200
