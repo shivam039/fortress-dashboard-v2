@@ -7,10 +7,10 @@ import { useToast } from '@/contexts/ToastContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { emptyScanState, getScanStore } from '@/lib/scan-state';
 import { ScanStatus } from '@/components/ScanStatus';
-import MetricCard from '@/components/MetricCard';
 import DataTable from '@/components/DataTable';
 import SectorIntelligence, { type SectorPulse } from '@/components/SectorIntelligence';
 import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
+import ScannerResultsView from '@/components/ScannerResultsView';
 import FortressScoreCard from '@/components/FortressScoreCard';
 import HistoricalEvidenceCard from '@/components/HistoricalEvidenceCard';
 import { toFortressSignal, fromRealEvidence, type HistoricalEvidence } from '@/lib/score-evidence';
@@ -207,12 +207,9 @@ export default function ScreenerPage() {
     }
   }, [universe, success, error]);
 
-  const momentum = results.filter(r => r.Strategy === 'Momentum Pick');
-  const longTerm = results.filter(r => r.Strategy === 'Long-Term Pick');
   const actionable = results.filter(r => r.Quality_Gate_Pass === true);
   const sectorPulseRows = sectorPulse as unknown as SectorPulse[];
   const actionableHeatmapRows = actionable as unknown as HeatmapData[];
-  const filtered = results.filter(r => r.Quality_Gate_Pass === false);
 
   return (
     <>
@@ -369,52 +366,8 @@ export default function ScreenerPage() {
         </div>
       )}
 
-      {/* ── Summary metrics ─────────────────────────────────────────────── */}
-      {results.length > 0 && (
-        <div className="grid-4" style={{ marginBottom: '24px' }}>
-          <MetricCard label="Total Results" value={results.length} />
-          <MetricCard label="Actionable" value={actionable.length} deltaType="positive" />
-          <MetricCard label="Momentum Picks" value={momentum.length} />
-          <MetricCard label="Long-Term Picks" value={longTerm.length} />
-        </div>
-      )}
-
-      {/* ── Strategic splits ────────────────────────────────────────────── */}
-      {momentum.length > 0 && (
-        <div className="section">
-          <h3 className="section-title">🚀 Momentum Picks ({momentum.length})</h3>
-          <DataTable data={momentum} columns={['Symbol', 'Company', 'Price', 'Score', 'Strategy', 'Velocity', 'Target_10D', 'Stop_Loss', 'Position_Qty']} />
-        </div>
-      )}
-
-      {longTerm.length > 0 && (
-        <div className="section">
-          <h3 className="section-title">💎 Long-Term Picks ({longTerm.length})</h3>
-          <DataTable data={longTerm} columns={['Symbol', 'Company', 'Price', 'Score', 'Strategy', 'Velocity', 'Target_10D', 'Stop_Loss', 'Position_Qty']} />
-        </div>
-      )}
-
-      {/* ── Full Results ────────────────────────────────────────────────── */}
-      {results.length > 0 && (
-        <div className="section">
-          <h3 className="section-title">📋 All Scan Results</h3>
-          <DataTable data={results} />
-        </div>
-      )}
-
-      {/* ── Filtered Out ────────────────────────────────────────────────── */}
-      {filtered.length > 0 && (
-        <div className="section">
-          <div className="expander">
-            <div className="expander-header">
-              Filtered Out ({filtered.length}) — Hard Quality Gates
-            </div>
-            <div className="expander-body">
-              <DataTable data={filtered} />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ── Results (shared with the read-only Historical Stock Screener) ── */}
+      <ScannerResultsView results={results} mode="live" />
     </>
   );
 }
