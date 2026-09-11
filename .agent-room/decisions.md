@@ -236,3 +236,13 @@ using the validation period to silently fit new scoring parameters.
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
 
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
+
+### 2026-09-11 — AGENT1A: dry-run-only scaffolding, integrate not duplicate .agent-room/coordination
+
+**Decision:** AGENT1A ships only static role contracts, config resolution, and a dry-run prompt builder (`scripts/agent/*`) — no live provider API calls, no auto-PR, gated behind a separate future AGENT1B story. The prompt builder structurally never reads `process.env`/`.env*` (not just "shouldn't", literally can't), so it cannot leak a secret into a generated prompt. New `agents/*.md` role files reference (not duplicate) the existing `.agent-room/coordination/*` handoff/scope/logging conventions.
+
+**Why:** The story runs in parallel with INFRA4 (Oracle production observation) and explicitly must not touch production behavior or scheduler ownership. Keeping this dry-run-only, with a structural (not policy) guarantee against secret leakage, makes it safe to build/test/merge without any live-execution risk, and avoids two competing agent-coordination systems in the same repo.
+
+**Rejected:** Wiring up a real provider call behind a flag "for testing" (defeats the point of dry-run validation being free and safe); a second, parallel session-logging/handoff format instead of referencing `.agent-room/coordination/*`.
+
+<!-- no-log: routine change, no decision or anti-pattern worth recording -->
