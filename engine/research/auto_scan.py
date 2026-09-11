@@ -68,6 +68,84 @@ def resolve_configured_universes() -> List[str]:
     return [name.strip() for name in raw.split(",") if name.strip()]
 
 
+# ── FORTRESS-O1: operational monitoring (detection only — no scoring, no
+# retry loop, no second scheduler). Reads auto_scan_runs/bhavcopy_fetch_log,
+# never writes evidence. See docs/research/PRODUCTION_OPERATIONS.md.
+
+_EXPECTED_RUN_GRACE_HOUR_UTC = 18  # E3 is scheduled 15:45 UTC; ~2h15m grace
+
+
+def check_pipeline_health(trading_date: Optional[str] = None) -> Dict[str, Any]:
+    """Operational (not statistical) health check for the E3 pipeline.
+    Idempotent and side-effect-free — safe to call repeatedly (e.g. from a
+    watchdog re-run) without duplicating scans or evidence. Returns
+    {"level": "OK"|"WARNING"|"ALERT", "reason": ..., ...diagnostics}. Never
+    includes secret values."""
+    from utils.db import get_bhavcopy_fetch_status
+
+    trading_date = trading_date or datetime.now().strftime("%Y-%m-%d")
+    run = fetch_latest_auto_scan_run(trading_date=trading_date)
+
+    if run is None:
+        if datetime.now(timezone.utc).hour < _EXPECTED_RUN_GRACE_HOUR_UTC:
+            return {"level": "OK", "reason": "run not due yet", "trading_date": trading_date}
+        latest = fetch_latest_auto_scan_run()
+        return {
+            "level": "ALERT", "reason": "EXPECTED_RUN_MISSING", "trading_date": trading_date,
+            "latest_known_run_id": latest.get("run_id") if latest else None,
+            "latest_known_trading_date": latest.get("trading_date") if latest else None,
+        }
+
+    status = run.get("status")
+    if status == "FAILED":
+        return {
+            "level": "ALERT", "reason": "RUN_FAILED", "run_id": run.get("run_id"),
+            "trading_date": trading_date, "failure_reason": run.get("reason"),
+            "circuit_breaker_tripped": run.get("circuit_breaker_tripped"),
+        }
+    if status == "DEGRADED":
+        return {
+            "level": "WARNING", "reason": "RUN_DEGRADED", "run_id": run.get("run_id"),
+            "trading_date": trading_date, "unresolved_universes": run.get("unresolved_universes"),
+            "degradation_reason": run.get("reason"),
+        }
+    if status == "COMPLETE":
+        issues = []
+        if not run.get("observations_inserted"):
+            issues.append("no_observations_inserted_despite_complete_run")
+        bhav_status = get_bhavcopy_fetch_status(trading_date)
+        if bhav_status not in ("done", None):
+            issues.append(f"bhavcopy_not_current:{bhav_status}")
+        if issues:
+            return {
+                "level": "ALERT", "reason": "STALE_EVIDENCE", "run_id": run.get("run_id"),
+                "trading_date": trading_date, "issues": issues,
+            }
+        return {"level": "OK", "run_id": run.get("run_id"), "trading_date": trading_date}
+
+    # RUNNING (or any other non-terminal value) still present this late —
+    # never fabricate progress; surface it as-is.
+    return {
+        "level": "ALERT", "reason": f"RUN_NOT_TERMINAL:{status}", "run_id": run.get("run_id"),
+        "trading_date": trading_date,
+    }
+
+
+def check_production_config() -> Dict[str, Any]:
+    """Config-presence check only — booleans, never values. See
+    docs/research/PRODUCTION_OPERATIONS.md 'Production config check'."""
+    configured = os.getenv("FORTRESS_AUTO_SCAN_UNIVERSES", "").strip()
+    expected = ",".join(_INTENDED_PRODUCTION_UNIVERSES)
+    universes_match = [u.strip() for u in configured.split(",") if u.strip()] == list(_INTENDED_PRODUCTION_UNIVERSES)
+    return {
+        "universes_configured_correctly": universes_match,
+        "expected_universes_env": expected if not universes_match else None,
+        "fortress_api_key_set": bool(os.getenv("FORTRESS_API_KEY")),
+        "fortress_jwt_secret_set": bool(os.getenv("FORTRESS_JWT_SECRET")),
+        "fortress_app_password_set": bool(os.getenv("FORTRESS_APP_PASSWORD")),
+    }
+
+
 def build_symbol_union(universe_names: List[str]) -> Tuple[List[str], Dict[str, List[str]]]:
     """Resolve membership of every (already-validated) configured universe,
     then union to unique symbols. Preserves the exact overlap-avoidance the

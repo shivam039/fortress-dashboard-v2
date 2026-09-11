@@ -1,0 +1,91 @@
+name: FORTRESS-O1 Auto-Scan Watchdog
+
+# Detects when the automated E3 evidence pipeline did NOT run correctly —
+# separate from and downstream of auto-scan-eod.yml, because the scheduler
+# itself (or the runner it executes on) can fail before /api/auto-scan/run
+# is ever reached, which auto-scan-eod.yml's own polling cannot detect.
+# Read-only: calls GET /api/auto-scan/health (engine/routers/auto_scan.py ->
+# research.auto_scan.check_pipeline_health/check_production_config) — never
+# scans, never writes evidence, never duplicates a run.
+#
+# COMPLETE -> quiet success. DEGRADED -> GitHub Actions warning annotation,
+# workflow still succeeds. FAILED / STALE_EVIDENCE / RUN_NOT_TERMINAL -> the
+# workflow fails (GitHub's own failure notification is the alert channel —
+# no external notification stack introduced). EXPECTED_RUN_MISSING -> one
+# bounded recovery attempt (POST /api/auto-scan/run once, safe because E3 is
+# idempotent per trading date) and the workflow still fails so it's visibly
+# alerted rather than silently "fixed".
+#
+# Required repo secrets (same as auto-scan-eod.yml):
+#   FORTRESS_BACKEND_URL, FORTRESS_API_KEY
+
+on:
+  schedule:
+    - cron: '30 16 * * 1-5' # 16:30 UTC — after auto-scan-eod.yml's ~30min poll window
+  workflow_dispatch:
+
+concurrency:
+  group: fortress-auto-scan-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake backend, check pipeline health, alert on FAILED/missing/stale
+        run: |
+          set -u
+
+          if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
+            echo "FORTRESS_BACKEND_URL secret is not set — skipping (nothing to call)."
+            exit 0
+          fi
+
+          BASE_URL="${{ secrets.FORTRESS_BACKEND_URL }}"
+          API_KEY="${{ secrets.FORTRESS_API_KEY }}"
+          CONNECT_TIMEOUT=10
+          REQUEST_TIMEOUT=30
+
+          WAKE_ATTEMPTS=12
+          WAKE_WAIT_SECONDS=15
+          awake=0
+          for i in $(seq 1 "$WAKE_ATTEMPTS"); do
+            status=$(curl -sS -o /dev/null -w "%{http_code}" \
+              --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              "$BASE_URL/api/health" || echo "000")
+            if [ "$status" = "200" ]; then awake=1; break; fi
+            sleep "$WAKE_WAIT_SECONDS"
+          done
+          if [ "$awake" -ne 1 ]; then
+            echo "::error::Backend did not wake after $WAKE_ATTEMPTS attempts (last status: $status)"
+            exit 1
+          fi
+
+          health_json=$(curl -sS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+            -H "X-API-Key: $API_KEY" "$BASE_URL/api/auto-scan/health")
+          echo "$health_json" | jq '.' 2>/dev/null || echo "$health_json"
+
+          level=$(echo "$health_json" | jq -er '.pipeline.level // empty' 2>/dev/null || echo "")
+          reason=$(echo "$health_json" | jq -er '.pipeline.reason // empty' 2>/dev/null || echo "")
+
+          if [ "$level" = "OK" ]; then
+            echo "Pipeline healthy — no intervention required."
+            exit 0
+          fi
+
+          if [ "$level" = "WARNING" ]; then
+            echo "::warning::E3 run DEGRADED — $(echo "$health_json" | jq -c '.pipeline')"
+            exit 0
+          fi
+
+          if [ "$reason" = "EXPECTED_RUN_MISSING" ]; then
+            echo "::error::Expected E3 run is missing — attempting one bounded recovery trigger."
+            curl -sS -o /dev/null --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+              -X POST "$BASE_URL/api/auto-scan/run" \
+              -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" -d '{}' || true
+            echo "::error::Recovery trigger sent (idempotent, in progress). Failing this check so it is visibly alerted; next scheduled check confirms resolution."
+            exit 1
+          fi
+
+          echo "::error::E3 pipeline unhealthy — $(echo "$health_json" | jq -c '.pipeline')"
+          exit 1
