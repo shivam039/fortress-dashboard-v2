@@ -141,3 +141,61 @@ using `scripts/agent/pr-body.js` for the body template.
 
 There is no auto-merge path anywhere in this pipeline (see
 GOVERNANCE.md). The PR sits `AWAITING_HUMAN` until a person merges it.
+
+## AGENT3: one resumable, quality-gated run
+
+AGENT3 composes the AGENT1B execution controls and AGENT2 evaluator; it does
+not add roles or call a paid provider. Start a canonical run with:
+
+```bash
+node scripts/agent/agent.js plan .agent-tasks/<task-id>.yaml
+```
+
+For `MANUAL_EXPORT`, the output names the provider/model and prompt artifact,
+the required JSON response shape, and the exact import/resume commands. A
+minimal response is:
+
+```json
+{"run_id":"<same-run-id>","provider":"codex","model":"<configured-model>","changed_files":["docs/example.md"],"summary":"Implemented the approved task."}
+```
+
+Treat that file as untrusted. Import and resume the **same** run:
+
+```bash
+node scripts/agent/agent.js import-result <run-id> result.json
+node scripts/agent/agent.js resume <run-id>
+```
+
+The importer rejects a wrong run/provider/model, checks scope, limits file
+size, stores a hash, and ignores attempts to alter production access, scope,
+budgets, review, human-gate, or merge policy. Record externally executed test
+results rather than putting task-authored shell commands into the pipeline:
+
+```bash
+node scripts/agent/agent.js tests <run-id> tests-report.json
+node scripts/agent-eval/run-gate.js .agent-room/sessions/<run-id>.manifest.json eval-report.json
+node scripts/agent/agent.js eval <run-id> eval-report.json
+node scripts/agent/agent.js review <run-id> MERGEABLE
+node scripts/agent/agent.js docs <run-id> pass   # only when required
+node scripts/agent/agent.js pr-ready <run-id>
+```
+
+`EVAL_WARN` continues to Reviewer with the warning visible. `EVAL_FAIL` and
+every hard safety failure stop at `BLOCKED_EVAL`; Reviewer cannot override it.
+Reviewer may request one focused repair using the same provider. A second
+failure blocks for a human, and provider switching is never automatic.
+
+PR readiness requires scope PASS, tests PASS, eval PASS/WARN, an acceptable
+review verdict, satisfied docs, and a valid human gate. The final state is
+always `AWAITING_HUMAN`; this CLI has no merge command.
+
+Provider recommendations are advisory and require five evaluated samples per
+role/provider:
+
+```bash
+node scripts/agent/agent.js recommend-provider backend quality-records.json
+```
+
+Token efficiency is calculated only when real input and output usage is
+available. Missing usage is left null, and safety failures invalidate an
+efficiency claim. Recommendations never rewrite provider configuration.

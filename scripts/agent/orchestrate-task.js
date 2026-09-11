@@ -136,7 +136,9 @@ function plan(taskPath, configPathArg) {
 
   return {
     state: providerResolution.mode === 'AUTOMATED' ? 'RUNNING' : 'MANUAL_EXPORT',
+    run_id: runId,
     task_id: task.id || taskId,
+    issue_number: task.issue_number || null,
     agent: agentName,
     provider: providerName,
     provider_status: providerResolution.status,
@@ -146,6 +148,8 @@ function plan(taskPath, configPathArg) {
     output_budget: outputBudget,
     production_access: productionAccess,
     branch,
+    allowed_files: task.allowed_files || [],
+    forbidden_files: task.forbidden_files || [],
     docs_required: task.docs_required != null ? task.docs_required : 'auto',
     human_approval_required: task.human_approval_required !== false,
     run_record: record,
