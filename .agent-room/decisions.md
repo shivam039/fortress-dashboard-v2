@@ -224,3 +224,13 @@ showing in-sample versus out-of-sample degradation.
 using the validation period to silently fit new scoring parameters.
 
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
+
+### 2026-09-11 — Share one Caddy instance across Oracle staging and production via an external Docker network
+
+**Decision:** Production runs as a backend-only container (`fortress-backend-production`, no own Caddy) on the same Oracle VM as staging. Both staging's containers and the new production container join a manually-created external Docker network (`fortress-shared`); staging's existing Caddy container gets a second site block (`PRODUCTION_API_DOMAIN`) added to the same Caddyfile and now routes both domains.
+
+**Why:** The ticket's own INFRA3 spec explicitly allows "Caddy may proxy both hostnames if cleanly supported," and the VM only has one public IP with ports 80/443 — two independent Caddy containers can't both bind those ports. Reusing one Caddy avoids a second TLS/cert-management surface and a second exposed port pair, at the cost of a shared blast radius: production's Caddy config now lives in the same file/container as staging's, and redeploying staging's compose file (to join the network) required one brief restart of staging's already-running containers.
+
+**Rejected:** A second Caddy container on different host ports (ugly URLs, defeats the purpose of a clean production domain); running production on a second Oracle VM (unnecessary cost/complexity for current load, and the ticket prefers reusing the existing VM when resources permit).
+
+<!-- no-log: routine change, no decision or anti-pattern worth recording -->
