@@ -1,0 +1,23 @@
+services:
+  fortress-backend-production:
+    image: ${FORTRESS_IMAGE:?Set FORTRESS_IMAGE to an immutable image tag}
+    container_name: fortress-backend-production
+    restart: unless-stopped
+    env_file:
+      - .env.oracle.production
+    environment:
+      PORT: "8000"
+    expose:
+      - "8000"
+    networks:
+      - fortress-shared
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+networks:
+  fortress-shared:
+    external: true

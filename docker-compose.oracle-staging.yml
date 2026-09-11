@@ -9,6 +9,8 @@ services:
       PORT: "8000"
     expose:
       - "8000"
+    networks:
+      - fortress-shared
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/health >/dev/null || exit 1"]
       interval: 30s
@@ -28,10 +30,17 @@ services:
       - "443:443"
     environment:
       STAGING_API_DOMAIN: ${STAGING_API_DOMAIN:?Set staging API domain}
+      PRODUCTION_API_DOMAIN: ${PRODUCTION_API_DOMAIN:?Set production API domain}
+    networks:
+      - fortress-shared
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+
+networks:
+  fortress-shared:
+    external: true
 
 volumes:
   caddy_data:

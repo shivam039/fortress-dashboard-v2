@@ -9,6 +9,7 @@ venv/
 .venv/
 .env
 .env.oracle.staging
+.env.oracle.production
 
 # Build / Logs
 build/
