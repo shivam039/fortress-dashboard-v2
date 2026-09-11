@@ -342,7 +342,7 @@ export default function ScreenerPage() {
         </button>
       </div>
 
-      <ScanStatus state={scan} />
+      <ScanStatus state={scan} onRetry={runScan} />
 
       {results.length === 0 && scan.status === 'idle' && (
         <div className="empty-state">
