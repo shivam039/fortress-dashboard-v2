@@ -36,10 +36,26 @@ quota is spent.
 
 If Codex, Claude, and Grok differ in execution mechanism (CLI vs. API vs.
 SDK, different auth flows, different context-window shapes), that
-difference belongs in a provider adapter — not in a specialist's role
-file. AGENT1A does not implement provider adapters (that's AGENT1B); this
-doc is where their mechanism differences should eventually be documented,
-one section per provider, so `agents/*.md` never needs to know about them.
+difference belongs in a provider adapter (`scripts/agent/providers.js`,
+added in AGENT1B) — not in a specialist's role file.
+
+## Current provider status (this repo, as implemented)
+
+| Provider | Mechanism | Status here | Mode |
+|---|---|---|---|
+| `codex` | Codex Cloud/CLI, invoked interactively in a session like this one | `UNAVAILABLE` — no headless/API mechanism this repo's tooling can drive from a GitHub Actions workflow exists yet | `MANUAL_EXPORT` always |
+| `anthropic` | Claude API, would use `ANTHROPIC_API_KEY` | `NOT_CONFIGURED` (no key set in this environment) | `MANUAL_EXPORT` unless a key is added *and* `providers.anthropic.mode: AUTOMATED` is set in config |
+| `xai` | Grok API, would use `XAI_API_KEY` | `NOT_CONFIGURED` | `MANUAL_EXPORT` unless a key is added *and* `providers.xai.mode: AUTOMATED` is set in config |
+
+**Important:** even with a real API key configured and `mode: AUTOMATED`
+set, AGENT1B ships **no actual network call** to any provider —
+`scripts/agent/providers.js`'s `executeAgent()` always returns
+`executed: false`. Wiring up a real automated call is future work, not
+part of AGENT1B (see the "important implementation decision" in the
+AGENT1B story: don't force paid automation just to claim it exists).
+Until then, every provider is effectively `MANUAL_EXPORT` in practice —
+see PHASE 37/USAGE.md's manual-export flow, which is fully functional
+today with zero provider credentials.
 
 ## Resolution order
 

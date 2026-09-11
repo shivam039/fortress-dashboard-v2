@@ -1,0 +1,21 @@
+# AGENT1B acceptance demonstration task (Phase 38) — harmless, docs-only.
+# Not a real task to execute; a fixture proving the full plan pipeline
+# (classify -> budget gate -> provider mode -> branch name -> prompt ->
+# run record) works end-to-end without touching production or requiring
+# any provider credentials.
+
+id: agent1b-demo-001
+title: "Fix a stale sentence in a docs file (demonstration task)"
+agent: docs
+priority: low
+allowed_files: [docs/**]
+forbidden_files: [engine/**, frontend/**, docker-compose*.yml, Caddyfile, .github/workflows/**]
+input_budget: 4500
+output_budget: 1800
+acceptance_criteria: [stale statement corrected, no other file changed]
+dependencies: []
+production_access: false
+docs_required: false
+issue_number: 9999
+risk: low
+human_approval_required: true
