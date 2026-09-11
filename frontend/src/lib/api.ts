@@ -525,6 +525,9 @@ export interface ScanHistoryEntry {
   timestamp: string;
   universe: string;
   scan_type: string;
+  // FORTRESS-UX1: lightweight per-run count so the history list can show
+  // "N stocks analysed" without fetching every run's full payload.
+  num_scanned?: number;
 }
 
 export const historyApi = {

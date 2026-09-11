@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "noEmit": false,
+    "incremental": false,
+    "outDir": ".ux1-tests",
+    "rootDir": "src",
+    "plugins": []
+  },
+  "include": ["src/lib/scan-history.ts"],
+  "exclude": ["node_modules"]
+}

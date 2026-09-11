@@ -51,3 +51,4 @@ CLAUDE.local.md
 
 # Compiled scan UX tests
 frontend/.scan-tests/
+frontend/.ux1-tests/

@@ -3793,10 +3793,11 @@ def fetch_scan_history_list(limit=200):
     try:
         df = _read_df(
             """
-            SELECT scan_id, timestamp, universe, scan_type
-            FROM scans
-            WHERE status = 'Completed'
-            ORDER BY scan_id DESC
+            SELECT s.scan_id, s.timestamp, s.universe, s.scan_type,
+                   (SELECT COUNT(*) FROM scan_history_details d WHERE d.scan_id = s.scan_id) AS num_scanned
+            FROM scans s
+            WHERE s.status = 'Completed'
+            ORDER BY s.scan_id DESC
             LIMIT :limit
             """,
             {"limit": limit},
