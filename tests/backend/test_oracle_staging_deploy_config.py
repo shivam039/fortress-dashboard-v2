@@ -10,6 +10,7 @@ def test_oracle_deploy_script_uses_staging_env_file_for_every_compose_call():
     assert "COMPOSE=(" in script
     assert "--env-file .env.oracle.staging" in script
     assert '-f "$COMPOSE_FILE"' in script
+    assert 'FORTRESS_SKIP_IMAGE_PULL:-0' in script
     assert '"${COMPOSE[@]}" pull' in script
     assert '"${COMPOSE[@]}" up -d' in script
     assert '"${COMPOSE[@]}" ps' in script
