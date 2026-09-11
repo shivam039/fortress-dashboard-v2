@@ -158,6 +158,24 @@ ORACLE_STAGING_BACKEND_URL=https://staging-api.example.com/api/health \
 /opt/fortress-dashboard/deploy-oracle-staging.sh
 ```
 
+## Compose Preflight
+
+Before the first deploy, you can verify Compose interpolation on the VM without
+starting containers:
+
+```bash
+cd /opt/fortress-dashboard
+FORTRESS_IMAGE=ghcr.io/shivam039/fortress-dashboard-v2/fortress-backend:test \
+docker compose \
+  --env-file .env.oracle.staging \
+  -f docker-compose.oracle-staging.yml \
+  config
+```
+
+This confirms `STAGING_API_DOMAIN` comes from `.env.oracle.staging`, while
+`FORTRESS_IMAGE` can still be supplied by the deploy workflow or rollback
+command.
+
 ## Health Verification
 
 The deploy workflow verifies:
@@ -232,7 +250,10 @@ Use only the isolated staging database.
 
    ```bash
    cd /opt/fortress-dashboard
-   docker compose -f docker-compose.oracle-staging.yml up -d
+   docker compose \
+     --env-file .env.oracle.staging \
+     -f docker-compose.oracle-staging.yml \
+     up -d
    ```
 
 3. Trigger one manual scan against the staging API only.
@@ -253,7 +274,10 @@ Use these VM commands:
 
 ```bash
 cd /opt/fortress-dashboard
-docker compose -f docker-compose.oracle-staging.yml ps
+docker compose \
+  --env-file .env.oracle.staging \
+  -f docker-compose.oracle-staging.yml \
+  ps
 docker stats
 docker logs fortress-backend --tail=200
 docker logs fortress-caddy --tail=100
@@ -273,6 +297,18 @@ ORACLE_STAGING_BACKEND_URL=https://staging-api.example.com/api/health \
 ```
 
 Verify `/api/health` after rollback.
+
+If you run Compose manually instead of the deploy script, include the staging
+env file so Compose can resolve `STAGING_API_DOMAIN` and `FORTRESS_IMAGE`:
+
+```bash
+cd /opt/fortress-dashboard
+FORTRESS_IMAGE=ghcr.io/shivam039/fortress-dashboard-v2/fortress-backend:PREVIOUS_GOOD_SHA \
+docker compose \
+  --env-file .env.oracle.staging \
+  -f docker-compose.oracle-staging.yml \
+  up -d
+```
 
 ## ARM Notes
 
