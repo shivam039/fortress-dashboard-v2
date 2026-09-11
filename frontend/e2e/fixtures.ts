@@ -47,11 +47,29 @@ export async function installSafeApi(page: Page): Promise<void> {
   });
 }
 
+// globals.css @imports Google Fonts at runtime — a real external network
+// dependency of the app, not app/test noise. Allowlisted alongside the
+// favicon so a transient DNS/CDN hiccup for a non-critical web font never
+// flaps an otherwise-passing deterministic test; the app's own font
+// fallback stack still renders correctly if this fails in production.
+const IGNORABLE_RESOURCE = /favicon\.ico|fonts\.(?:googleapis|gstatic)\.com/;
+
+// The browser's generic "Failed to load resource: ..." console message
+// never includes the failing URL, so it can't be matched against
+// IGNORABLE_RESOURCE here — but every such failure also fires
+// `requestfailed`/`response` below (with the real URL/status, properly
+// filtered — e.g. a deliberately-mocked 401 in the invalid-credentials
+// test is expected behavior, not a fatal error), so dropping this URL-less
+// duplicate from console loses no real coverage.
+const GENERIC_NETWORK_FAILURE = /^Failed to load resource: (net::|the server responded with a status of \d+)/;
+
 export function watchForFatalErrors(page: Page): () => void {
   const failures: string[] = [];
   page.on('pageerror', error => failures.push(`pageerror: ${error.message}`));
   page.on('console', message => {
-    if (message.type() === 'error' && !message.text().includes('favicon.ico')) failures.push(`console: ${message.text()}`);
+    if (message.type() !== 'error') return;
+    if (IGNORABLE_RESOURCE.test(message.text()) || GENERIC_NETWORK_FAILURE.test(message.text())) return;
+    failures.push(`console: ${message.text()}`);
   });
   page.on('response', response => {
     const status = response.status();
@@ -60,13 +78,15 @@ export function watchForFatalErrors(page: Page): () => void {
     }
   });
   page.on('requestfailed', request => {
-    if (!request.failure()?.errorText.includes('ERR_ABORTED')) failures.push(`request failed: ${request.url()}`);
+    if (!request.failure()?.errorText.includes('ERR_ABORTED') && !IGNORABLE_RESOURCE.test(request.url())) {
+      failures.push(`request failed: ${request.url()}`);
+    }
   });
   return () => expect(failures, failures.join('\n')).toEqual([]);
 }
 
 export async function loginWithFixture(page: Page): Promise<void> {
-  await page.goto('/login');
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /Guest/ }).click();
   await page.getByRole('button', { name: /Continue as Guest/ }).click();
   await expect(page).toHaveURL(/\/dashboard$/);

@@ -19,7 +19,7 @@ test('deployed Fortress supports authenticated read-only journeys', async ({ pag
     await route.continue();
   });
 
-  await page.goto('/login');
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
   await page.getByLabel('Username').fill(username!);
   await page.getByLabel('Password').fill(password!);
   await page.getByRole('button', { name: 'Sign In' }).click();

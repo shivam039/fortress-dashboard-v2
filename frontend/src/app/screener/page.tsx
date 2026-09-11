@@ -223,8 +223,9 @@ export default function ScreenerPage() {
         <h3 className="section-title" style={{ marginTop: 0 }}>🔎 Search a Stock</h3>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
           <div className="input-group" style={{ position: 'relative', flex: 1 }} ref={searchBoxRef}>
-            <label>Ticker or company name</label>
+            <label htmlFor="screener-search">Ticker or company name</label>
             <input
+              id="screener-search"
               className="input"
               type="text"
               placeholder="e.g. RELIANCE or Reliance Industries"
@@ -273,22 +274,22 @@ export default function ScreenerPage() {
       <div className="card" style={{ marginBottom: '24px' }}>
         <div className="grid-4" style={{ marginBottom: '16px' }}>
           <div className="input-group">
-            <label>Universe</label>
-            <select className="input" value={universe} onChange={e => setUniverse(e.target.value)}>
+            <label htmlFor="screener-universe">Universe</label>
+            <select id="screener-universe" className="input" value={universe} onChange={e => setUniverse(e.target.value)}>
               {universes.map(u => <option key={u} value={u}>{u}</option>)}
             </select>
           </div>
           <div className="input-group">
-            <label>Portfolio (₹)</label>
-            <input className="input" type="number" value={portfolioVal} onChange={e => setPortfolioVal(Number(e.target.value))} />
+            <label htmlFor="screener-portfolio">Portfolio (₹)</label>
+            <input id="screener-portfolio" className="input" type="number" value={portfolioVal} onChange={e => setPortfolioVal(Number(e.target.value))} />
           </div>
           <div className="input-group">
-            <label>Risk %</label>
-            <input className="input" type="number" step="0.1" value={riskPct} onChange={e => setRiskPct(Number(e.target.value))} />
+            <label htmlFor="screener-risk">Risk %</label>
+            <input id="screener-risk" className="input" type="number" step="0.1" value={riskPct} onChange={e => setRiskPct(Number(e.target.value))} />
           </div>
           <div className="input-group">
-            <label>Broker</label>
-            <select className="input" value={broker} onChange={e => setBroker(e.target.value)}>
+            <label htmlFor="screener-broker">Broker</label>
+            <select id="screener-broker" className="input" value={broker} onChange={e => setBroker(e.target.value)}>
               <option value="Zerodha">Zerodha</option>
               <option value="Dhan">Dhan</option>
             </select>
@@ -311,23 +312,23 @@ export default function ScreenerPage() {
                   </label>
                 </div>
                 <div className="input-group">
-                  <label>Liquidity Gate (₹ Cr)</label>
-                  <input className="input" type="number" step="0.5" value={liquidityMin} onChange={e => setLiquidityMin(Number(e.target.value))} />
+                  <label htmlFor="screener-liquidity">Liquidity Gate (₹ Cr)</label>
+                  <input id="screener-liquidity" className="input" type="number" step="0.5" value={liquidityMin} onChange={e => setLiquidityMin(Number(e.target.value))} />
                 </div>
                 <div className="input-group">
-                  <label>Market Cap Gate (₹ Cr)</label>
-                  <input className="input" type="number" step="50" value={marketCapMin} onChange={e => setMarketCapMin(Number(e.target.value))} />
+                  <label htmlFor="screener-marketcap">Market Cap Gate (₹ Cr)</label>
+                  <input id="screener-marketcap" className="input" type="number" step="50" value={marketCapMin} onChange={e => setMarketCapMin(Number(e.target.value))} />
                 </div>
                 <div className="input-group">
-                  <label>Min Price (₹)</label>
-                  <input className="input" type="number" step="5" value={priceMin} onChange={e => setPriceMin(Number(e.target.value))} />
+                  <label htmlFor="screener-minprice">Min Price (₹)</label>
+                  <input id="screener-minprice" className="input" type="number" step="5" value={priceMin} onChange={e => setPriceMin(Number(e.target.value))} />
                 </div>
               </div>
               <div className="grid-4">
                 {(['technical', 'fundamental', 'sentiment', 'context'] as const).map(w => (
                   <div className="input-group" key={w}>
-                    <label>{w.charAt(0).toUpperCase() + w.slice(1)}: {weights[w]}</label>
-                    <input type="range" min="0" max="100" value={weights[w]} onChange={e => setWeights(prev => ({ ...prev, [w]: Number(e.target.value) }))} />
+                    <label htmlFor={`screener-weight-${w}`}>{w.charAt(0).toUpperCase() + w.slice(1)}: {weights[w]}</label>
+                    <input id={`screener-weight-${w}`} type="range" min="0" max="100" value={weights[w]} onChange={e => setWeights(prev => ({ ...prev, [w]: Number(e.target.value) }))} />
                   </div>
                 ))}
               </div>

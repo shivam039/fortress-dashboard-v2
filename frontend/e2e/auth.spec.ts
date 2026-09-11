@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { test, expect } from './fixtures';
 
 test('login rejects invalid credentials and accepts valid credentials', async ({ page, fatalCheck }) => {
-  await page.goto('/login');
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Fortress', { exact: false }).first()).toBeVisible();
 
   await page.getByLabel('Username').fill('invalid');
@@ -20,13 +20,13 @@ test('login rejects invalid credentials and accepts valid credentials', async ({
   await expect(page.getByRole('button', { name: /Logout/ })).toBeVisible();
   await page.getByRole('button', { name: /Logout/ }).click();
   await expect(page.getByRole('button', { name: /Logout/ })).toHaveCount(0);
-  await page.goto('/login');
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: 'Sign In' })).toBeVisible();
   fatalCheck();
 });
 
 test('login has no serious or critical accessibility violations', async ({ page }) => {
-  await page.goto('/login');
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
   const result = await new AxeBuilder({ page }).analyze();
   expect(result.violations.filter(v => ['serious', 'critical'].includes(v.impact || ''))).toEqual([]);
 });

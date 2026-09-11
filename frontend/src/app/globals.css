@@ -886,6 +886,16 @@ select.input {
   .main-content { padding: 20px; }
 }
 
+/* ── Mobile nav toggle — hidden on desktop, the sidebar is always visible
+   there ─────────────────────────────────────────────────────────────── */
+.mobile-menu-toggle {
+  display: none;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
 @media (max-width: 768px) {
   .app-layout {
     grid-template-columns: 1fr;
@@ -899,6 +909,33 @@ select.input {
   }
   .sidebar.open {
     left: 0;
+  }
+  .mobile-menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 1.1rem;
+    z-index: 200;
+    cursor: pointer;
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 99;
+  }
+  .main-content {
+    padding-top: 64px;
   }
   .grid-2, .grid-3, .grid-4, .grid-5 {
     grid-template-columns: 1fr;
