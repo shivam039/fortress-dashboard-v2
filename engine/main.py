@@ -706,6 +706,7 @@ def execute_scan(
         history_df = score_df.copy()
         history_df["Universe"] = req.universe
         scan_id = None
+        _t_sub = time.monotonic()
         try:
             scan_id = register_scan(
                 timestamp, universe=req.universe, scan_type="STOCK", status="Completed"
@@ -713,18 +714,26 @@ def execute_scan(
             save_scan_results(scan_id, history_df, scan_timestamp=timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to persist scan history: %s", e)
+        _t_scan_history_s = round(time.monotonic() - _t_sub, 3)
+        _t_sub = time.monotonic()
         try:
             _record_signal_ledger(history_df, scan_id, timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to record signal ledger: %s", e)
+        _t_signal_ledger_s = round(time.monotonic() - _t_sub, 3)
+        _t_sub = time.monotonic()
         try:
             _record_research_observations(history_df, scan_id, timestamp)
         except Exception as e:
             logger.warning("run_scan: failed to record research observations: %s", e)
-        finally:
-            scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
-            _log_scan_stage(_scan_job_id, "persistence", _t0_persist, None)
-            progress_cb("persistence", current=1, total=1, message="Scan history saved")
+        _t_research_obs_s = round(time.monotonic() - _t_sub, 3)
+        logger.info(
+            "scan_persist_breakdown job=%s scan_history_s=%.3f signal_ledger_s=%.3f research_obs_s=%.3f",
+            _scan_job_id, _t_scan_history_s, _t_signal_ledger_s, _t_research_obs_s,
+        )
+        scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
+        _log_scan_stage(_scan_job_id, "persistence", _t0_persist, None)
+        progress_cb("persistence", current=1, total=1, message="Scan history saved")
 
     def _record_signal_ledger(history_df, scan_id, timestamp):
         """FORTRESS-T1: append one immutable signal_ledger row per scored

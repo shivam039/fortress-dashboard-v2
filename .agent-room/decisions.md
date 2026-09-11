@@ -222,3 +222,5 @@ showing in-sample versus out-of-sample degradation.
 
 **Rejected:** Rebuilding production scores, optimizing top-N on all history, or
 using the validation period to silently fit new scoring parameters.
+
+<!-- no-log: routine change, no decision or anti-pattern worth recording -->
