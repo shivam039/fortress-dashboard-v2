@@ -8,6 +8,7 @@ AGENT1A recognizes three provider names conceptually:
 - `codex` — OpenAI Codex / Codex Cloud
 - `anthropic` — Claude (Claude Code, Claude API)
 - `xai` — Grok
+- `gemini` — Google Gemini
 
 **No provider-specific business logic lives inside `agents/*.md`.** A role
 file describes mission/scope/budget only; `config/agents.example.yaml`
@@ -46,6 +47,7 @@ added in AGENT1B) — not in a specialist's role file.
 | `codex` | Codex Cloud/CLI, invoked interactively in a session like this one | `UNAVAILABLE` — no headless/API mechanism this repo's tooling can drive from a GitHub Actions workflow exists yet | `MANUAL_EXPORT` always |
 | `anthropic` | Claude API, would use `ANTHROPIC_API_KEY` | `NOT_CONFIGURED` (no key set in this environment) | `MANUAL_EXPORT` unless a key is added *and* `providers.anthropic.mode: AUTOMATED` is set in config |
 | `xai` | Grok API, would use `XAI_API_KEY` | `NOT_CONFIGURED` | `MANUAL_EXPORT` unless a key is added *and* `providers.xai.mode: AUTOMATED` is set in config |
+| `gemini` | Google Gemini API, would use `GEMINI_API_KEY` | `NOT_CONFIGURED` | `MANUAL_EXPORT` unless a key is added *and* `providers.gemini.mode: AUTOMATED` is set in config |
 
 **Important:** even with a real API key configured and `mode: AUTOMATED`
 set, AGENT1B ships **no actual network call** to any provider —
