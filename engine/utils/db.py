@@ -8,7 +8,7 @@ import os
 import random
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -2346,6 +2346,76 @@ def _ensure_scan_jobs_sqlite(conn) -> None:
     """)
 
 
+_SCAN_JOB_STALE_MESSAGE = "Scan interrupted or worker unavailable. Please retry."
+
+
+def get_scan_job_stale_seconds() -> int:
+    """Return the stale threshold for queued/running scans.
+
+    A job is considered stale when it has not produced a heartbeat/progress
+    update for longer than this threshold. This is intentionally conservative:
+    the default is long enough for legitimate large scans, while still
+    preventing an orphaned DB row from staying in a live state forever after a
+    process restart or worker crash.
+    """
+    try:
+        raw = os.getenv("FORTRESS_SCAN_JOB_STALE_SECONDS", "600").strip()
+        if not raw:
+            return 600
+        value = int(raw)
+        if value <= 0:
+            return 600
+        return value
+    except (TypeError, ValueError):
+        return 600
+
+
+def _scan_job_updated_at_to_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _scan_job_is_stale(job: Optional[Dict[str, Any]], stale_seconds: Optional[int] = None) -> bool:
+    if not job or job.get("status") not in {"queued", "running"}:
+        return False
+    updated_at = job.get("updated_at")
+    if updated_at is None:
+        return False
+    threshold = get_scan_job_stale_seconds() if stale_seconds is None else stale_seconds
+    if threshold <= 0:
+        return False
+    ts = _scan_job_updated_at_to_datetime(updated_at)
+    if ts is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age_seconds >= threshold
+
+
 def create_scan_job(job_id: str, universe: str, request_dict: Dict[str, Any]) -> None:
     """Insert a new scan_jobs row with status='queued'. Called synchronously
     from POST /api/scan/jobs before the background task is scheduled."""
@@ -2365,6 +2435,57 @@ def create_scan_job(job_id: str, universe: str, request_dict: Dict[str, Any]) ->
             "VALUES (:job_id, :universe, :request_json, 'queued')",
             {"job_id": job_id, "universe": universe, "request_json": request_json},
         )
+
+
+def mark_stale_scan_jobs_failed(stale_seconds: Optional[int] = None) -> int:
+    """Fail any queued/running job older than the configured stale threshold.
+
+    This is the startup recovery and orphan detection path: a process restart or
+    worker crash can leave a DB row in a live status even though no execution is
+    still happening. The row is treated as interrupted instead of staying in a
+    forever-running state.
+    """
+    threshold = get_scan_job_stale_seconds() if stale_seconds is None else stale_seconds
+    if threshold <= 0:
+        return 0
+
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            rows = _query(
+                """
+                UPDATE scan_jobs
+                   SET status = 'failed',
+                       stage = 'failed',
+                       error = :error,
+                       updated_at = NOW()
+                 WHERE status IN ('queued', 'running')
+                   AND updated_at < NOW() - (:cutoff * INTERVAL '1 second')
+                 RETURNING job_id
+                """,
+                {"cutoff": threshold, "error": _SCAN_JOB_STALE_MESSAGE},
+            )
+            return len(rows)
+
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            cur = conn.execute(
+                """
+                UPDATE scan_jobs
+                   SET status = 'failed',
+                       stage = 'failed',
+                       error = :error,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE status IN ('queued', 'running')
+                   AND datetime(updated_at) <= datetime('now', '-' || :cutoff || ' seconds')
+                """,
+                {"cutoff": str(threshold), "error": _SCAN_JOB_STALE_MESSAGE},
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as exc:
+        logger.warning("mark_stale_scan_jobs_failed failed: %s", exc)
+        return 0
 
 
 def update_scan_job_progress(
@@ -2476,7 +2597,11 @@ def fail_scan_job(job_id: str, error: str) -> None:
 def get_scan_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Fetch one scan_jobs row as a plain dict, or None if job_id is
     unknown. `results_json`/`request_json` are returned already-parsed
-    (dict/list), not as raw JSON text, on both backends."""
+    (dict/list), not as raw JSON text, on both backends.
+
+    Also treats queued/running jobs that exceed the stale threshold as orphaned
+    and fails them on read so status polling cannot remain stuck forever.
+    """
     columns = (
         "job_id, universe, request_json, status, stage, progress_current, "
         "progress_total, message, results_json, error, created_at, updated_at"
@@ -2490,7 +2615,15 @@ def get_scan_job(job_id: str) -> Optional[Dict[str, Any]]:
             )
             if not rows:
                 return None
-            return rows[0]
+            row = rows[0]
+            if _scan_job_is_stale(row):
+                fail_scan_job(job_id, _SCAN_JOB_STALE_MESSAGE)
+                rows = _query(
+                    f"SELECT {columns} FROM scan_jobs WHERE job_id = :job_id",
+                    {"job_id": job_id},
+                )
+                return rows[0] if rows else None
+            return row
 
         with _sqlite_connection() as conn:
             _ensure_scan_jobs_sqlite(conn)
@@ -2509,6 +2642,24 @@ def get_scan_job(job_id: str) -> Optional[Dict[str, Any]]:
                         record[json_col] = json.loads(record[json_col])
                     except (TypeError, ValueError):
                         pass
+            if _scan_job_is_stale(record):
+                fail_scan_job(job_id, _SCAN_JOB_STALE_MESSAGE)
+                cur = conn.execute(
+                    f"SELECT {columns} FROM scan_jobs WHERE job_id = :job_id",
+                    {"job_id": job_id},
+                )
+                refreshed = cur.fetchone()
+                if refreshed is None:
+                    return None
+                refreshed_cols = [d[0] for d in cur.description]
+                refreshed_record = dict(zip(refreshed_cols, refreshed))
+                for json_col in ("request_json", "results_json"):
+                    if refreshed_record.get(json_col):
+                        try:
+                            refreshed_record[json_col] = json.loads(refreshed_record[json_col])
+                        except (TypeError, ValueError):
+                            pass
+                return refreshed_record
             return record
     except Exception as e:
         logger.error("get_scan_job(%s) failed: %s", job_id, e)

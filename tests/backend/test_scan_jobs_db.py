@@ -4,10 +4,12 @@ set by tests/conftest.py) — no HTTP layer, no background tasks.
 """
 
 from utils.db import (
+    _sqlite_connection,
     complete_scan_job,
     create_scan_job,
     fail_scan_job,
     get_scan_job,
+    mark_stale_scan_jobs_failed,
     update_scan_job_progress,
 )
 
@@ -92,6 +94,44 @@ def test_fail_scan_job_stores_visible_error():
     assert job["stage"] == "failed"
     assert job["error"] == "simulated provider outage"
     assert job["results_json"] is None
+
+
+def test_mark_stale_scan_jobs_failed_recovers_orphaned_jobs(monkeypatch):
+    monkeypatch.setenv("FORTRESS_SCAN_JOB_STALE_SECONDS", "1")
+    job_id = "job-stale-1"
+    create_scan_job(job_id, "Nifty 50", {})
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET status='running', updated_at=datetime('now', '-2 minutes') WHERE job_id = :job_id",
+            {"job_id": job_id},
+        )
+        conn.commit()
+
+    count = mark_stale_scan_jobs_failed(1)
+    assert count == 1
+
+    job = get_scan_job(job_id)
+    assert job["status"] == "failed"
+    assert job["error"] == "Scan interrupted or worker unavailable. Please retry."
+
+
+def test_get_scan_job_marks_stale_running_jobs_failed_on_read(monkeypatch):
+    monkeypatch.setenv("FORTRESS_SCAN_JOB_STALE_SECONDS", "1")
+    job_id = "job-stale-read-1"
+    create_scan_job(job_id, "Nifty 50", {})
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET status='running', updated_at=datetime('now', '-2 minutes') WHERE job_id = :job_id",
+            {"job_id": job_id},
+        )
+        conn.commit()
+
+    job = get_scan_job(job_id)
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error"] == "Scan interrupted or worker unavailable. Please retry."
 
 
 def test_get_scan_job_returns_none_for_unknown_job_id():

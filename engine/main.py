@@ -49,6 +49,7 @@ from utils.db import (
     fetch_mf_cached_results,
     fetch_scan_history_list,
     get_scan_job,
+    mark_stale_scan_jobs_failed,
     record_signal_ledger_entries,
     register_scan,
     save_scan_results,
@@ -1342,10 +1343,13 @@ app.include_router(auto_scan_router)
 
 @app.on_event("startup")
 def startup_init_db():
-    """Initialize database tables on startup."""
+    """Initialize the DB and recover stale queued/running scan jobs."""
     try:
         from utils.db import init_db
         init_db()
+        stale_failed = mark_stale_scan_jobs_failed()
+        if stale_failed:
+            logger.warning("Recovered %d stale scan job(s) on startup.", stale_failed)
         logger.info("Database initialized successfully.")
     except Exception as exc:
         logger.warning(f"Database init skipped: {exc}")
