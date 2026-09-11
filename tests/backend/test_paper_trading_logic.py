@@ -4,6 +4,8 @@ Every function in paper_trading.logic is deterministic: the same inputs
 always produce the same trade lifecycle and metrics. No real broker
 execution is exercised anywhere here or in the module itself.
 """
+from decimal import Decimal
+
 from paper_trading.logic import (
     PaperTradingConfig,
     compute_metrics,
@@ -45,6 +47,21 @@ def test_open_position_uses_signal_entry_stop_and_target():
     assert result.trade["status"] == "open"
     assert result.trade["quantity"] > 0
     assert result.trade["notional"] == round(result.trade["quantity"] * 2500.0, 2)
+
+
+def test_open_position_normalizes_decimal_signal_values():
+    signal = _signal(
+        suggested_entry=Decimal("2500.00"),
+        stop_loss=Decimal("2450.00"),
+        target=Decimal("2650.00"),
+    )
+
+    result = open_position_from_signal(signal, PaperTradingConfig())
+
+    assert result.accepted is True
+    assert result.trade["entry_price"] == 2500.0
+    assert result.trade["stop_price"] == 2450.0
+    assert result.trade["target_price"] == 2650.0
 
 
 def test_open_position_rejects_signal_with_no_entry_price():
