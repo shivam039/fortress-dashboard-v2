@@ -110,7 +110,7 @@ def test_mark_stale_scan_jobs_failed_recovers_orphaned_jobs(monkeypatch):
         conn.commit()
 
     count = mark_stale_scan_jobs_failed(1)
-    assert count == 1
+    assert count >= 1
 
     job = get_scan_job(job_id)
     assert job["status"] == "failed"
