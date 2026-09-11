@@ -17,6 +17,7 @@ from utils.security_config import (
     validate_cors_origins,
     validate_jwt_secret,
     validate_security_configuration,
+    validate_staging_database_isolation,
 )
 
 # ── is_production_environment(): the single production-mode signal ──────
@@ -171,6 +172,43 @@ def test_H_production_specific_origins_pass():
 def test_H_localhost_default_origins_are_not_wildcards():
     # Sanity: the app's own unset-env default must never trip this check.
     validate_cors_origins(["http://localhost:3000", "http://127.0.0.1:3000"])  # must not raise
+
+
+# ── Oracle staging database isolation ────────────────────────────────────
+
+
+def test_staging_database_isolation_requires_production_markers():
+    with pytest.raises(RuntimeError, match="FORTRESS_PRODUCTION_DB_MARKERS"):
+        validate_staging_database_isolation(
+            "staging",
+            "postgresql://staging.example/staging_db",
+            "",
+        )
+
+
+def test_staging_database_isolation_rejects_matching_production_marker():
+    with pytest.raises(RuntimeError, match="production database marker"):
+        validate_staging_database_isolation(
+            "staging",
+            "postgresql://prod-neon.example/fortress_prod",
+            "prod-neon.example,fortress_prod",
+        )
+
+
+def test_staging_database_isolation_allows_separate_staging_database():
+    validate_staging_database_isolation(
+        "staging",
+        "postgresql://staging-user:staging-credential@staging-neon.example/fortress_staging",
+        "prod-neon.example,fortress_prod",
+    )  # must not raise
+
+
+def test_staging_database_isolation_is_inactive_outside_staging():
+    validate_staging_database_isolation(
+        "production",
+        "postgresql://prod-neon.example/fortress_prod",
+        "",
+    )  # must not raise
 
 
 # ── I: optional broker credentials remain optional ───────────────────────
