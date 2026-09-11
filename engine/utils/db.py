@@ -8,8 +8,11 @@ import os
 import random
 import sqlite3
 import time
+from datetime import date as Date
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 import pandas as pd
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -2920,7 +2923,27 @@ def fetch_signal_ledger(
 # observation being rewritten.
 
 
-def _ensure_paper_trades_neon():
+class PaperTradePersistenceError(RuntimeError):
+    """Paper-trade storage could not be initialized or queried."""
+
+
+_PAPER_TRADE_EVOLVABLE_COLUMNS = {
+    "stop_price": "NUMERIC",
+    "target_price": "NUMERIC",
+    "status": "TEXT DEFAULT 'open'",
+    "exit_timestamp": "TEXT",
+    "exit_price": "NUMERIC",
+    "exit_reason": "TEXT",
+    "gross_pnl": "NUMERIC",
+    "net_pnl": "NUMERIC",
+    "costs_modeled": "NUMERIC",
+    "holding_period_days": "INTEGER",
+    "created_at": "TIMESTAMPTZ DEFAULT NOW()",
+    "updated_at": "TIMESTAMPTZ DEFAULT NOW()",
+}
+
+
+def _ensure_paper_trades_neon() -> None:
     _exec("""
         CREATE TABLE IF NOT EXISTS paper_trades (
             trade_id            BIGSERIAL PRIMARY KEY,
@@ -2944,6 +2967,11 @@ def _ensure_paper_trades_neon():
             updated_at          TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+    for column, definition in _PAPER_TRADE_EVOLVABLE_COLUMNS.items():
+        _exec(
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS "
+            f"{column} {definition}"
+        )
     _exec("CREATE INDEX IF NOT EXISTS idx_paper_trades_signal_id ON paper_trades(signal_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status)")
 
@@ -2972,8 +3000,48 @@ def _ensure_paper_trades_sqlite(conn) -> None:
             updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")
+    }
+    sqlite_definitions = {
+        "stop_price": "REAL",
+        "target_price": "REAL",
+        "status": "TEXT DEFAULT 'open'",
+        "exit_timestamp": "TEXT",
+        "exit_price": "REAL",
+        "exit_reason": "TEXT",
+        "gross_pnl": "REAL",
+        "net_pnl": "REAL",
+        "costs_modeled": "REAL",
+        "holding_period_days": "INTEGER",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    }
+    for column, definition in sqlite_definitions.items():
+        if column not in existing_columns:
+            conn.execute(
+                f"ALTER TABLE paper_trades ADD COLUMN {column} {definition}"
+            )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_signal_id ON paper_trades(signal_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status)")
+
+
+def normalize_paper_trade_for_json(trade: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert DB-driver-native scalar values to strict JSON primitives."""
+    normalized: Dict[str, Any] = {}
+    for key, value in trade.items():
+        if isinstance(value, Decimal):
+            converted = float(value) if value.is_finite() else math.nan
+            normalized[key] = converted if math.isfinite(converted) else None
+        elif isinstance(value, float) and not math.isfinite(value):
+            normalized[key] = None
+        elif isinstance(value, (datetime, Date)):
+            normalized[key] = value.isoformat()
+        elif isinstance(value, UUID):
+            normalized[key] = str(value)
+        else:
+            normalized[key] = value
+    return normalized
 
 
 def create_paper_trade(trade: Dict[str, Any]) -> Optional[int]:
@@ -3086,16 +3154,24 @@ def fetch_paper_trades(
     try:
         if _can_use_neon():
             _ensure_paper_trades_neon()
-            return _query(query, params)
+            return [
+                normalize_paper_trade_for_json(row)
+                for row in _query(query, params)
+            ]
 
         with _sqlite_connection() as conn:
             _ensure_paper_trades_sqlite(conn)
             cur = conn.execute(query, params)
             col_names = [d[0] for d in cur.description]
-            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+            return [
+                normalize_paper_trade_for_json(dict(zip(col_names, row)))
+                for row in cur.fetchall()
+            ]
     except Exception as e:
-        logger.error("fetch_paper_trades failed: %s", e)
-        return []
+        logger.exception("fetch_paper_trades failed")
+        raise PaperTradePersistenceError(
+            "Paper trade persistence/query failed"
+        ) from e
 
 
 # ── FORTRESS-E2: paper-policy decisions (audit trail + idempotency) ─────────
