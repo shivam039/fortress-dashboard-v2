@@ -1,0 +1,52 @@
+name: Automated Multi-Universe EOD Scan (FORTRESS-E3)
+
+# Triggers the daily FULL UNIVERSE SCAN -> E1 -> T1 -> E2 -> MATURATION
+# pipeline on the deployed backend (POST /api/auto-scan/run — see
+# engine/routers/auto_scan.py), the same HTTP-call-cron shape
+# bhavcopy-refresh.yml already established for scheduled work against this
+# repo's single Render web service.
+#
+# Scheduled after both bhavcopy-refresh.yml runs (13:30 UTC / 15:00 UTC)
+# so today's Bhav Copy is already fetched by the time the scan's own
+# data-health gate checks it — see docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md
+# "Scheduling". The gate itself aborts (no partial evidence) if the file
+# still isn't ready; re-running this workflow (workflow_dispatch, or a
+# retry) is always safe — research.auto_scan.run_daily_auto_scan() is
+# idempotent per trading date.
+#
+# Required repo secrets (same as bhavcopy-refresh.yml):
+#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+
+on:
+  schedule:
+    # 15:45 UTC = 21:15 IST, weekdays — after both Bhav Copy attempts above.
+    - cron: '45 15 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  auto-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/auto-scan/run
+        run: |
+          if [ -z "${{ secrets.FORTRESS_BACKEND_URL }}" ]; then
+            echo "FORTRESS_BACKEND_URL secret is not set — skipping (nothing to call)."
+            exit 0
+          fi
+
+          http_status=$(curl -sS -o /tmp/response.json -w "%{http_code}" \
+            -X POST "${{ secrets.FORTRESS_BACKEND_URL }}/api/auto-scan/run" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.FORTRESS_API_KEY }}" \
+            -d '{}')
+
+          echo "Response body:"
+          cat /tmp/response.json
+          echo ""
+          echo "HTTP status: $http_status"
+
+          if [ "$http_status" -ge 300 ]; then
+            echo "Auto-scan trigger failed (HTTP $http_status)"
+            exit 1
+          fi

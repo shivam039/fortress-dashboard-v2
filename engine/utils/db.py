@@ -3032,6 +3032,293 @@ def fetch_policy_decisions(status: Optional[str] = None, limit: int = 500) -> Li
         return []
 
 
+# ── FORTRESS-E3: automated multi-universe scan runs + membership audit ──────
+#
+# One row per automated daily run (the durable audit trail the daily
+# orchestration job needs), plus a normalized membership table so scoring
+# RELIANCE once for a NIFTY50+NIFTY100+NIFTY500 union still records which of
+# those universes it belonged to — without ever duplicating the
+# research_observations row (that table's own UNIQUE(trading_date, symbol,
+# scoring_version), added for FORTRESS-E1, is untouched and is what keeps a
+# symbol scored once regardless of how many configured universes list it).
+
+def _ensure_auto_scan_runs_neon() -> None:
+    _exec("""
+        CREATE TABLE IF NOT EXISTS auto_scan_runs (
+            run_id                  TEXT PRIMARY KEY,
+            trading_date            TEXT NOT NULL,
+            status                  TEXT NOT NULL,
+            configured_universes    JSONB,
+            resolved_universes      JSONB,
+            unresolved_universes    JSONB,
+            unique_symbol_count     INTEGER,
+            membership_count        INTEGER,
+            started_at              TEXT,
+            completed_at            TEXT,
+            provider_health         JSONB,
+            scoring_version         TEXT,
+            git_sha                 TEXT,
+            observations_inserted   INTEGER,
+            signals_generated       INTEGER,
+            paper_opened            INTEGER,
+            paper_closed            INTEGER,
+            circuit_breaker_tripped BOOLEAN,
+            reason                  TEXT,
+            summary_json            JSONB,
+            created_at              TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_auto_scan_runs_date ON auto_scan_runs(trading_date)")
+
+
+def _ensure_auto_scan_runs_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS auto_scan_runs (
+            run_id                  TEXT PRIMARY KEY,
+            trading_date            TEXT NOT NULL,
+            status                  TEXT NOT NULL,
+            configured_universes    TEXT,
+            resolved_universes      TEXT,
+            unresolved_universes    TEXT,
+            unique_symbol_count     INTEGER,
+            membership_count        INTEGER,
+            started_at              TEXT,
+            completed_at            TEXT,
+            provider_health         TEXT,
+            scoring_version         TEXT,
+            git_sha                 TEXT,
+            observations_inserted   INTEGER,
+            signals_generated       INTEGER,
+            paper_opened            INTEGER,
+            paper_closed            INTEGER,
+            circuit_breaker_tripped INTEGER,
+            reason                  TEXT,
+            summary_json            TEXT,
+            created_at              TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auto_scan_runs_date ON auto_scan_runs(trading_date)")
+
+
+_AUTO_SCAN_RUN_JSON_FIELDS = (
+    "configured_universes", "resolved_universes", "unresolved_universes",
+    "provider_health", "summary_json",
+)
+_AUTO_SCAN_RUN_UPDATABLE = {
+    "status", "completed_at", "resolved_universes", "unresolved_universes",
+    "unique_symbol_count", "membership_count", "provider_health", "scoring_version",
+    "git_sha", "observations_inserted", "signals_generated", "paper_opened",
+    "paper_closed", "circuit_breaker_tripped", "reason", "summary_json",
+}
+
+
+def _decode_auto_scan_run(row: Dict[str, Any]) -> Dict[str, Any]:
+    for field in _AUTO_SCAN_RUN_JSON_FIELDS:
+        val = row.get(field)
+        if isinstance(val, str):
+            try:
+                row[field] = json.loads(val)
+            except (TypeError, ValueError):
+                pass
+    return row
+
+
+def create_auto_scan_run(
+    run_id: str, trading_date: str, configured_universes: List[str], started_at: str,
+) -> None:
+    """Insert the run row with status=RUNNING at the very start of a daily
+    automated run — this is the durable run_id the rest of the pipeline
+    updates as it progresses, so a crash mid-run still leaves an auditable
+    (if incomplete) record rather than nothing at all."""
+    params = {
+        "run_id": run_id, "trading_date": trading_date, "status": "RUNNING",
+        "configured_universes": json.dumps(configured_universes), "started_at": started_at,
+    }
+    sql = (
+        "INSERT INTO auto_scan_runs (run_id, trading_date, status, configured_universes, started_at) "
+        "VALUES (:run_id, :trading_date, :status, :configured_universes, :started_at)"
+    )
+    try:
+        if _can_use_neon():
+            _ensure_auto_scan_runs_neon()
+            _exec(sql, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_auto_scan_runs_sqlite(conn)
+                conn.execute(sql, params)
+    except Exception as e:
+        logger.error("create_auto_scan_run(run_id=%s) failed: %s", run_id, e)
+
+
+def update_auto_scan_run(run_id: str, **fields: Any) -> None:
+    """Merge `fields` (any subset of _AUTO_SCAN_RUN_UPDATABLE) into the run
+    row. Called repeatedly as a run progresses — each call only touches the
+    columns it passes, so an early-abort (e.g. the data-health gate) and a
+    full completion both leave a consistent, if differently-populated, row."""
+    cols = [k for k in fields if k in _AUTO_SCAN_RUN_UPDATABLE]
+    if not cols:
+        return
+    params: Dict[str, Any] = {"run_id": run_id}
+    for c in cols:
+        v = fields[c]
+        params[c] = json.dumps(v) if c in _AUTO_SCAN_RUN_JSON_FIELDS and not isinstance(v, str) else v
+    set_clause = ", ".join(f"{c} = :{c}" for c in cols)
+    sql = f"UPDATE auto_scan_runs SET {set_clause} WHERE run_id = :run_id"
+    try:
+        if _can_use_neon():
+            _ensure_auto_scan_runs_neon()
+            _exec(sql, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_auto_scan_runs_sqlite(conn)
+                conn.execute(sql, params)
+    except Exception as e:
+        logger.error("update_auto_scan_run(run_id=%s) failed: %s", run_id, e)
+
+
+def fetch_auto_scan_run(run_id: str) -> Optional[Dict[str, Any]]:
+    query = "SELECT * FROM auto_scan_runs WHERE run_id = :run_id"
+    try:
+        if _can_use_neon():
+            _ensure_auto_scan_runs_neon()
+            rows = _query(query, {"run_id": run_id})
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_auto_scan_runs_sqlite(conn)
+                cur = conn.execute(query, {"run_id": run_id})
+                col_names = [d[0] for d in cur.description]
+                rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+        return _decode_auto_scan_run(rows[0]) if rows else None
+    except Exception as e:
+        logger.error("fetch_auto_scan_run(run_id=%s) failed: %s", run_id, e)
+        return None
+
+
+def fetch_latest_auto_scan_run(
+    trading_date: Optional[str] = None, status: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Used both for E3's own idempotency check ("has today already been
+    fully scanned?") and for a status API. Ordered by created_at DESC so
+    "latest" is unambiguous even if run_id sorts unpredictably (it's a
+    UUID)."""
+    where = []
+    params: Dict[str, Any] = {}
+    if trading_date is not None:
+        where.append("trading_date = :trading_date")
+        params["trading_date"] = trading_date
+    if status is not None:
+        where.append("status = :status")
+        params["status"] = status
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    query = f"SELECT * FROM auto_scan_runs {clause} ORDER BY created_at DESC LIMIT 1"
+    try:
+        if _can_use_neon():
+            _ensure_auto_scan_runs_neon()
+            rows = _query(query, params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_auto_scan_runs_sqlite(conn)
+                cur = conn.execute(query, params)
+                col_names = [d[0] for d in cur.description]
+                rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+        return _decode_auto_scan_run(rows[0]) if rows else None
+    except Exception as e:
+        logger.error("fetch_latest_auto_scan_run failed: %s", e)
+        return None
+
+
+# ── FORTRESS-E3: universe membership (normalized, not duplicated evidence) ──
+
+def _ensure_universe_membership_neon() -> None:
+    _exec("""
+        CREATE TABLE IF NOT EXISTS symbol_universe_membership (
+            id            BIGSERIAL PRIMARY KEY,
+            trading_date  TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            universe      TEXT NOT NULL,
+            run_id        TEXT,
+            created_at    TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(trading_date, symbol, universe)
+        )
+    """)
+    _exec("CREATE INDEX IF NOT EXISTS idx_universe_membership_symbol ON symbol_universe_membership(symbol)")
+
+
+def _ensure_universe_membership_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_universe_membership (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            trading_date  TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            universe      TEXT NOT NULL,
+            run_id        TEXT,
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(trading_date, symbol, universe)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_membership_symbol ON symbol_universe_membership(symbol)")
+
+
+def record_universe_memberships(entries: List[Dict[str, Any]]) -> int:
+    """Idempotent (ON CONFLICT DO NOTHING keyed on trading_date+symbol+
+    universe): a rerun of the same trading date never duplicates membership
+    rows even though it's called every time build_symbol_union() resolves
+    the same overlapping universes again. Contextual metadata only — never
+    a second research_observations row (see module note above)."""
+    if not entries:
+        return 0
+    sql = (
+        "INSERT INTO symbol_universe_membership (trading_date, symbol, universe, run_id) "
+        "VALUES (:trading_date, :symbol, :universe, :run_id) "
+        "ON CONFLICT (trading_date, symbol, universe) DO NOTHING"
+    )
+    written = 0
+    try:
+        if _can_use_neon():
+            _ensure_universe_membership_neon()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                for e in entries:
+                    result = conn.execute(text(sql), e)
+                    written += result.rowcount or 0
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_universe_membership_sqlite(conn)
+                for e in entries:
+                    cur = conn.execute(sql, e)
+                    written += cur.rowcount or 0
+    except Exception as e:
+        logger.error("record_universe_memberships failed for %d entries: %s", len(entries), e)
+    return written
+
+
+def fetch_universe_memberships(
+    trading_date: Optional[str] = None, symbol: Optional[str] = None, limit: int = 2000,
+) -> List[Dict[str, Any]]:
+    where = []
+    params: Dict[str, Any] = {"limit": limit}
+    if trading_date is not None:
+        where.append("trading_date = :trading_date")
+        params["trading_date"] = trading_date
+    if symbol is not None:
+        where.append("symbol = :symbol")
+        params["symbol"] = symbol
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    query = f"SELECT * FROM symbol_universe_membership {clause} ORDER BY symbol ASC LIMIT :limit"
+    try:
+        if _can_use_neon():
+            _ensure_universe_membership_neon()
+            return _query(query, params)
+        with _sqlite_connection() as conn:
+            _ensure_universe_membership_sqlite(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_universe_memberships failed: %s", e)
+        return []
+
+
 # ── FORTRESS-E1: prospective research observations ──────────────────────────
 #
 # T1 (signal_ledger, above) means SIGNAL. research_observations is a

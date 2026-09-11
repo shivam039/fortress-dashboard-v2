@@ -169,6 +169,7 @@ from routers.investments import router as investments_router
 from routers.bhavcopy import router as bhavcopy_router
 from routers.research_evidence import router as research_evidence_router
 from routers.paper_trading import router as paper_trading_router
+from routers.auto_scan import router as auto_scan_router
 
 
 @app.middleware("http")
@@ -318,7 +319,13 @@ def _noop_progress(stage: str, current: Optional[int] = None, total: Optional[in
     pass
 
 
-def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = None) -> Any:
+def execute_scan(
+    req: ScanRequest,
+    progress_cb: Optional[Callable[..., None]] = None,
+    tickers_override: Optional[List[str]] = None,
+    run_meta: Optional[Dict[str, Any]] = None,
+    universe_membership: Optional[Dict[str, List[str]]] = None,
+) -> Any:
     """Run one full stock scan: universe resolution, metadata prefetch,
     market-data fetch, per-ticker indicator calc/scoring, scoring
     normalization, and scan-history persistence — then return the exact
@@ -341,9 +348,17 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
 
     from stock_scanner.pulse import get_current_regime
 
-    tickers = TICKER_GROUPS.get(req.universe)
-    if not tickers:
-        raise HTTPException(status_code=404, detail="Universe not found")
+    # FORTRESS-E3: an automated multi-universe run passes its own
+    # deduplicated symbol union in directly (req.universe is then just a
+    # descriptive label for scan_history/signal_ledger, not a TICKER_GROUPS
+    # lookup key) — every other caller leaves this None and keeps the
+    # original universe-name resolution unchanged.
+    if tickers_override is not None:
+        tickers = list(tickers_override)
+    else:
+        tickers = TICKER_GROUPS.get(req.universe)
+        if not tickers:
+            raise HTTPException(status_code=404, detail="Universe not found")
 
     progress_cb("universe", current=0, total=len(tickers), message=f"Resolved {len(tickers)} tickers for {req.universe}")
 
@@ -365,6 +380,15 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
         regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
 
     results = []
+
+    # FORTRESS-E3: optional side-channel for callers that need scan-internal
+    # bookkeeping (scan_id, signal ledger rows written, the E1 insert/
+    # duplicate counts) that execute_scan's own return value has never
+    # exposed — e.g. research.auto_scan's daily summary. `run_meta` stays
+    # untouched for every existing caller that doesn't pass one.
+    _scan_meta: Dict[str, Any] = {
+        "scan_id": None, "signals_written": 0, "research_observations_result": None,
+    }
 
     # Circuit breaker: individual ticker failures were logged and skipped
     # with no aggregate tracking, so a broad provider outage (yfinance
@@ -474,13 +498,28 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
                     ticker, 0 if hist is None else len(hist),
                 )
             else:
+                # FORTRESS-E3: a combined multi-universe run passes one
+                # synthetic label as req.universe (see tickers_override
+                # above), which would otherwise silently disable
+                # check_institutional_fortress's Nifty-Smallcap-250-only
+                # liquidity guard for every smallcap symbol scored this way.
+                # `universe_membership` restores the exact per-symbol
+                # universe string a standalone scan of that universe would
+                # have passed — no other selected_universe value changes any
+                # scoring behavior (see stock_scanner/logic.py), so this is
+                # the only case that needs preserving.
+                symbol_universe = req.universe
+                if universe_membership is not None and (
+                    "Nifty Smallcap 250" in universe_membership.get(ticker, [])
+                ):
+                    symbol_universe = "Nifty Smallcap 250"
                 res = check_institutional_fortress(
                     ticker,
                     hist,
                     None,
                     req.portfolio_val,
                     req.risk_pct,
-                    selected_universe=req.universe,
+                    selected_universe=symbol_universe,
                     regime_data=regime_data,  # ← live regime passed
                 )
                 if res:
@@ -682,6 +721,8 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
 
         if entries:
             written = record_signal_ledger_entries(entries)
+            _scan_meta["scan_id"] = scan_id
+            _scan_meta["signals_written"] = written
             if written < len(entries):
                 logger.warning(
                     "run_scan: signal ledger wrote %d/%d entries for scan_id=%s",
@@ -707,6 +748,7 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
                 history_df.to_dict(orient="records"), scan_id, trading_date,
                 FORTRESS_SCAN_LOGIC_VERSION, data_source=data_source,
             )
+            _scan_meta["research_observations_result"] = result
             logger.info("run_scan: research observations for scan_id=%s: %s", scan_id, result)
         except Exception as e:
             logger.warning("run_scan: failed to record research observations: %s", e)
@@ -721,6 +763,9 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
         score_df = _score_results(results) if results else None
         _persist_scan_history(score_df)
         _log_scan_timings()
+        if run_meta is not None:
+            run_meta.update(_scan_meta)
+            run_meta.update({"scanned": scan_attempted, "failed": scan_failed, "circuit_breaker_tripped": True})
         return {
             "results": _sanitize_json_value(score_df.to_dict(orient="records")) if score_df is not None else [],
             "summary": (
@@ -736,6 +781,9 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
 
     if not results:
         _log_scan_timings()
+        if run_meta is not None:
+            run_meta.update(_scan_meta)
+            run_meta.update({"scanned": scan_attempted, "failed": scan_failed, "circuit_breaker_tripped": False})
         return {
             "results": [],
             "summary": "No tickers met criteria or market data was unavailable.",
@@ -748,6 +796,9 @@ def execute_scan(req: ScanRequest, progress_cb: Optional[Callable[..., None]] = 
     score_df = _score_results(results)
     _persist_scan_history(score_df)
     _log_scan_timings()
+    if run_meta is not None:
+        run_meta.update(_scan_meta)
+        run_meta.update({"scanned": scan_attempted, "failed": scan_failed, "circuit_breaker_tripped": False})
     return _sanitize_json_value(score_df.to_dict(orient="records"))
 
 
@@ -1286,6 +1337,7 @@ app.include_router(investments_router)
 app.include_router(bhavcopy_router)
 app.include_router(research_evidence_router)
 app.include_router(paper_trading_router)
+app.include_router(auto_scan_router)
 
 
 @app.on_event("startup")
