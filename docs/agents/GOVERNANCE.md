@@ -65,3 +65,56 @@ the loop for the foreseeable future. AGENT1A's dry-run mode exists
 specifically so the whole pipeline (task → classify → resolve → build
 prompt → validate scope) can be exercised and trusted *before* any real
 execution or merge capability is added.
+
+## AGENT1B: execution governance
+
+### Activation gate
+
+`agent-task.yml` only runs for a `workflow_dispatch` naming an issue
+that carries the `agent:approved` label (checked as a workflow step
+before anything else runs). Issue creation alone never triggers
+anything — see ARCHITECTURE.md's label table.
+
+### Prompt-injection boundary
+
+Generated prompts (`build-agent-prompt.js`) place the role contract and
+repo constraints *before* task content, and task content is never
+concatenated into a shell command, file path, or workflow expression —
+`sanitize.js` strips anything unsafe out of branch names/task IDs
+before they touch git. Task/issue content cannot raise
+`production_access` above what the target agent's own config allows
+(`orchestrate-task.js`'s `plan()` computes it as `task.production_access
+&& agentConfig.production_access`, never `task.production_access`
+alone), and cannot exceed the configured token ceiling — both enforced
+in code, not by asking the model nicely.
+
+### No arbitrary execution
+
+The orchestrator never does `eval()` or shell-executes model output.
+`scope-check.js` only ever runs `git diff --name-only` (a fixed,
+non-interpolated command) and pattern-matches its output; test
+execution is the task's own declared commands, run by the human/CI
+step following USAGE.md, not by the orchestrator itself.
+
+### Idempotency and concurrency
+
+`orchestrate-task.js plan()` refuses to run if the target branch
+already exists (Phase 31). `agent-task.yml` sets
+`concurrency: { group: agent-task-<issue>, cancel-in-progress: false }`
+so two runs for the same issue can't race (Phase 32).
+
+### Cancellation
+
+Removing `agent:approved` (or adding `agent:cancelled`) stops future
+runs from activating; an in-flight GitHub Actions run can be cancelled
+normally. The branch, any diff on it, and the run record under
+`.agent-room/sessions/` are never auto-deleted — they stay available
+for diagnosis (Phase 33).
+
+### GitHub permissions
+
+`agent-validate.yml`: `contents: read` only. `agent-task.yml`:
+`contents: read` + `issues: write` (to comment the plan summary) — no
+`pull-requests: write` yet, since AGENT1B's shipped workflow only plans
+(no automated diff exists to open a PR from). Neither workflow requests
+`write-all` or any broader permission.

@@ -1,4 +1,4 @@
-# AGENT1A Usage
+# Agent Framework Usage (AGENT1A + AGENT1B)
 
 ## 1. Define a task
 
@@ -80,3 +80,64 @@ explicit config path as its last argument to override this.
 Copy `config/agents.example.yaml` to `config/agents.yaml` and edit
 per-agent `provider`/`model`/budgets. Do not commit `config/agents.yaml`
 if it contains anything account-specific.
+
+## AGENT1B: running the controlled execution pipeline
+
+### 1. Author a task and get it approved
+
+Create `.agent-tasks/<task-id>.yaml` (same schema as above, plus
+AGENT1B fields: `issue_number`, `branch_name` override, `risk`,
+`human_approval_required`). Open/link a GitHub Issue for it, assign an
+`agent:<name>` label, and once ready, add `agent:approved` — this is
+the explicit activation signal (see ARCHITECTURE.md's label table).
+Nothing runs from issue creation alone.
+
+### 2. Plan
+
+```
+node scripts/agent/orchestrate-task.js plan .agent-tasks/<task-id>.yaml
+```
+
+Runs: classification (task's own `agent:` field — a free-text
+Coordinator classifier is not implemented in AGENT1B, a human sets
+this) → budget gate (`BLOCKED_BUDGET` if invalid/over-ceiling) →
+provider mode resolution (`BLOCKED_PROVIDER` if AUTOMATED was
+requested but unavailable) → idempotency check (`BLOCKED` if the
+target branch already exists) → branch naming → prompt build → a run
+record under `.agent-room/sessions/`. Prints the full generated
+prompt for manual export unless a provider is configured `AUTOMATED`.
+
+In GitHub Actions, this is `agent-task.yml` (`workflow_dispatch` with
+the issue number + task file, gated on the `agent:approved` label) —
+it uploads the prompt as an artifact and comments a plan summary
+(never the full prompt) on the issue.
+
+### 3. Implement (manually, in current AGENT1B — see PROVIDERS.md)
+
+Create the branch the plan output named, paste the generated prompt
+into whichever provider you're actually using, implement within
+`allowed_files`, and commit to that branch.
+
+### 4. Validate scope
+
+```
+node scripts/agent/orchestrate-task.js apply .agent-tasks/<task-id>.yaml
+```
+
+Compares the branch's actual `git diff --name-only` against
+`allowed_files`/`forbidden_files`. `BLOCKED_SCOPE` if anything is out
+of bounds — this is a hard stop, not a warning.
+
+### 5. Tests, Reviewer, Docs, PR
+
+Run the task-defined tests (or the specialist's contract default set —
+see the relevant `agents/<name>.md`'s TEST EXPECTATIONS). Build a
+Reviewer prompt the same way (`build-agent-prompt.js reviewer ...`) and
+get its verdict manually. If `docs_required` is `true` (or Reviewer
+flags docs impact), do the same for the `docs` agent. Then open the PR
+using `scripts/agent/pr-body.js` for the body template.
+
+### 6. Human merges
+
+There is no auto-merge path anywhere in this pipeline (see
+GOVERNANCE.md). The PR sits `AWAITING_HUMAN` until a person merges it.

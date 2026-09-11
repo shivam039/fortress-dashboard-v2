@@ -1,0 +1,93 @@
+name: Agent Task Plan (AGENT1B)
+
+# Runs the AGENT1B "plan" step for one approved task/issue: classify ->
+# budget gate -> provider mode resolution -> branch naming -> prompt
+# build -> run record. It does NOT execute a specialist automatically
+# (no provider adapter in this repo performs a real model call — see
+# scripts/agent/providers.js and docs/agents/PROVIDERS.md), does NOT
+# create a branch or PR, and does NOT touch Oracle/Vercel/Render or any
+# scheduler target.
+#
+# Explicit activation only: requires either a manual workflow_dispatch
+# with an issue number, or the issue carrying the `agent:approved`
+# label (checked below) — plain issue creation alone never triggers
+# this (Phase 25).
+#
+# Output: a prompt artifact for a human (or an external agent session)
+# to use, plus a plan-summary comment on the issue. Nothing here can
+# result in a merge — see docs/agents/GOVERNANCE.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number carrying the task (must have the agent:approved label)'
+        required: true
+      task_file:
+        description: 'Path to the .agent-tasks/*.yaml file for this issue'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: agent-task-${{ github.event.inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the issue carries agent:approved
+        id: check_label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(${{ github.event.inputs.issue_number }}),
+            });
+            const labels = issue.data.labels.map((l) => (typeof l === 'string' ? l : l.name));
+            if (!labels.includes('agent:approved')) {
+              core.setFailed('Issue is missing the agent:approved label — refusing to plan an unapproved task (Phase 25).');
+            }
+
+      - name: Validate agent framework (AGENT1A regression)
+        run: node scripts/agent/validate-agent-config.js
+
+      - name: Run AGENT1B plan
+        id: plan
+        run: |
+          node scripts/agent/orchestrate-task.js plan "${{ github.event.inputs.task_file }}" \
+            > agent-plan-output.txt
+          cat agent-plan-output.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-plan-${{ github.event.inputs.issue_number }}
+          path: agent-plan-output.txt
+          retention-days: 14
+
+      - name: Comment plan summary on the issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('agent-plan-output.txt', 'utf8');
+            // Post only the JSON summary block, not the full generated
+            // prompt (Phase 22: don't dump entire model prompts into a
+            // visible location) -- the full prompt is in the uploaded
+            // artifact for whoever runs it manually.
+            const summaryOnly = output.split('--- GENERATED PROMPT')[0];
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(${{ github.event.inputs.issue_number }}),
+              body: '### AGENT1B plan\n\n```json\n' + summaryOnly.trim() + '\n```\n\nFull generated prompt is attached as a workflow artifact. No branch, PR, or code change has been made automatically.',
+            });
