@@ -144,6 +144,7 @@ def mature_pending_outcomes(get_ohlcv_fn: Optional[Callable[[str, str], Any]] = 
 
     matured = 0
     unavailable = 0
+    matured_by_horizon: Dict[int, int] = {}
     for symbol, rows in by_symbol.items():
         try:
             hist = get_ohlcv_fn(symbol, "1y")
@@ -189,8 +190,12 @@ def mature_pending_outcomes(get_ohlcv_fn: Optional[Callable[[str, str], Any]] = 
                 price_timestamp=target_date, forward_return=forward_return,
             )
             matured += 1
+            matured_by_horizon[row["horizon"]] = matured_by_horizon.get(row["horizon"], 0) + 1
 
-    return {"checked": len(pending), "matured": matured, "unavailable": unavailable}
+    return {
+        "checked": len(pending), "matured": matured, "unavailable": unavailable,
+        "matured_by_horizon": matured_by_horizon,
+    }
 
 
 def _bucket(score: Optional[float]) -> str:
