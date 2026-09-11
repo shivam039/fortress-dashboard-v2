@@ -12,6 +12,8 @@ Covers:
 No live INDstocks/yfinance/DB network access — market data, metadata
 prefetch, and scoring are mocked, same pattern as test_api.py.
 """
+import asyncio
+import logging
 import time
 
 import main as main_mod
@@ -194,6 +196,73 @@ def test_scan_job_failure_is_visible(monkeypatch):
     results_body = results_resp.json()
     assert results_body["status"] == "failed"
     assert "simulated scoring crash" in results_body["error"]
+
+
+def test_scan_job_heartbeat_stops_after_completion(monkeypatch):
+    calls = []
+
+    def fake_execute(req, progress_cb, **kwargs):
+        time.sleep(0.06)
+        return []
+
+    monkeypatch.setenv("FORTRESS_SCAN_JOB_HEARTBEAT_SECONDS", "0.01")
+    monkeypatch.setattr(main_mod, "execute_scan", fake_execute)
+    monkeypatch.setattr(main_mod, "heartbeat_scan_job", lambda job_id: calls.append(job_id) or 1)
+
+    job_id = "job-heartbeat-lifecycle"
+    from utils.db import create_scan_job
+
+    create_scan_job(job_id, "Nifty 50", {})
+    asyncio.run(main_mod._run_scan_job(job_id, main_mod.ScanRequest(universe="Nifty 50")))
+    call_count = len(calls)
+    time.sleep(0.03)
+
+    assert call_count >= 1
+    assert len(calls) == call_count
+
+
+def test_scan_job_heartbeat_stops_after_failure(monkeypatch):
+    calls = []
+
+    def fake_execute(req, progress_cb, **kwargs):
+        time.sleep(0.06)
+        raise RuntimeError("simulated worker failure")
+
+    monkeypatch.setenv("FORTRESS_SCAN_JOB_HEARTBEAT_SECONDS", "0.01")
+    monkeypatch.setattr(main_mod, "execute_scan", fake_execute)
+    monkeypatch.setattr(main_mod, "heartbeat_scan_job", lambda job_id: calls.append(job_id) or 1)
+
+    job_id = "job-heartbeat-failure"
+    from utils.db import create_scan_job, get_scan_job
+
+    create_scan_job(job_id, "Nifty 50", {})
+    asyncio.run(main_mod._run_scan_job(job_id, main_mod.ScanRequest(universe="Nifty 50")))
+    call_count = len(calls)
+    time.sleep(0.03)
+
+    assert call_count >= 1
+    assert len(calls) == call_count
+    assert get_scan_job(job_id)["status"] == "failed"
+
+
+def test_rss_telemetry_failure_is_nonfatal(monkeypatch):
+    def raise_memory_error(_):
+        raise OSError("rss unavailable")
+
+    monkeypatch.setattr(main_mod.resource, "getrusage", raise_memory_error)
+    assert main_mod._get_process_rss_mb() is None
+
+
+def test_stage_log_contains_job_stage_duration_and_rss(caplog):
+    with caplog.at_level(logging.INFO, logger="fortress-api"):
+        main_mod._log_scan_stage("job-observe-1", "market_data", time.monotonic() - 0.01)
+
+    assert any(
+        "scan_stage job=job-observe-1 stage=market_data" in record.message
+        and "duration_s=" in record.message
+        and "rss_mb=" in record.message
+        for record in caplog.records
+    )
 
 
 def test_scan_job_status_unknown_job_id_returns_404():

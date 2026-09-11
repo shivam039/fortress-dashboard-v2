@@ -5,7 +5,7 @@ const { createScanStore, normalizeScanResponse } = scanState;
 import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
 import scanComponents from '../.scan-tests/components/ScanStatus.js';
-const { ScanStatus } = scanComponents;
+const { ScanStatus, formatElapsedSeconds } = scanComponents;
 const memory = () => {
   let value = null;
   return { getItem: () => value, setItem: (_, next) => { value = next; } };
@@ -99,6 +99,28 @@ test('status rendering covers running, completion, partial, unknown and failures
   }
 });
 
+test('elapsed time uses human-readable async job durations', () => {
+  assert.equal(formatElapsedSeconds(42), '42s');
+  assert.equal(formatElapsedSeconds(138), '2m 18s');
+  assert.equal(formatElapsedSeconds(1555), '25m 55s');
+});
+
+test('interrupted jobs show retryable messaging and preserve previous results', () => {
+  const state = {
+    ...createScanStore('user', memory()).getSnapshot(),
+    status: 'failed',
+    startedAt: Date.now(),
+    universe: 'Nifty 50',
+    message: 'Scan interrupted or worker unavailable. Please retry.',
+    result: { results: [row], partial: false, universe: 'Nifty 50', receivedAt: new Date().toISOString() },
+  };
+  const html = renderToStaticMarkup(React.createElement(ScanStatus, { state, onRetry: () => {} }));
+  assert.match(html, /Scan interrupted/);
+  assert.match(html, /backend stopped processing this scan/i);
+  assert.match(html, /Retry Scan/);
+  assert.match(html, /previous results/i);
+});
+
 // ── FORTRESS-V4: async scan job lifecycle ──────────────────────────────────
 
 test('startJob begins a running state with the real job id, and rejects a second job while one is active', () => {
@@ -165,4 +187,5 @@ test('the screener page starts an async job, not the old synchronous scan', asyn
   assert.match(src, /scanApi\.startScanJob/);
   assert.match(src, /scanApi\.getScanJobStatus/);
   assert.match(src, /scanApi\.getScanJobResults/);
+  assert.match(src, /onRetry=\{runScan\}/);
 });

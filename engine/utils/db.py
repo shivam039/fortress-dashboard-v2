@@ -2488,6 +2488,45 @@ def mark_stale_scan_jobs_failed(stale_seconds: Optional[int] = None) -> int:
         return 0
 
 
+def heartbeat_scan_job(job_id: str) -> int:
+    """Refresh a live scan job without changing its progress or stage.
+
+    The status guard ensures a heartbeat racing with completion/failure cannot
+    revive or mutate a terminal job.
+    """
+    try:
+        if _can_use_neon():
+            _ensure_scan_jobs_neon()
+            rows = _query(
+                """
+                UPDATE scan_jobs
+                   SET updated_at = NOW()
+                 WHERE job_id = :job_id
+                   AND status = 'running'
+                RETURNING job_id
+                """,
+                {"job_id": job_id},
+            )
+            return len(rows)
+
+        with _sqlite_connection() as conn:
+            _ensure_scan_jobs_sqlite(conn)
+            cur = conn.execute(
+                """
+                UPDATE scan_jobs
+                   SET updated_at = CURRENT_TIMESTAMP
+                 WHERE job_id = :job_id
+                   AND status = 'running'
+                """,
+                {"job_id": job_id},
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as exc:
+        logger.warning("heartbeat_scan_job(%s) failed: %s", job_id, exc)
+        return 0
+
+
 def update_scan_job_progress(
     job_id: str,
     status: Optional[str] = None,
