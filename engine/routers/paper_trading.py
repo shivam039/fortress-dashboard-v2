@@ -12,6 +12,7 @@ trading math (entry sizing, stop/target, exposure limits, exit rules,
 metrics) is T2's existing, tested logic; this router only wires it to
 signal_ledger/paper_trades persistence and HTTP.
 """
+
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -33,22 +34,42 @@ async def list_paper_trades(
     user: dict = Depends(get_current_user),
 ):
     """PAPER TRADE records only — never a real broker order."""
-    from utils.db import fetch_paper_trades
+    from utils.db import (
+        PaperTradePersistenceError,
+        fetch_paper_trades,
+        normalize_paper_trade_for_json,
+    )
 
-    return fetch_paper_trades(status=status)
+    try:
+        trades = fetch_paper_trades(status=status)
+    except PaperTradePersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Paper trade data is temporarily unavailable",
+        ) from exc
+    return [normalize_paper_trade_for_json(trade) for trade in trades]
 
 
 @router.get("/metrics")
 async def paper_trade_metrics(user: dict = Depends(get_current_user)):
     """Portfolio metrics computed by T2's own compute_metrics() over closed
     PAPER trades — not a claim about real trading performance."""
-    from utils.db import fetch_paper_trades
+    from utils.db import PaperTradePersistenceError, fetch_paper_trades
 
-    return compute_metrics(fetch_paper_trades(status="closed"))
+    try:
+        closed_trades = fetch_paper_trades(status="closed")
+    except PaperTradePersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Paper trade data is temporarily unavailable",
+        ) from exc
+    return compute_metrics(closed_trades)
 
 
 @router.get("/signals")
-async def eligible_signals(limit: int = Query(20, le=100), user: dict = Depends(get_current_user)):
+async def eligible_signals(
+    limit: int = Query(20, le=100), user: dict = Depends(get_current_user)
+):
     """Recent FORTRESS-T1 signal_ledger rows — lets the UI both (a) pick a
     real signal to open a paper trade from, and (b) show the originating
     signal's own detail (score, regime, sector, entry/stop/target) next to
@@ -59,7 +80,9 @@ async def eligible_signals(limit: int = Query(20, le=100), user: dict = Depends(
 
 
 @router.post("", status_code=201)
-async def open_paper_trade(body: Dict[str, Any], user: dict = Depends(get_current_user)):
+async def open_paper_trade(
+    body: Dict[str, Any], user: dict = Depends(get_current_user)
+):
     """Open a PAPER position from an existing FORTRESS-T1 signal_ledger
     row. `signal_id` must reference a real, persisted signal — this never
     accepts arbitrary/fabricated signal fields from the request body."""
@@ -71,7 +94,9 @@ async def open_paper_trade(body: Dict[str, Any], user: dict = Depends(get_curren
 
     matches = fetch_signal_ledger(signal_id=signal_id, limit=1)
     if not matches:
-        raise HTTPException(status_code=404, detail=f"No signal found with id={signal_id}")
+        raise HTTPException(
+            status_code=404, detail=f"No signal found with id={signal_id}"
+        )
     signal = matches[0]
 
     config = PaperTradingConfig()
@@ -88,7 +113,9 @@ async def open_paper_trade(body: Dict[str, Any], user: dict = Depends(get_curren
 
 
 @router.post("/{trade_id}/close")
-async def close_paper_trade_route(trade_id: int, user: dict = Depends(get_current_user)):
+async def close_paper_trade_route(
+    trade_id: int, user: dict = Depends(get_current_user)
+):
     """Close using T2's deterministic simulate_exit() against real price
     data since entry — never a broker fill, never an invented outcome
     when price data isn't available yet."""
@@ -98,7 +125,9 @@ async def close_paper_trade_route(trade_id: int, user: dict = Depends(get_curren
     open_trades = fetch_paper_trades(status="open")
     trade = next((t for t in open_trades if t.get("trade_id") == trade_id), None)
     if trade is None:
-        raise HTTPException(status_code=404, detail=f"No open paper trade with id={trade_id}")
+        raise HTTPException(
+            status_code=404, detail=f"No open paper trade with id={trade_id}"
+        )
 
     hist = get_ohlcv(trade["symbol"], "1y")
     price_path = []
@@ -107,15 +136,27 @@ async def close_paper_trade_route(trade_id: int, user: dict = Depends(get_curren
         for ts, row in hist.iterrows():
             date_str = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)
             if date_str > entry_date:
-                price_path.append({"date": date_str, "high": float(row["High"]),
-                                    "low": float(row["Low"]), "close": float(row["Close"])})
+                price_path.append(
+                    {
+                        "date": date_str,
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                    }
+                )
 
     config = PaperTradingConfig()
     closed = simulate_exit(trade, price_path, config)
     if closed is None:
-        return {"status": "not_ready", "reason": "No price data available yet since entry", "trade_id": trade_id}
+        return {
+            "status": "not_ready",
+            "reason": "No price data available yet since entry",
+            "trade_id": trade_id,
+        }
 
     if not close_paper_trade(trade_id, closed):
-        raise HTTPException(status_code=500, detail="Failed to persist paper trade close")
+        raise HTTPException(
+            status_code=500, detail="Failed to persist paper trade close"
+        )
 
     return {**closed, "trade_id": trade_id, "label": "PAPER TRADE"}

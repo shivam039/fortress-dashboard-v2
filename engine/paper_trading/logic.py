@@ -78,8 +78,12 @@ def open_position_from_signal(
     list (each needs at least a `notional` key) — this function does not
     read any DB itself.
     """
-    entry_price = signal.get("suggested_entry") or signal.get("price_used")
-    if not entry_price or entry_price <= 0:
+    raw_entry_price = signal.get("suggested_entry") or signal.get("price_used")
+    try:
+        entry_price = float(raw_entry_price)
+    except (TypeError, ValueError):
+        entry_price = 0.0
+    if entry_price <= 0:
         return OpenPositionResult(False, "no valid entry price on signal")
 
     signal_id = signal.get("id")
@@ -97,10 +101,18 @@ def open_position_from_signal(
     notional = min(config.max_position_notional, room)
     quantity = notional / entry_price
 
-    stop_price = signal.get("stop_loss")
-    if not stop_price or stop_price <= 0:
+    raw_stop_price = signal.get("stop_loss")
+    try:
+        stop_price = float(raw_stop_price)
+    except (TypeError, ValueError):
+        stop_price = 0.0
+    if stop_price <= 0:
         stop_price = round(entry_price * (1 - config.fallback_stop_loss_pct), 2)
-    target_price = signal.get("target") or None
+    raw_target_price = signal.get("target")
+    try:
+        target_price = float(raw_target_price) if raw_target_price else None
+    except (TypeError, ValueError):
+        target_price = None
 
     trade = {
         "signal_id": signal_id,
