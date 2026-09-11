@@ -492,6 +492,16 @@ export interface PaperTradeMetrics {
   benchmark_excess_return_pct: number | null;
 }
 
+export interface PaperPositionValuation extends PaperTrade {
+  current_price: number | null;
+  unrealized_pnl: number | null;
+  unrealized_return_pct: number | null;
+  distance_to_stop_pct: number | null;
+  distance_to_target_pct: number | null;
+  signal: FortressSignalLedgerRow | null;
+  policy_version?: string | null;
+}
+
 export interface FortressSignalLedgerRow {
   id: number;
   generated_at: string;
@@ -509,6 +519,7 @@ export const paperTradingApi = {
   list: (status?: 'open' | 'closed') =>
     api.get<PaperTrade[]>(`/api/paper-trades${status ? `?status=${status}` : ''}`),
   metrics: () => api.get<PaperTradeMetrics>('/api/paper-trades/metrics'),
+  openValuation: () => api.get<PaperPositionValuation[]>('/api/paper-trades/open/valuation'),
   signals: (limit = 20) => api.get<FortressSignalLedgerRow[]>(`/api/paper-trades/signals?limit=${limit}`),
   open: (signalId: number) => api.post<PaperTrade & { label: string }>('/api/paper-trades', { signal_id: signalId }),
   close: (tradeId: number) =>
@@ -651,4 +662,3 @@ export const investmentsApi = {
     return api.get<RefreshJob | RefreshJob[]>(`/api/investments/refresh-status${qs}`);
   },
 };
-

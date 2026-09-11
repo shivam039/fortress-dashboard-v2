@@ -5,7 +5,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { paperTradingApi, type FortressSignalLedgerRow, type PaperTrade, type PaperTradeMetrics } from '@/lib/api';
+import { paperTradingApi, type FortressSignalLedgerRow, type PaperPositionValuation, type PaperTrade, type PaperTradeMetrics } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import DataTable from '@/components/DataTable';
 import MetricCard from '@/components/MetricCard';
@@ -13,6 +13,8 @@ import MetricCard from '@/components/MetricCard';
 export default function PaperTradingPage() {
   const { success, error } = useToast();
   const [open, setOpen] = useState<PaperTrade[]>([]);
+  const [valuations, setValuations] = useState<PaperPositionValuation[]>([]);
+  const [selected, setSelected] = useState<PaperPositionValuation | null>(null);
   const [closed, setClosed] = useState<PaperTrade[]>([]);
   const [metrics, setMetrics] = useState<PaperTradeMetrics | null>(null);
   const [signals, setSignals] = useState<FortressSignalLedgerRow[]>([]);
@@ -24,12 +26,12 @@ export default function PaperTradingPage() {
     setLoading(true);
     setLoadError(null);
     Promise.all([
-      paperTradingApi.list('open'),
+      paperTradingApi.openValuation(),
       paperTradingApi.list('closed'),
       paperTradingApi.metrics(),
       paperTradingApi.signals(20),
     ])
-      .then(([o, c, m, s]) => { setOpen(o); setClosed(c); setMetrics(m); setSignals(s); })
+      .then(([o, c, m, s]) => { setValuations(o); setOpen(o); setClosed(c); setMetrics(m); setSignals(s); })
       .catch((err: unknown) => setLoadError((err as Error).message || 'Unknown error'))
       .finally(() => setLoading(false));
   }, []);
@@ -148,20 +150,23 @@ export default function PaperTradingPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Symbol</th><th>Signal ID</th><th>Entry</th><th>Stop</th><th>Target</th><th>Qty</th><th></th>
+                      <th>Symbol</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>Return</th><th>Stop</th><th>Target</th><th>Holding</th><th>Status</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {open.map(t => (
-                      <tr key={t.trade_id}>
+                    {valuations.map(t => (
+                      <tr key={t.trade_id} onClick={() => setSelected(t)} style={{ cursor: 'pointer' }}>
                         <td>{t.symbol}</td>
-                        <td>#{t.signal_id}</td>
                         <td>{t.entry_price}</td>
+                        <td>{t.current_price ?? 'unavailable'}</td>
+                        <td>{t.unrealized_pnl == null ? 'unavailable' : t.unrealized_pnl.toFixed(2)}</td>
+                        <td>{t.unrealized_return_pct == null ? 'unavailable' : `${t.unrealized_return_pct.toFixed(2)}%`}</td>
                         <td>{t.stop_price ?? 'n/a'}</td>
                         <td>{t.target_price ?? 'n/a'}</td>
-                        <td>{t.quantity}</td>
+                        <td>{t.holding_period_days ?? 'n/a'} days</td>
+                        <td><span className="badge">PAPER TRADE</span></td>
                         <td>
-                          <button className="btn btn-secondary" disabled={busyId === t.trade_id} onClick={() => handleClose(t.trade_id, t.symbol)}>
+                          <button className="btn btn-secondary" disabled={busyId === t.trade_id} onClick={(e) => { e.stopPropagation(); handleClose(t.trade_id, t.symbol); }}>
                             {busyId === t.trade_id ? 'Closing...' : 'Close PAPER TRADE'}
                           </button>
                         </td>
@@ -177,6 +182,22 @@ export default function PaperTradingPage() {
             <h3 className="section-title">Closed PAPER Trades ({closed.length})</h3>
             <DataTable data={closed as unknown as Record<string, unknown>[]} emptyMessage="No closed paper trades yet." />
           </div>
+          {selected && (
+            <div className="modal-backdrop" onClick={() => setSelected(null)}>
+              <div className="modal" onClick={e => e.stopPropagation()}>
+                <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
+                <h2>{selected.symbol} <span className="badge">PAPER TRADE</span></h2>
+                <p>Current: {selected.current_price ?? 'unavailable'} · Entry: {selected.entry_price}</p>
+                <p>P&amp;L: {selected.unrealized_pnl ?? 'unavailable'} · Return: {selected.unrealized_return_pct == null ? 'unavailable' : `${selected.unrealized_return_pct.toFixed(2)}%`}</p>
+                <p>Stop: {selected.stop_price ?? 'n/a'} · Target: {selected.target_price ?? 'n/a'}</p>
+                <p>Holding: {selected.holding_period_days ?? 'n/a'} days · Quantity: {selected.quantity} · Notional: {selected.notional}</p>
+                <h3>Fortress Signal</h3>
+                <p>{selected.signal ? `Score: ${selected.signal.score ?? 'n/a'} · ${selected.signal.market_regime ?? 'n/a'} · ${selected.signal.sector ?? 'n/a'}` : 'Signal detail unavailable'}</p>
+                <p>Trade ID: #{selected.trade_id} · Signal ID: #{selected.signal_id} · Policy: {selected.policy_version ?? 'n/a'}</p>
+                <button className="btn btn-primary" onClick={() => handleClose(selected.trade_id, selected.symbol)}>Close PAPER TRADE</button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </>
