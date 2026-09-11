@@ -234,3 +234,5 @@ using the validation period to silently fit new scoring parameters.
 **Rejected:** A second Caddy container on different host ports (ugly URLs, defeats the purpose of a clean production domain); running production on a second Oracle VM (unnecessary cost/complexity for current load, and the ticket prefers reusing the existing VM when resources permit).
 
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
+
+<!-- no-log: routine change, no decision or anti-pattern worth recording -->
