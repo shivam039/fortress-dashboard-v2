@@ -2908,6 +2908,130 @@ def fetch_paper_trades(
         return []
 
 
+# ── FORTRESS-E2: paper-policy decisions (audit trail + idempotency) ─────────
+#
+# One row per signal_ledger row ever considered by the automated paper
+# policy. Keyed on signal_id: a rerun UPSERTs the SAME row rather than
+# creating a duplicate decision or re-opening a position — this table is
+# what makes engine/paper_trading/policy_engine.py idempotent.
+
+def _ensure_paper_policy_decisions_neon() -> None:
+    _exec("""
+        CREATE TABLE IF NOT EXISTS paper_policy_decisions (
+            signal_id     BIGINT PRIMARY KEY,
+            policy_version TEXT NOT NULL,
+            status        TEXT NOT NULL,
+            reason        TEXT,
+            trade_id      BIGINT,
+            decided_at    TIMESTAMPTZ,
+            created_at    TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+
+def _ensure_paper_policy_decisions_sqlite(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_policy_decisions (
+            signal_id     INTEGER PRIMARY KEY,
+            policy_version TEXT NOT NULL,
+            status        TEXT NOT NULL,
+            reason        TEXT,
+            trade_id      INTEGER,
+            decided_at    TEXT,
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def upsert_policy_decision(
+    signal_id: int, policy_version: str, status: str,
+    reason: Optional[str] = None, trade_id: Optional[int] = None,
+) -> None:
+    """Insert or update the one decision row for `signal_id`. Called for
+    every state transition (PENDING -> OPENED/REJECTED_*/INVALID_SIGNAL),
+    so a rerun always converges on the same final row rather than adding a
+    second one — the idempotency mechanism for automated entry."""
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    params = {"signal_id": signal_id, "policy_version": policy_version, "status": status,
+              "reason": reason, "trade_id": trade_id, "decided_at": now_iso}
+    sql = """
+        INSERT INTO paper_policy_decisions (signal_id, policy_version, status, reason, trade_id, decided_at)
+        VALUES (:signal_id, :policy_version, :status, :reason, :trade_id, :decided_at)
+        ON CONFLICT (signal_id) DO UPDATE SET
+            policy_version = :policy_version, status = :status, reason = :reason,
+            trade_id = :trade_id, decided_at = :decided_at
+    """
+    try:
+        if _can_use_neon():
+            _ensure_paper_policy_decisions_neon()
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                conn.execute(text(sql), params)
+        else:
+            with _sqlite_connection() as conn:
+                _ensure_paper_policy_decisions_sqlite(conn)
+                conn.execute(sql, params)
+    except Exception as e:
+        logger.error("upsert_policy_decision(signal_id=%s) failed: %s", signal_id, e)
+
+
+def fetch_undecided_signals(limit: int = 500, min_signal_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """signal_ledger rows with no paper_policy_decisions row yet, oldest
+    first (id ASC) — the deterministic order automated entry evaluates
+    signals in. A signal already PENDING (next session not open yet) is
+    excluded here too; policy_engine re-fetches it by id via
+    fetch_signal_ledger(signal_id=...) on the next run instead of via this
+    function, since it already has a decision row.
+
+    `min_signal_id` is test-only scoping (limits which historical rows a
+    test run considers, in a shared test database with many unrelated
+    signal_ledger rows from other tests) — production callers never need
+    to pass it, since a real deployment's signal_ledger only ever contains
+    real signals worth considering."""
+    where_extra = " AND s.id >= :min_signal_id" if min_signal_id is not None else ""
+    query = f"""
+        SELECT s.* FROM signal_ledger s
+        LEFT JOIN paper_policy_decisions d ON d.signal_id = s.id
+        WHERE d.signal_id IS NULL{where_extra}
+        ORDER BY s.id ASC LIMIT :limit
+    """
+    params: Dict[str, Any] = {"limit": limit}
+    if min_signal_id is not None:
+        params["min_signal_id"] = min_signal_id
+    try:
+        if _can_use_neon():
+            _ensure_paper_policy_decisions_neon()
+            return _query(query, params)
+        with _sqlite_connection() as conn:
+            _ensure_paper_policy_decisions_sqlite(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_undecided_signals failed: %s", e)
+        return []
+
+
+def fetch_policy_decisions(status: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+    where = "WHERE status = :status" if status else ""
+    query = f"SELECT * FROM paper_policy_decisions {where} ORDER BY signal_id ASC LIMIT :limit"
+    params: Dict[str, Any] = {"limit": limit}
+    if status:
+        params["status"] = status
+    try:
+        if _can_use_neon():
+            _ensure_paper_policy_decisions_neon()
+            return _query(query, params)
+        with _sqlite_connection() as conn:
+            _ensure_paper_policy_decisions_sqlite(conn)
+            cur = conn.execute(query, params)
+            col_names = [d[0] for d in cur.description]
+            return [dict(zip(col_names, row)) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error("fetch_policy_decisions failed: %s", e)
+        return []
+
+
 # ── FORTRESS-E1: prospective research observations ──────────────────────────
 #
 # T1 (signal_ledger, above) means SIGNAL. research_observations is a
