@@ -69,3 +69,17 @@ def get_auto_scan_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get("/health")
+def auto_scan_health(trading_date: Optional[str] = None):
+    """FORTRESS-O1: operational monitoring only — detects FAILED/DEGRADED/
+    missing/stale runs. Read-only (no scan, no evidence write). A watchdog
+    workflow polls this to decide whether to alert; it never fabricates a
+    status. Config booleans only — no secret values."""
+    from research.auto_scan import check_pipeline_health, check_production_config
+
+    return {
+        "pipeline": check_pipeline_health(trading_date=trading_date),
+        "production_config": check_production_config(),
+    }
