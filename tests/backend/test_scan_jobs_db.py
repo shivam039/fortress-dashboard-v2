@@ -9,6 +9,7 @@ from utils.db import (
     create_scan_job,
     fail_scan_job,
     get_scan_job,
+    heartbeat_scan_job,
     mark_stale_scan_jobs_failed,
     update_scan_job_progress,
 )
@@ -154,3 +155,33 @@ def test_progress_updates_refresh_updated_at_timestamp():
 
     assert job2["updated_at"] is not None
     assert job1["created_at"] is not None
+
+
+def test_heartbeat_refreshes_running_job_timestamp():
+    job_id = "job-heartbeat-1"
+    create_scan_job(job_id, "Nifty 50", {})
+    update_scan_job_progress(job_id, status="running", stage="market_data")
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET updated_at=datetime('now', '-2 minutes') "
+            "WHERE job_id = :job_id",
+            {"job_id": job_id},
+        )
+        conn.commit()
+
+    before = get_scan_job(job_id)["updated_at"]
+    assert heartbeat_scan_job(job_id) == 1
+    after = get_scan_job(job_id)["updated_at"]
+    assert after >= before
+
+
+def test_heartbeat_cannot_mutate_terminal_job():
+    job_id = "job-heartbeat-terminal-1"
+    create_scan_job(job_id, "Nifty 50", {})
+    complete_scan_job(job_id, [])
+
+    assert heartbeat_scan_job(job_id) == 0
+    job = get_scan_job(job_id)
+    assert job["status"] == "completed"
+    assert job["stage"] == "completed"

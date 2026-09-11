@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import logging
 import traceback
 import math
+import resource
 import time
 from datetime import datetime
 
@@ -49,6 +50,7 @@ from utils.db import (
     fetch_mf_cached_results,
     fetch_scan_history_list,
     get_scan_job,
+    heartbeat_scan_job,
     mark_stale_scan_jobs_failed,
     record_signal_ledger_entries,
     register_scan,
@@ -123,6 +125,35 @@ def generate_action_link(row, broker_choice):
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logger = logging.getLogger("fortress-api")
+
+
+def _get_process_rss_mb() -> Optional[float]:
+    """Return process max RSS in MB without making telemetry a hard dependency."""
+    try:
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
+        return round(rss / divisor, 1)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _log_scan_stage(
+    job_id: str, stage: str, started_at: float, rss_start_mb: Optional[float] = None
+) -> None:
+    rss_mb = _get_process_rss_mb()
+    delta = (
+        round(rss_mb - rss_start_mb, 1)
+        if rss_mb is not None and rss_start_mb is not None
+        else None
+    )
+    logger.info(
+        "scan_stage job=%s stage=%s duration_s=%.3f rss_mb=%s rss_delta_mb=%s",
+        job_id,
+        stage,
+        time.monotonic() - started_at,
+        rss_mb if rss_mb is not None else "unavailable",
+        delta if delta is not None else "unavailable",
+    )
 
 # Optional startup diagnostics for deployment debugging.
 # Enable by setting environment variable FORTRESS_LOG_STARTUP=1 (or 'true').
@@ -326,6 +357,7 @@ def execute_scan(
     tickers_override: Optional[List[str]] = None,
     run_meta: Optional[Dict[str, Any]] = None,
     universe_membership: Optional[Dict[str, List[str]]] = None,
+    job_id: Optional[str] = None,
 ) -> Any:
     """Run one full stock scan: universe resolution, metadata prefetch,
     market-data fetch, per-ticker indicator calc/scoring, scoring
@@ -368,6 +400,7 @@ def execute_scan(
     # comparisons don't need ad-hoc profiling. Never included in the HTTP
     # response — this is server-side observability only, not an API change.
     _t_scan_start = time.monotonic()
+    _scan_job_id = job_id or "sync"
     scan_timings = {}
 
     # ── Fetch live market regime ONCE for the entire scan ──────────────────────
@@ -414,6 +447,8 @@ def execute_scan(
     # consumes already-loaded metadata instead of making its own blocking
     # calls.
     progress_cb("metadata", current=0, total=len(tickers), message="Prefetching ticker metadata")
+    _metadata_started = time.monotonic()
+    _metadata_rss_start = _get_process_rss_mb()
     _t0 = time.monotonic()
     # `or {}`: defensive against test doubles / callers built against the
     # pre-P2 contract (prefetch_metadata() used to return None implicitly).
@@ -425,6 +460,7 @@ def execute_scan(
     scan_timings["metadata_fetch_successes"] = prefetch_stats.get("fetch_successes", 0)
     scan_timings["metadata_fetch_failures"] = prefetch_stats.get("fetch_failures", 0)
     scan_timings["metadata_persist_s"] = prefetch_stats.get("persist_duration_s", 0.0)
+    _log_scan_stage(_scan_job_id, "metadata", _metadata_started, _metadata_rss_start)
     progress_cb(
         "metadata",
         current=len(tickers),
@@ -437,11 +473,15 @@ def execute_scan(
     # if the bulk download fails or returns partial data, fall back to per-symbol
     # fetches so one bad ticker does not fail the entire scan.
     progress_cb("market_data", current=0, total=len(tickers), message="Fetching market data")
+    _market_data_started = time.monotonic()
+    _market_data_rss_start = _get_process_rss_mb()
     _t0 = time.monotonic()
+    _indicator_rss_start = _get_process_rss_mb()
     batch_data = get_stock_data(
         tuple(tickers), period="1y", interval="1d", group_by="ticker"
     )
     scan_timings["market_data_s"] = round(time.monotonic() - _t0, 3)
+    _log_scan_stage(_scan_job_id, "market_data", _market_data_started, _market_data_rss_start)
     fallback_active = batch_data.empty
     if fallback_active:
         logger.warning("Bulk market data fetch returned no rows for %s", req.universe)
@@ -538,6 +578,7 @@ def execute_scan(
         )
 
     _t0 = time.monotonic()
+    _indicator_rss_start = _get_process_rss_mb()
     progress_cb("indicators", current=0, total=len(tickers), message="Running indicator calculation and scoring")
     if fallback_active:
         # FORTRESS-P2: the batch fetch returned nothing, so every ticker
@@ -591,6 +632,7 @@ def execute_scan(
             if circuit_breaker_tripped:
                 break
     scan_timings["indicator_scoring_loop_s"] = round(time.monotonic() - _t0, 3)
+    _log_scan_stage(_scan_job_id, "indicators", _t0, _indicator_rss_start)
 
     def _score_results(raw_results):
         """Shared scoring step for both the normal path and the
@@ -614,11 +656,13 @@ def execute_scan(
         _t0_scoring = time.monotonic()
         scored = apply_advanced_scoring(score_df, scoring_config)
         scan_timings["scoring_s"] = round(time.monotonic() - _t0_scoring, 3)
+        _log_scan_stage(_scan_job_id, "scoring", _t0_scoring, None)
         progress_cb("scoring", current=1, total=1, message="Scoring complete")
         return scored
 
     def _log_scan_timings():
         scan_timings["total_scan_s"] = round(time.monotonic() - _t_scan_start, 3)
+        _log_scan_stage(_scan_job_id, "total", _t_scan_start, None)
         logger.info(
             "scan_timing universe=%s tickers=%d scanned=%d failed=%d %s",
             req.universe,
@@ -669,6 +713,7 @@ def execute_scan(
             logger.warning("run_scan: failed to record research observations: %s", e)
         finally:
             scan_timings["db_persist_s"] = round(time.monotonic() - _t0_persist, 3)
+            _log_scan_stage(_scan_job_id, "persistence", _t0_persist, None)
             progress_cb("persistence", current=1, total=1, message="Scan history saved")
 
     def _record_signal_ledger(history_df, scan_id, timestamp):
@@ -840,6 +885,23 @@ def run_scan(req: ScanRequest):
 # request.
 
 _JOB_PROGRESS_UPDATES_PER_SCAN = 20  # throttle: ~20 DB writes/scan regardless of universe size
+_DEFAULT_SCAN_JOB_HEARTBEAT_SECONDS = 45
+
+
+def _scan_job_heartbeat_seconds() -> float:
+    try:
+        value = float(os.getenv("FORTRESS_SCAN_JOB_HEARTBEAT_SECONDS", "45"))
+        return value if value > 0 else _DEFAULT_SCAN_JOB_HEARTBEAT_SECONDS
+    except (TypeError, ValueError):
+        return _DEFAULT_SCAN_JOB_HEARTBEAT_SECONDS
+
+
+async def _heartbeat_scan_job(job_id: str) -> None:
+    """Keep a running scan fresh until its owning task exits."""
+    interval = _scan_job_heartbeat_seconds()
+    while True:
+        await asyncio.sleep(interval)
+        await asyncio.to_thread(heartbeat_scan_job, job_id)
 
 
 def _make_job_progress_cb(job_id: str) -> Callable[..., None]:
@@ -869,13 +931,17 @@ async def _run_scan_job(job_id: str, req: ScanRequest) -> None:
     the synchronous POST /api/scan — so job results are byte-compatible and
     scoring itself is never touched here."""
     progress_cb = _make_job_progress_cb(job_id)
+    heartbeat_task = asyncio.create_task(_heartbeat_scan_job(job_id))
     try:
-        result = await asyncio.to_thread(execute_scan, req, progress_cb)
+        result = await asyncio.to_thread(execute_scan, req, progress_cb, job_id=job_id)
         complete_scan_job(job_id, result)
         logger.info("scan job %s completed", job_id)
     except Exception as exc:
         logger.error("scan job %s failed: %s", job_id, exc, exc_info=True)
         fail_scan_job(job_id, str(exc))
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
 @app.post("/api/scan/jobs", status_code=202)
