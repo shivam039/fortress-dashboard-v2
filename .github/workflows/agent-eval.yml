@@ -25,4 +25,10 @@ jobs:
       - name: Run static evals
         run: node scripts/agent-eval/run-eval.js --mode=static --out=agent-evals/expected/static-summary.json
       - name: Run harness tests
-        run: node --test tests/agent-eval/*.test.js
+        run: node --test tests/agent-eval/*.test.js tests/agent/*.test.js
+      - name: Upload static eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-static-report
+          path: agent-evals/expected/static-summary.json
+          retention-days: 14
