@@ -41,7 +41,11 @@ from stock_scanner.logic import (
 from options_algo.logic import fetch_option_chain, get_available_expiries, scan_strategies
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
-from utils.security_config import is_production_environment, validate_cors_origins
+from utils.security_config import (
+    is_production_environment,
+    validate_cors_origins,
+    validate_staging_database_isolation,
+)
 from utils.db import (
     complete_scan_job,
     create_scan_job,
@@ -266,6 +270,12 @@ _cors_origins = [
 # FORTRESS_CORS_ORIGINS=*.
 if is_production_environment():
     validate_cors_origins(_cors_origins)
+
+validate_staging_database_isolation(
+    os.environ.get("FORTRESS_ENV"),
+    os.environ.get("DATABASE_URL"),
+    os.environ.get("FORTRESS_PRODUCTION_DB_MARKERS"),
+)
 
 # FORTRESS-V4 / Blocker D: refuse to start in production if Neon/Postgres
 # is misconfigured or unreachable — see utils/db.validate_database_
