@@ -248,3 +248,5 @@ using the validation period to silently fit new scoring parameters.
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
 
 <!-- no-log: routine change, no decision or anti-pattern worth recording -->
+
+<!-- no-log: files listed by the hook (.github/workflows/agent-eval.yml, agent-evals/, docs/agents/evaluation/, scripts/agent-eval/, tests/agent-eval/) belong to a separate concurrent agent session sharing this working directory -- see the 2026-09-11 "Concurrent agent sessions sharing one local git working directory" entry in anti-patterns.md. Confirmed via `git status` all untracked/unstaged, not touched or committed by this session. -->
