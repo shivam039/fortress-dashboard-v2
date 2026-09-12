@@ -37,6 +37,9 @@ export async function installSafeApi(page: Page): Promise<void> {
         ? [{ Symbol: 'SAFE', Strategy: 'Long-Term Pick', Quality_Gate_Pass: true, Fortress_Score: 81 }]
         : [{ Scheme: 'QA Mutual Fund', conviction_score_v2: 72 }]);
     }
+    if (path === '/api/history/context') {
+      return json(route, { signals: [{ id: 501, symbol: 'SAFE', score: 81, generated_at: '2026-09-10 16:00' }], paper_trades: [{ trade_id: 7, signal_id: 501, source_type: 'ORACLE_SIGNAL', oracle_decision: 'POSITIVE', oracle_version: 'oracle-v1' }] });
+    }
     if (path === '/api/orders/stats') return json(route, { total: 0, executed: 0, pending: 0, rejected: 0, cancelled: 0 });
     if (path === '/api/picks/summary') return json(route, { total: 0, hits: 0, misses: 0, expired: 0, trailing: 0, hit_rate: 0, avg_pnl: 0, avg_days: 0, best_pnl: 0, worst_pnl: 0 });
     if (path === '/api/paper-trades/metrics') return json(route, { trade_count: 0, total_gross_pnl: 0, total_net_pnl: 0, win_rate_pct: null, avg_win: null, avg_loss: null, expectancy: null, max_drawdown: 0, total_exposure: 0, turnover: 0, portfolio_return_pct: null, benchmark_excess_return_pct: null });

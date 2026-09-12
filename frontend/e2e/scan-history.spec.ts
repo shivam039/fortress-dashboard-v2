@@ -25,3 +25,14 @@ test('stock and mutual-fund histories stay separate and stock replay is read-onl
   await expect(page.getByRole('button', { name: /Stocks/ })).toBeVisible();
   fatalCheck();
 });
+
+test('historical context shows persisted signal and provenance without mutation', async ({ page, fatalCheck }) => {
+  await loginWithFixture(page);
+  await page.getByRole('link', { name: /Scan History/ }).click();
+  await page.getByText('Nifty 50').click();
+  await expect(page.getByText('Historical Evidence Context')).toBeVisible();
+  await expect(page.getByText(/score 81/)).toBeVisible();
+  await expect(page.getByText(/Oracle: POSITIVE \(oracle-v1\)/)).toBeVisible();
+  await expect(page.getByText(/Paper trade: linked/)).toBeVisible();
+  fatalCheck();
+});

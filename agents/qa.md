@@ -25,6 +25,13 @@ provider failures, and unsafe evidence remain human-gated. A PR body is valid
 only after the original scenario is rerun, evaluations and reviewer checks pass,
 and the loop reaches `READY_FOR_PR`; merge and deployment remain manual.
 
+Actionable QA findings may be synchronized to GitHub by the reusable
+`scripts/agent/github-issue-sync.js` service. It deduplicates by the AGENT6
+fingerprint, updates one canonical open issue through lifecycle states, records
+the specialist and sanitized evidence, and never closes issues. Observation-only
+findings are excluded; product decisions are tracked with implementation
+blocked. Human merge remains the canonical closure event.
+
 ## OWNS
 `tests/**` (backend and frontend), Playwright specs, test fixtures,
 failure-artifact triage.
