@@ -16,6 +16,29 @@ export default function OptionsPage() {
   const [strategies, setStrategies] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingExpiries, setLoadingExpiries] = useState(false);
+  const [showAllStrikes, setShowAllStrikes] = useState(false);
+
+  const numeric = (row: Record<string, unknown>, key: string) => {
+    const value = Number(row[key]);
+    return Number.isFinite(value) ? value : 0;
+  };
+  const strikes = [...new Set(chain.map((row) => numeric(row, 'Strike')).filter(Boolean))].sort((a, b) => a - b);
+  const atmStrike = spot == null || strikes.length === 0
+    ? null
+    : strikes.reduce((nearest, strike) => Math.abs(strike - spot) < Math.abs(nearest - spot) ? strike : nearest, strikes[0]);
+  const atmIndex = atmStrike == null ? -1 : strikes.indexOf(atmStrike);
+  const visibleStrikes = showAllStrikes || atmIndex < 0
+    ? strikes
+    : strikes.slice(Math.max(0, atmIndex - 5), atmIndex + 6);
+  const visibleChain = chain.filter((row) => visibleStrikes.includes(numeric(row, 'Strike')));
+  const isCall = (row: Record<string, unknown>) => ['CALL', 'CE'].includes(String(row.Type ?? '').toUpperCase());
+  const isPut = (row: Record<string, unknown>) => ['PUT', 'PE'].includes(String(row.Type ?? '').toUpperCase());
+  const callOi = chain.filter(isCall)
+    .sort((a, b) => numeric(b, 'OI') - numeric(a, 'OI')).slice(0, 3);
+  const putOi = chain.filter(isPut)
+    .sort((a, b) => numeric(b, 'OI') - numeric(a, 'OI')).slice(0, 3);
+  const pcr = chain.filter(isPut).reduce((sum, row) => sum + numeric(row, 'OI'), 0)
+    / Math.max(1, chain.filter(isCall).reduce((sum, row) => sum + numeric(row, 'OI'), 0));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -119,19 +142,35 @@ export default function OptionsPage() {
           <span className="metric-value">{spot ? spot.toFixed(2) : '—'}</span>
         </div>
         <div className="metric-card">
-          <span className="metric-label">Rows</span>
-          <span className="metric-value">{chain.length}</span>
+          <span className="metric-label">ATM Strike</span>
+          <span className="metric-value">{atmStrike == null ? '—' : atmStrike.toFixed(2)}</span>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div className="grid-4">
+          <div><span className="metric-label">Data source</span><div>Yahoo Finance snapshot</div></div>
+          <div><span className="metric-label">Rows shown</span><div>{visibleChain.length} / {chain.length}</div></div>
+          <div><span className="metric-label">Put/Call OI</span><div>{chain.length ? pcr.toFixed(2) : '—'}</div></div>
+          <div><span className="metric-label">Highest call OI</span><div>{callOi[0] ? `${numeric(callOi[0], 'Strike').toFixed(2)} (${numeric(callOi[0], 'OI').toLocaleString()})` : '—'}</div></div>
+        </div>
+        <div style={{ marginTop: '12px' }}><span className="metric-label">Highest put OI</span>{putOi.length ? putOi.map((row) => `${numeric(row, 'Strike').toFixed(2)} (${numeric(row, 'OI').toLocaleString()})`).join(' · ') : ' —'}</div>
+        <p className="page-subtitle" style={{ marginTop: '12px' }}>OI and PCR are descriptive indicators, not trading recommendations. ATM is the available strike nearest to spot.</p>
       </div>
 
       <div className="section" style={{ marginBottom: '24px' }}>
         <h3 className="section-title">Chain Snapshot</h3>
         <DataTable
-          data={chain}
+          data={visibleChain.map((row) => ({ ...row, Moneyness: numeric(row, 'Strike') === atmStrike ? 'ATM' : numeric(row, 'Strike') < (spot ?? 0) ? 'ITM' : 'OTM' }))}
           columns={['Strike', 'Type', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'OI', 'Premium']}
           emptyMessage="No options chain loaded yet."
           maxRows={24}
         />
+        {strikes.length > 11 && (
+          <button className="btn btn-secondary" style={{ marginTop: '12px' }} onClick={() => setShowAllStrikes((current) => !current)}>
+            {showAllStrikes ? 'Show ATM window' : `Show all ${strikes.length} strikes`}
+          </button>
+        )}
       </div>
 
       <div className="section">

@@ -65,6 +65,11 @@ const IGNORABLE_RESOURCE = /favicon\.ico|fonts\.(?:googleapis|gstatic)\.com/;
 // test is expected behavior, not a fatal error), so dropping this URL-less
 // duplicate from console loses no real coverage.
 const GENERIC_NETWORK_FAILURE = /^Failed to load resource: (net::|the server responded with a status of \d+)/;
+const expectedHttpFailures = new WeakMap<Page, RegExp[]>();
+
+export function allowExpectedHttpFailure(page: Page, pattern: RegExp): void {
+  expectedHttpFailures.set(page, [...(expectedHttpFailures.get(page) || []), pattern]);
+}
 
 export function watchForFatalErrors(page: Page): () => void {
   const failures: string[] = [];
@@ -76,7 +81,8 @@ export function watchForFatalErrors(page: Page): () => void {
   });
   page.on('response', response => {
     const status = response.status();
-    if (status >= 500 || (status === 404 && new URL(response.url()).origin === new URL(page.url() || 'http://localhost').origin)) {
+    const expected = (expectedHttpFailures.get(page) || []).some((pattern) => pattern.test(response.url()));
+    if (!expected && (status >= 500 || (status === 404 && new URL(response.url()).origin === new URL(page.url() || 'http://localhost').origin))) {
       failures.push(`HTTP ${status}: ${response.url()}`);
     }
   });
