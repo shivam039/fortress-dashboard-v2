@@ -53,8 +53,14 @@ def max_pain(chain: pd.DataFrame) -> Optional[float]:
         return None
     losses: Dict[float, float] = {}
     for expiry_strike in strikes:
-        call_loss = sum(max(expiry_strike - strike, 0) * call_oi[strike] for strike in strikes)
-        put_loss = sum(max(strike - expiry_strike, 0) * put_oi[strike] for strike in strikes)
+        call_loss = sum(
+            max(expiry_strike - strike, 0) * call_oi[strike]
+            for strike in strikes
+        )
+        put_loss = sum(
+            max(strike - expiry_strike, 0) * put_oi[strike]
+            for strike in strikes
+        )
         losses[expiry_strike] = call_loss + put_loss
     return min(losses, key=lambda strike: (losses[strike], strike))
 
