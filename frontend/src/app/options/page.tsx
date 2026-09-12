@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import DataTable from '@/components/DataTable';
-import { optionsApi } from '@/lib/api';
+import { optionsApi, OptionsSnapshotSummary } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 
 export default function OptionsPage() {
@@ -22,7 +22,7 @@ export default function OptionsPage() {
   const [showAllStrikes, setShowAllStrikes] = useState(false);
   const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
   const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
-  const [snapshots, setSnapshots] = useState<Record<string, unknown>[]>([]);
+  const [snapshots, setSnapshots] = useState<OptionsSnapshotSummary[]>([]);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
