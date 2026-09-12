@@ -41,6 +41,7 @@ from stock_scanner.logic import (
 from options_algo.analytics import to_analytics_frame
 from options_algo.logic import get_available_expiries, scan_strategies
 from options_algo.router import OptionsProviderRouter
+from options_algo.payoff import StrategyLeg, payoff, summary
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.security_config import (
@@ -1399,6 +1400,28 @@ def get_options_chain(
     )
     payload["strategies"] = _sanitize_json_value(strategies.to_dict("records"))
     return _sanitize_json_value(payload)
+
+
+class OptionsPayoffLeg(BaseModel):
+    option_type: str = Field(pattern="^(CE|PE)$")
+    strike: float = Field(gt=0)
+    premium: float = Field(ge=0)
+    quantity: int = Field(default=1, gt=0, le=1000)
+    side: str = Field(default="BUY", pattern="^(BUY|SELL)$")
+
+
+class OptionsPayoffRequest(BaseModel):
+    legs: List[OptionsPayoffLeg] = Field(min_length=1, max_length=20)
+    prices: List[float] = Field(min_length=1, max_length=501)
+
+
+@app.post("/api/options/payoff")
+def get_options_payoff(request: OptionsPayoffRequest):
+    """Return deterministic expiry payoff data for read-only exploration."""
+    legs = [StrategyLeg(**leg.dict()) for leg in request.legs]
+    return {"prices": request.prices, "payoff": payoff(legs, request.prices),
+            "summary": summary(legs, price_floor=min(request.prices),
+                                 price_ceiling=max(request.prices))}
 
 
 @app.get("/api/history/timestamps")
