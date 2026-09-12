@@ -2,7 +2,7 @@ name: NSE Bhav Copy Daily Refresh
 
 # Triggers a background NSE Bhav Copy fetch on the deployed FastAPI backend
 # (POST /api/bhavcopy/refresh — see engine/routers/bhavcopy.py). This repo
-# has no OS-level cron (Render's Root Directory=engine web service has no
+# has no OS-level cron (the backend service has no
 # separate cron job configured); the established precedent for scheduled
 # work against the deployed backend is a GitHub Actions `schedule:` cron
 # doing an HTTP call, same shape as keepalive.yml's Streamlit pinger.
@@ -18,8 +18,8 @@ name: NSE Bhav Copy Daily Refresh
 # when transient (5xx/connect failure); 401/403 fail immediately.
 #
 # Required repo secrets:
-#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
-#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+#   FORTRESS_BACKEND_URL  — configured Oracle backend URL (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the backend's FORTRESS_API_KEY
 #                            (the backend requires X-API-Key on non-auth routes
 #                            whenever that env var is configured)
 
