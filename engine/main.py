@@ -61,6 +61,7 @@ from utils.db import (
     save_scan_results,
     update_scan_job_progress,
 )
+from routers.oracle_decision import router as oracle_decision_router
 
 
 import numpy as np
@@ -1424,6 +1425,7 @@ app.include_router(bhavcopy_router)
 app.include_router(research_evidence_router)
 app.include_router(paper_trading_router)
 app.include_router(auto_scan_router)
+app.include_router(oracle_decision_router)
 
 
 @app.on_event("startup")
