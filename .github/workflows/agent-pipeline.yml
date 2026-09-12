@@ -157,13 +157,14 @@ jobs:
         run: |
           RID="${RUN_ID:-${{ steps.plan.outputs.run_id }}}"
           gh issue edit "$ISSUE_NUMBER" --remove-label agent:manual-action --add-label agent:testing || true
-          node --test scripts/agent/*.test.js
-          node --test tests/agent-eval/*.test.js tests/agent/*.test.js
           node scripts/agent/agent.js workspace-scope "$RID" origin/main
+          TEST_REPORT=$(node scripts/agent/agent.js run-tests "$RID" | tee /tmp/test-report.json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).artifact))")
           gh issue edit "$ISSUE_NUMBER" --remove-label agent:testing --add-label agent:evaluating || true
           node scripts/agent-eval/run-eval.js --mode=static --out=eval-report.json
           gh issue edit "$ISSUE_NUMBER" --remove-label agent:evaluating --add-label agent:review || true
-          node scripts/agent/agent.js auto-gates "$RID" eval-report.json
+          node scripts/agent/reviewer-evidence.js ".agent-room/sessions/$RID.manifest.json" "$TEST_REPORT" eval-report.json .agent-room/sessions > reviewer-report.json
+          REVIEW_REPORT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('reviewer-report.json')).artifact)")
+          node scripts/agent/agent.js auto-gates "$RID" eval-report.json "$TEST_REPORT" "$REVIEW_REPORT"
 
       - name: Create or update pull request and stop at human merge
         if: env.PIPELINE_ACTION == 'resume' || steps.plan.outputs.provider_mode == 'AUTOMATED'
