@@ -61,3 +61,20 @@ def scorecard(outcomes: Iterable[Dict[str, Any]], min_sample: int = 20) -> List[
         "exclusion_count": exclusions.get((decision, horizon), 0),
         "status": "INSUFFICIENT_SAMPLE" if len(groups.get((decision, horizon), [])) < min_sample else "OBSERVED",
     } for decision, horizon in sorted(keys, key=str)]
+
+
+def pending_rows(signal: Dict[str, Any], decision: str) -> List[Dict[str, Any]]:
+    """Create the three idempotent ledger identities for one eligible signal."""
+    reference = signal.get("price_used") or (signal.get("feature_snapshot") or {}).get("Price")
+    try:
+        reference = float(reference)
+    except (TypeError, ValueError):
+        reference = None
+    return [{
+        "signal_id": signal["id"], "oracle_version": ORACLE_VERSION,
+        "decision": decision, "symbol": signal["symbol"],
+        "decision_at": signal.get("generated_at"), "horizon": horizon,
+        "reference_price": reference, "future_price": None, "return_pct": None,
+        "outcome_as_of": None,
+        "status": "PENDING" if reference and reference > 0 else "DATA_UNAVAILABLE",
+    } for horizon in HORIZONS]
