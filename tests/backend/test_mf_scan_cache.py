@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 import main as main_mod
 from main import app
 from utils.db import fetch_mf_cached_results, upsert_mf_scan_results
+import utils.db as db_mod
 
 client = TestClient(app)
 
@@ -76,6 +77,33 @@ def test_fetch_mf_cached_results_stamps_last_updated():
 def test_upsert_mf_scan_results_empty_df_is_a_noop():
     # Must not raise.
     upsert_mf_scan_results(pd.DataFrame())
+
+
+def test_neon_mf_scan_persistence_batches_remote_execution(monkeypatch):
+    calls = []
+
+    class FakeConnection:
+        def execute(self, statement, params):
+            calls.append((str(statement), params))
+
+    class FakeEngine:
+        def begin(self):
+            class Context:
+                def __enter__(self_inner):
+                    return FakeConnection()
+
+                def __exit__(self_inner, *args):
+                    return False
+
+            return Context()
+
+    monkeypatch.setattr(db_mod, "_can_use_neon", lambda: True)
+    monkeypatch.setattr(db_mod, "get_db_engine", lambda: FakeEngine())
+    upsert_mf_scan_results(pd.concat([_fake_scan_df()] * 100, ignore_index=True))
+
+    assert len(calls) == 1
+    assert len(calls[0][1]) == 600
+    assert calls[0][0].count("CURRENT_DATE") == 200
 
 
 def test_mf_analysis_serves_from_cache_when_fresh(monkeypatch):
