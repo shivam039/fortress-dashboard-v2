@@ -595,17 +595,47 @@ export const researchEvidenceApi = {
 
 // ── Options ────────────────────────────────────────────────────────────────
 
+export interface OptionsContract {
+  Strike: number;
+  Type: 'CE' | 'PE';
+  LTP: number | null;
+  OI: number | null;
+  ChangeOI: number | null;
+  Volume: number | null;
+  IV: number | null;
+  Bid: number | null;
+  Ask: number | null;
+  Delta: number | null;
+  Gamma: number | null;
+  Theta: number | null;
+  Vega: number | null;
+}
+
+export interface OptionsChainResponse {
+  underlying: string;
+  underlying_symbol: string;
+  spot: number | null;
+  expiry: string | null;
+  available_expiries: string[];
+  selected_expiry?: string | null;
+  provider: string;
+  fallback_used: boolean;
+  provider_timestamp: string | null;
+  received_at: string;
+  freshness: string | null;
+  capabilities: Record<string, string>;
+  analytics: Record<string, number | null>;
+  contracts: OptionsContract[];
+  chain: Record<string, unknown>[];
+  strategies: Record<string, unknown>[];
+  diagnostics: Record<string, string>;
+}
+
 export const optionsApi = {
   expiries: (symbol: string) =>
     api.get<string[]>(`/api/options/expiries?symbol=${encodeURIComponent(symbol)}`),
   chain: (symbol: string, expiry: string, oiThreshold = 10000) =>
-    api.get<{
-      symbol: string;
-      expiry: string;
-      spot: number;
-      chain: Record<string, unknown>[];
-      strategies: Record<string, unknown>[];
-    }>(
+    api.get<OptionsChainResponse>(
       `/api/options/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(
         expiry
       )}&oi_threshold=${oiThreshold}`

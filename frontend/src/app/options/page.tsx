@@ -14,6 +14,9 @@ export default function OptionsPage() {
   const [spot, setSpot] = useState<number | null>(null);
   const [chain, setChain] = useState<Record<string, unknown>[]>([]);
   const [strategies, setStrategies] = useState<Record<string, unknown>[]>([]);
+  const [provider, setProvider] = useState('—');
+  const [freshness, setFreshness] = useState('—');
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingExpiries, setLoadingExpiries] = useState(false);
   const [showAllStrikes, setShowAllStrikes] = useState(false);
@@ -61,6 +64,9 @@ export default function OptionsPage() {
       setSpot(data.spot);
       setChain(data.chain);
       setStrategies(data.strategies);
+      setProvider(data.provider || 'Unavailable');
+      setFreshness(data.freshness || 'Unavailable');
+      setLastUpdated(data.received_at || null);
     } catch (err: unknown) {
       error((err as Error).message);
     } finally {
@@ -149,7 +155,9 @@ export default function OptionsPage() {
 
       <div className="card" style={{ marginBottom: '24px' }}>
         <div className="grid-4">
-          <div><span className="metric-label">Data source</span><div>Yahoo Finance snapshot</div></div>
+          <div><span className="metric-label">Provider</span><div>{provider}</div></div>
+          <div><span className="metric-label">Freshness</span><div>{freshness}</div></div>
+          <div><span className="metric-label">Last updated</span><div>{lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}</div></div>
           <div><span className="metric-label">Rows shown</span><div>{visibleChain.length} / {chain.length}</div></div>
           <div><span className="metric-label">Put/Call OI</span><div>{chain.length ? pcr.toFixed(2) : '—'}</div></div>
           <div><span className="metric-label">Highest call OI</span><div>{callOi[0] ? `${numeric(callOi[0], 'Strike').toFixed(2)} (${numeric(callOi[0], 'OI').toLocaleString()})` : '—'}</div></div>
