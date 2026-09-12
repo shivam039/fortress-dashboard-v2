@@ -22,6 +22,7 @@ const MANIFEST_FIELDS = [
   'scope_status', 'tests', 'eval_groups', 'eval_status', 'eval_score',
   'eval_hard_failures', 'review_required', 'review_status', 'docs_required',
   'docs_status', 'repair_count', 'pr_number', 'production_impact', 'auto_merge',
+  'test_artifact', 'eval_artifact', 'review_artifact', 'docs_artifact',
   'state', 'created_at', 'updated_at',
 ];
 
@@ -45,6 +46,7 @@ function createManifest(input, now = new Date().toISOString()) {
     provider_result_imported_at: null,
     governance_override_attempts: [],
     changed_files: [], scope_status: 'PENDING', tests: { status: 'PENDING' },
+    test_artifact: null, eval_artifact: null, review_artifact: null, docs_artifact: null,
     eval_groups: selectEvalGroups(input.agent), eval_status: 'PENDING',
     eval_score: null, eval_hard_failures: [], review_required: true,
     review_status: 'PENDING', docs_required: input.docs_required === true,
@@ -124,38 +126,51 @@ function selectEvalGroups(agent) {
 }
 
 function evaluateGate(manifest, report) {
+  if (!report || typeof report !== 'object') throw new Error('eval evidence is required');
   const hard = Array.isArray(report.hard_failures) ? report.hard_failures : [];
   const status = String(report.status || 'FAIL').toUpperCase();
   const failed = status === 'FAIL' || hard.length > 0;
-  return { ...manifest, eval_status: `EVAL_${failed ? 'FAIL' : status}`,
+  return { ...manifest, eval_artifact: report.artifact || manifest.eval_artifact || null,
+    eval_status: `EVAL_${failed ? 'FAIL' : status}`,
     eval_score: Number.isFinite(report.score) ? report.score : null,
     eval_hard_failures: hard, state: failed ? 'BLOCKED_EVAL' : 'REVIEW_PENDING' };
 }
 
 function testGate(manifest, report) {
+  if (!report || typeof report !== 'object') throw new Error('test evidence is required');
   const status = String(report?.status || 'FAIL').toUpperCase();
   if (!['PASS', 'FAIL'].includes(status)) throw new Error('test status must be PASS or FAIL');
-  return { ...manifest, tests: { status, commands: Array.isArray(report.commands) ? report.commands : [] },
-    state: status === 'PASS' ? 'EVALUATING' : 'BLOCKED_TESTS' };
+  const exitCodes = Array.isArray(report.exit_codes) ? report.exit_codes : [];
+  const evidenceFailed = exitCodes.some((code) => code !== 0);
+  if (status === 'PASS' && evidenceFailed) throw new Error('test report PASS conflicts with non-zero exit code');
+  return { ...manifest, test_artifact: report.artifact || manifest.test_artifact || null,
+    tests: { status: evidenceFailed ? 'FAIL' : status, commands: Array.isArray(report.commands) ? report.commands : [],
+      exit_codes: exitCodes, completed_at: report.completed_at || null },
+    state: evidenceFailed || status === 'FAIL' ? 'BLOCKED_TESTS' : 'EVALUATING' };
 }
 
 function reviewerGate(manifest, verdict, docsImpact = false) {
   if ((manifest.eval_hard_failures || []).length || manifest.state === 'BLOCKED_EVAL') return { ...manifest, state: 'BLOCKED_EVAL' };
-  if (!['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES', 'NOT_MERGEABLE'].includes(verdict)) throw new Error('invalid reviewer verdict');
-  if (verdict === 'NOT_MERGEABLE') {
-    if ((manifest.repair_count || 0) >= 1) return { ...manifest, review_status: verdict, state: 'BLOCKED' };
-    return { ...manifest, review_status: verdict, repair_count: 1,
+  const report = verdict && typeof verdict === 'object' ? verdict : null;
+  const actualVerdict = report ? report.verdict : verdict;
+  if (!['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES', 'NOT_MERGEABLE'].includes(actualVerdict)) throw new Error('invalid reviewer verdict');
+  if (actualVerdict === 'NOT_MERGEABLE') {
+    if ((manifest.repair_count || 0) >= 1) return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, state: 'BLOCKED' };
+    return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, repair_count: 1,
       tests: { status: 'PENDING' }, eval_status: 'PENDING', eval_score: null,
       eval_hard_failures: [], state: 'REPAIR_PENDING' };
   }
   const required = manifest.docs_required || docsImpact;
-  return { ...manifest, review_status: verdict, docs_required: required,
+  return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, docs_required: required,
     docs_status: required ? 'PENDING' : 'NOT_REQUIRED', state: required ? 'DOCS_PENDING' : 'PR_GATE_PENDING' };
 }
 
 function docsGate(manifest, satisfied) {
   if (!manifest.docs_required) return { ...manifest, docs_status: 'NOT_REQUIRED', state: 'PR_GATE_PENDING' };
-  return { ...manifest, docs_status: satisfied ? 'PASS' : 'PENDING', state: satisfied ? 'PR_GATE_PENDING' : 'DOCS_PENDING' };
+  const report = satisfied && typeof satisfied === 'object' ? satisfied : null;
+  const passed = report ? report.status === 'PASS' : satisfied === true;
+  return { ...manifest, docs_artifact: report?.artifact || manifest.docs_artifact || null,
+    docs_status: passed ? 'PASS' : 'PENDING', state: passed ? 'PR_GATE_PENDING' : 'DOCS_PENDING' };
 }
 
 function prGate(manifest) {

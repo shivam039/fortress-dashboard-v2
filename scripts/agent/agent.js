@@ -9,6 +9,7 @@ const pipeline = require('./unified-pipeline');
 const githubPipeline = require('./github-pipeline');
 const { resolveExecutionMode } = require('./providers');
 const { getChangedFiles, checkScope } = require('./scope-check');
+const { runTests } = require('./test-runner');
 
 const sessions = path.join(lib.REPO_ROOT, '.agent-room', 'sessions');
 const manifestPath = (runId) => path.join(sessions, `${runId}.manifest.json`);
@@ -72,14 +73,22 @@ function workspaceScopeCommand(runId, baseRef = 'origin/main') {
     state: result.ok ? 'TESTING' : 'BLOCKED_SCOPE', updated_at: new Date().toISOString() });
 }
 
-function autoGatesCommand(runId, evalPath) {
+function autoGatesCommand(runId, evalPath, testPath, reviewPath, docsPath) {
   let manifest = load(runId);
+  if (!evalPath || !testPath || !reviewPath) throw new Error('auto-gates requires eval, test, and reviewer evidence paths');
   const report = JSON.parse(fs.readFileSync(path.resolve(evalPath), 'utf8'));
-  manifest = pipeline.testGate(manifest, { status: 'PASS', commands: ['configured workflow checks'] });
+  const tests = JSON.parse(fs.readFileSync(path.resolve(testPath), 'utf8'));
+  const review = JSON.parse(fs.readFileSync(path.resolve(reviewPath), 'utf8'));
+  manifest = pipeline.testGate(manifest, tests);
+  if (manifest.state === 'BLOCKED_TESTS') return save(manifest);
   manifest = pipeline.evaluateGate(manifest, report);
   if (manifest.state === 'BLOCKED_EVAL') return save(manifest);
-  manifest = pipeline.reviewerGate(manifest, 'MERGEABLE');
-  if (manifest.docs_required) manifest = pipeline.docsGate(manifest, true);
+  manifest = pipeline.reviewerGate(manifest, review);
+  if (manifest.state === 'REPAIR_PENDING' || manifest.state === 'BLOCKED') return save(manifest);
+  if (manifest.docs_required) {
+    if (!docsPath) throw new Error('docs evidence is required when docs are required');
+    manifest = pipeline.docsGate(manifest, JSON.parse(fs.readFileSync(path.resolve(docsPath), 'utf8')));
+  }
   return save(pipeline.prGate(manifest));
 }
 
@@ -125,7 +134,12 @@ function main() {
   else if (command === 'status') result = load(idOrPath);
   else if (command === 'cancel') result = save({ ...load(idOrPath), state: 'CANCELLED', updated_at: new Date().toISOString() });
   else if (command === 'workspace-scope') result = workspaceScopeCommand(idOrPath, extra);
-  else if (command === 'auto-gates') result = autoGatesCommand(idOrPath, extra);
+  else if (command === 'auto-gates') result = autoGatesCommand(idOrPath, extra, process.argv[5], process.argv[6], process.argv[7]);
+  else if (command === 'run-tests') {
+    const manifest = load(idOrPath);
+    result = runTests({ runId: manifest.run_id, changedFiles: manifest.changed_files,
+      agent: manifest.agent, artifactDir: sessions });
+  }
   else if (command === 'pr-body') result = { body: pipeline.buildUnifiedPrBody(load(idOrPath)) };
   else if (command === 'set-pr') result = save({ ...load(idOrPath), pr_number: Number(extra), state: 'AWAITING_HUMAN', updated_at: new Date().toISOString() });
   else {
