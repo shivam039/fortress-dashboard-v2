@@ -120,7 +120,10 @@ def discover_funds(limit=None):
 
         candidates = []
         for s in schemes:
-            name = s["schemeName"].lower()
+            name = str(s.get("schemeName") or "").lower()
+            if not name:
+                logger.warning("Skipping MF discovery record without schemeName")
+                continue
 
             if not all(req in name for req in required):
                 continue
