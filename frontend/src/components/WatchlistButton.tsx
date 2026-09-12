@@ -28,8 +28,10 @@ export default function WatchlistButton({ symbol, name, assetClass, size = 'sm' 
         items.forEach(i => _watchlistSet.add(i.symbol));
         setInWatchlist(_watchlistSet.has(symbol));
       })
-      .catch(() => {});
-  }, [symbol]);
+      .catch((err: unknown) => {
+        error(`Unable to load watchlist state: ${(err as Error).message || 'try again shortly'}`);
+      });
+  }, [symbol, error]);
 
   const toggle = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
