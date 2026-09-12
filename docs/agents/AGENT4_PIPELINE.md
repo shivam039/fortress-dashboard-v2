@@ -50,6 +50,33 @@ changed files, tests, eval score, review verdict, docs state, production
 impact, human gate, and run ID. It contains no prompt or credentials. The
 terminal automated state is `AWAITING_HUMAN`; only a human merges.
 
+### Evidence artifacts
+
+After scope validation, the pipeline runs the task-specific test plan and
+stores a machine-readable report. Locally, the canonical runner is:
+
+```sh
+node scripts/agent/agent.js run-tests <run-id>
+```
+
+The report records the selected commands, exit codes, status, timestamps, and
+the artifact path. A non-zero exit code is a failed test gate; the pipeline
+does not turn an unavailable or failed command into `PASS`.
+
+The automatic gate command consumes actual report files rather than stage
+booleans:
+
+```sh
+node scripts/agent/agent.js auto-gates <run-id> <eval-report.json> \
+  <test-report.json> <review-report.json> [docs-report.json]
+```
+
+The eval report must come from AGENT2, and the reviewer report must contain a
+structured verdict and findings. A docs-required run must also provide a docs
+report with `status: PASS`; missing evidence fails closed. Reports are stored
+in the run manifest so the PR body can identify the evidence supporting each
+gate.
+
 ## Production and secret safety
 
 Oracle, Caddy, DNS, Vercel/Neon production, schedulers, secrets, trading or
