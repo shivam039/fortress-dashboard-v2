@@ -29,5 +29,14 @@ probability, significance, or a recommendation.
 
 The pure implementation is in `engine/oracle_outcomes/service.py`; it does not
 change Oracle v1 mapping, scanner scores, paper trading, or provider behavior.
-Persistence/backfill and a production refresh job remain a follow-up once the
-local outcome contract is reviewed. No production data or backfill was run.
+ORACLE3B adds the additive `oracle_outcomes` ledger with unique identity
+`(signal_id, oracle_version, horizon)`, batch upserts, a bounded dry-run CLI
+(`python -m oracle_outcomes.backfill --limit 100 --dry-run`), and persisted
+scorecard aggregation. Re-running the backfill is idempotent. Pending rows are
+created only for reconstructable Oracle v1 signals; maturation remains an
+explicit bounded service operation and is not run against production here.
+
+Production rollout order is: additive schema/code deployment, health check,
+dry-run, small bounded backfill, verification, larger bounded backfill, then a
+single GitHub Actions-owned daily maturation job. No Oracle cron/systemd/
+Render scheduler is introduced and no production migration/backfill was run.
