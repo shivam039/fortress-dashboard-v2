@@ -2992,6 +2992,76 @@ def fetch_signal_ledger(
         return []
 
 
+# ── ORACLE3B: durable outcome ledger ───────────────────────────────────────
+def _ensure_oracle_outcomes_sqlite(conn) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS oracle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        signal_id INTEGER NOT NULL,
+        oracle_version TEXT NOT NULL,
+        decision TEXT,
+        symbol TEXT NOT NULL,
+        decision_at TEXT,
+        horizon INTEGER NOT NULL,
+        reference_price REAL,
+        future_price REAL,
+        return_pct REAL,
+        outcome_as_of TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(signal_id, oracle_version, horizon)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_oracle_outcomes_status ON oracle_outcomes(status)")
+
+
+def _ensure_oracle_outcomes_neon() -> None:
+    _exec("""CREATE TABLE IF NOT EXISTS oracle_outcomes (
+        id BIGSERIAL PRIMARY KEY, signal_id BIGINT NOT NULL,
+        oracle_version TEXT NOT NULL, decision TEXT, symbol TEXT NOT NULL,
+        decision_at TEXT, horizon INTEGER NOT NULL, reference_price NUMERIC,
+        future_price NUMERIC, return_pct NUMERIC, outcome_as_of TEXT,
+        status TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(signal_id, oracle_version, horizon)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS idx_oracle_outcomes_status ON oracle_outcomes(status)")
+
+
+def upsert_oracle_outcomes(rows: List[Dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    columns = ("signal_id, oracle_version, decision, symbol, decision_at, horizon, "
+               "reference_price, future_price, return_pct, outcome_as_of, status")
+    placeholders = ", ".join(f":{c}" for c in columns.split(", "))
+    sql = f"INSERT INTO oracle_outcomes ({columns}) VALUES ({placeholders}) ON CONFLICT(signal_id, oracle_version, horizon) DO UPDATE SET status=excluded.status, future_price=excluded.future_price, return_pct=excluded.return_pct, outcome_as_of=excluded.outcome_as_of, updated_at=CURRENT_TIMESTAMP"
+    if _can_use_neon():
+        _ensure_oracle_outcomes_neon()
+        with get_db_engine().begin() as conn:
+            conn.execute(text(sql), rows)
+    else:
+        with _sqlite_connection() as conn:
+            _ensure_oracle_outcomes_sqlite(conn)
+            conn.executemany(sql, rows)
+    return len(rows)
+
+
+def fetch_oracle_outcomes(signal_id: Optional[int] = None, status: Optional[str] = None, decision: Optional[str] = None, horizon: Optional[int] = None, oracle_version: str = "oracle-v1") -> List[Dict[str, Any]]:
+    clauses = ["oracle_version = :oracle_version"]
+    params: Dict[str, Any] = {"oracle_version": oracle_version}
+    for key, value in (("signal_id", signal_id), ("status", status), ("decision", decision), ("horizon", horizon)):
+        if value is not None:
+            clauses.append(f"{key} = :{key}")
+            params[key] = value
+    query = "SELECT * FROM oracle_outcomes WHERE " + " AND ".join(clauses) + " ORDER BY signal_id, horizon"
+    if _can_use_neon():
+        _ensure_oracle_outcomes_neon()
+        return _query(query, params)
+    with _sqlite_connection() as conn:
+        _ensure_oracle_outcomes_sqlite(conn)
+        cur = conn.execute(query, params)
+        return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+
+
 # ─────────────────────────────────────────────
 # Paper trading (FORTRESS-T2)
 # ─────────────────────────────────────────────
