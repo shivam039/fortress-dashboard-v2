@@ -124,8 +124,19 @@ function executeAgent({ provider, model, prompt, inputBudget, outputBudget, conf
   };
 }
 
-async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget, baseUrl, token, fetchImpl = fetch }) {
-  if (!baseUrl || !token) return { status: 'NOT_CONFIGURED', transient: false };
+// Live dispatch is explicit and asynchronous; the legacy executeAgent() plan
+// remains unchanged for non-Qwen providers and dry runs.
+async function executeAgentLive({ provider, model, prompt, inputBudget, outputBudget, config, fetchImpl, baseUrl = process.env.QWEN_WEB_BASE_URL, token = process.env.QWEN_WEB_GATEWAY_TOKEN }) {
+  if (provider !== 'qwen_web') return executeAgent({ provider, model, prompt, inputBudget, outputBudget, config });
+  const resolved = (!baseUrl || !token) ? { mode: 'BLOCKED_PROVIDER', status: 'NOT_CONFIGURED', reason: 'qwen_web credentials are missing' } : { mode: 'AUTOMATED', status: 'SUPPORTED', reason: 'explicit live dispatch' };
+  if (resolved.mode === 'BLOCKED_PROVIDER') return { provider, mode: resolved.mode, status: resolved.status, executed: false, reason: resolved.reason };
+  const result = await executeQwenWeb({ runId: config?.runId || `qwen-${Date.now()}`, model: model || process.env.QWEN_WEB_MODEL || 'qwen', prompt, inputBudget, outputBudget, baseUrl, token, fetchImpl });
+  return { ...result, mode: 'AUTOMATED', executed: result.status === 'AUTOMATED_EXPERIMENTAL' };
+}
+
+async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget, baseUrl, token, fetchImpl = fetch, maxRetries = 1 }) {
+  if (!baseUrl) return { status: 'NOT_CONFIGURED', diagnostic: 'QWEN_WEB_BASE_URL_MISSING', transient: false };
+  if (!token) return { status: 'NOT_CONFIGURED', diagnostic: 'QWEN_WEB_GATEWAY_TOKEN_MISSING', transient: false };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   try {
@@ -137,7 +148,7 @@ async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget,
     });
     if (response.status === 401 || response.status === 403) return { status: 'SESSION_EXPIRED', transient: false };
     if (response.status >= 500 || response.status === 408 || response.status === 429) return { status: 'GATEWAY_ERROR', transient: true };
-    if (!response.ok) return { status: 'PROVIDER_ERROR', transient: false };
+    if (!response.ok) return { status: response.status === 404 ? 'MODEL_UNAVAILABLE' : 'PROVIDER_ERROR', transient: false };
     const payload = await response.json();
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) return { status: 'MALFORMED_RESPONSE', transient: false };
@@ -145,7 +156,9 @@ async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget,
     if (!parsed.ok) return { status: parsed.status, transient: false };
     return { status: 'AUTOMATED_EXPERIMENTAL', run_id: runId, provider: 'qwen_web', model, result: parsed.value, token_usage: 'NOT_AVAILABLE', transient: false };
   } catch (error) {
-    return { status: error?.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE', transient: true };
+    const result = { status: error?.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE', diagnostic: 'QWENGATE_UNREACHABLE', transient: true };
+    if (maxRetries > 0) return executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget, baseUrl, token, fetchImpl, maxRetries: maxRetries - 1 });
+    return result;
   } finally {
     clearTimeout(timeout);
   }
@@ -153,7 +166,8 @@ async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget,
 
 function parseQwenResult(content, { runId, model }) {
   let value;
-  try { value = JSON.parse(content); } catch (_) { return { ok: false, status: 'MALFORMED_RESPONSE' }; }
+  const normalized = content.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
+  try { value = JSON.parse(normalized); } catch (_) { return { ok: false, status: 'MALFORMED_RESPONSE' }; }
   if (!value || value.run_id !== runId || value.provider !== 'qwen_web' || (model && value.model && value.model !== model)) {
     return { ok: false, status: 'INVALID_PROVIDER_RESULT' };
   }
@@ -166,7 +180,8 @@ function parseQwenResult(content, { runId, model }) {
 async function qwenWebHealth({ baseUrl, token, fetchImpl = fetch }) {
   if (!baseUrl || !token) return 'MISCONFIGURED';
   try {
-    const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/health`, { headers: { authorization: `Bearer ${token}` } });
+    let response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/health`, { headers: { authorization: `Bearer ${token}` } });
+    if (response.status === 404) response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/v1/models`, { headers: { authorization: `Bearer ${token}` } });
     if (response.status === 401 || response.status === 403) return 'SESSION_EXPIRED';
     return response.ok ? 'AVAILABLE' : 'UNREACHABLE';
   } catch (_) {
@@ -174,4 +189,4 @@ async function qwenWebHealth({ baseUrl, token, fetchImpl = fetch }) {
   }
 }
 
-module.exports = { ADAPTERS, providerStatus, resolveExecutionMode, executeAgent, executeQwenWeb, qwenWebHealth, parseQwenResult };
+module.exports = { ADAPTERS, providerStatus, resolveExecutionMode, executeAgent, executeAgentLive, executeQwenWeb, qwenWebHealth, parseQwenResult };

@@ -17,6 +17,7 @@ provider abstraction. It supports:
 - private base URL and gateway token from `QWEN_WEB_BASE_URL` and
   `QWEN_WEB_GATEWAY_TOKEN`;
 - bounded 120-second requests and one caller-controlled retry;
+- `/health` with `/v1/models` fallback for gateways that omit `/health`;
 - OpenAI-compatible chat completion response validation;
 - `AVAILABLE`, `MISCONFIGURED`, `SESSION_EXPIRED`, `UNREACHABLE`, and
   `GATEWAY_ERROR` health/failure states;
@@ -62,6 +63,21 @@ to production workloads.
 | Account suspension or policy change | MEDIUM | Separate account; no production dependency |
 
 ## Live experiment
+
+The reviewed upstream Qwengate project documents local port `26405`,
+Chromium-based interactive authentication, and the OpenAI-compatible
+`/v1/models` and `/v1/chat/completions` endpoints. A local setup is:
+
+```sh
+git clone https://github.com/youssefvdel/qwengate.git
+cd qwengate
+./install.sh
+qg
+```
+
+Complete the browser login in Qwengate, then configure Fortress using
+`.env.qwen.example`. The browser profile remains owned by Qwengate and is not
+copied into Fortress.
 
 Live generation is not run by normal CI and was not run for this change because
 no user-authenticated Qwen session is available. A user may run a harmless,
