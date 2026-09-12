@@ -103,73 +103,24 @@ def fetch_option_chain(symbol: str, expiry: str):
     def _load_chain():
         opts = yf.Ticker(symbol).options
         if not opts and ("NSE" in symbol or ".NS" in symbol):
-            import datetime
-
-            import numpy as np
-
-            spot_data = _retry(
-                lambda: yf.download(symbol, period="5d", progress=False),
-                "options_synthetic_spot",
-            )
-            spot_val = (
-                float(spot_data["Close"].dropna().values.ravel()[-1])
-                if not spot_data.empty
-                else (22000.0 if "NSE" in symbol else 1000.0)
-            )
-
-            step = 50 if spot_val < 30000 else 100
-            if spot_val < 1000:
-                step = 5
-            atm = round(spot_val / step) * step
-            strikes = np.arange(atm - step * 20, atm + step * 21, step)
-            t_val = max(
-                (
-                    datetime.datetime.strptime(expiry, "%Y-%m-%d")
-                    - datetime.datetime.now()
-                ).days
-                / 365.0,
-                1 / 365,
-            )
-
-            calls, puts = [], []
-            for s in strikes:
-                iv = 0.15 + 0.05 * np.abs(s - spot_val) / spot_val
-                calls.append(
-                    {
-                        "strike": float(s),
-                        "openInterest": np.random.randint(1000, 100000),
-                        "impliedVolatility": iv,
-                        "lastPrice": max(
-                            0.5, spot_val - s + spot_val * iv * np.sqrt(t_val) * 0.4
-                        ),
-                        "contractSymbol": f"{symbol}{s}CE",
-                    }
-                )
-                puts.append(
-                    {
-                        "strike": float(s),
-                        "openInterest": np.random.randint(1000, 100000),
-                        "impliedVolatility": iv,
-                        "lastPrice": max(
-                            0.5, s - spot_val + spot_val * iv * np.sqrt(t_val) * 0.4
-                        ),
-                        "contractSymbol": f"{symbol}{s}PE",
-                    }
-                )
-
-            class SyntheticChain:
-                @property
-                def calls(self):
-                    return pd.DataFrame(calls)
-
-                @property
-                def puts(self):
-                    return pd.DataFrame(puts)
-
-            return SyntheticChain()
+            # Never manufacture option quotes, OI, IV, or contract metadata.
+            # The UI can present an honest unavailable/empty state when the
+            # provider does not expose an NSE chain for this underlying.
+            return None
         return yf.Ticker(symbol).option_chain(expiry)
 
     chain = _retry(_load_chain, "options_chain")
+    if chain is None:
+        t = max(
+            (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365.0,
+            1 / 365,
+        )
+        return pd.DataFrame(
+            columns=[
+                "Strike", "Type", "IV", "Delta", "Gamma", "Theta", "Vega",
+                "OI", "Premium", "contractSymbol",
+            ]
+        ), 0.0, t
     spot_data = _retry(
         lambda: yf.download(symbol, period="2d", progress=False), "options_spot"
     )
