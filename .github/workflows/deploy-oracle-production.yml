@@ -1,0 +1,60 @@
+name: Deploy Oracle Production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-production-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/fortress-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show selected commit
+        run: git rev-parse HEAD
+      - name: Create source archive
+        run: git archive --format=tar.gz --output=fortress-source.tgz HEAD
+      - name: Prepare SSH
+        env:
+          SSH_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY"; test -n "$KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/oracle_production
+          chmod 600 ~/.ssh/oracle_production
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload production deployment files
+        env:
+          HOST: ${{ secrets.ORACLE_HOST }}
+          USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"; test -n "$USER"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "sudo mkdir -p /opt/fortress-dashboard && sudo chown $USER:$USER /opt/fortress-dashboard"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "mkdir -p /opt/fortress-dashboard/source/${{ github.sha }}"
+          scp -i ~/.ssh/oracle_production fortress-source.tgz "$USER@$HOST:/opt/fortress-dashboard/source/${{ github.sha }}/"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "cd /opt/fortress-dashboard/source/${{ github.sha }} && tar -xzf fortress-source.tgz && rm fortress-source.tgz"
+          scp -i ~/.ssh/oracle_production docker-compose.oracle-production.yml scripts/deploy-oracle-production.sh "$USER@$HOST:/opt/fortress-dashboard/"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "chmod +x /opt/fortress-dashboard/deploy-oracle-production.sh"
+      - name: Build and deploy exact SHA
+        env:
+          HOST: ${{ secrets.ORACLE_HOST }}
+          USER: ${{ secrets.ORACLE_USER }}
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          BACKEND_URL: ${{ secrets.FORTRESS_BACKEND_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$BACKEND_URL"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "cd /opt/fortress-dashboard/source/${{ github.sha }} && docker build -t '$IMAGE' ."
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "FORTRESS_IMAGE='$IMAGE' ORACLE_PRODUCTION_BACKEND_URL='$BACKEND_URL/api/health' /opt/fortress-dashboard/deploy-oracle-production.sh"

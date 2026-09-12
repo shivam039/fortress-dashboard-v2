@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 ORACLE_VERSION = "oracle-v1"
 HORIZONS = (1, 5, 20)
+MAX_MATURATION_BATCH = 200
 
 
 def evaluate_outcomes(signal: Dict[str, Any], bars: Iterable[Dict[str, Any]], horizons=HORIZONS) -> List[Dict[str, Any]]:
@@ -78,3 +79,37 @@ def pending_rows(signal: Dict[str, Any], decision: str) -> List[Dict[str, Any]]:
         "outcome_as_of": None,
         "status": "PENDING" if reference and reference > 0 else "DATA_UNAVAILABLE",
     } for horizon in HORIZONS]
+
+
+def mature_pending(limit: int = 200) -> Dict[str, int]:
+    """Mature a bounded batch of persisted Oracle outcomes."""
+    from utils.db import fetch_oracle_outcomes, fetch_signal_ledger, upsert_oracle_outcomes
+    from utils.market_data_provider import get_ohlcv
+
+    bounded = max(1, min(int(limit), MAX_MATURATION_BATCH))
+    pending = fetch_oracle_outcomes(status="PENDING")[:bounded]
+    matured, unavailable = 0, 0
+    updates = []
+    for outcome in pending:
+        signals = fetch_signal_ledger(signal_id=outcome["signal_id"], limit=1)
+        if not signals:
+            unavailable += 1
+            continue
+        history = get_ohlcv(outcome["symbol"], "1y")
+        bars = [] if history is None else [
+            {"date": timestamp.strftime("%Y-%m-%d"), "close": row.get("Close")}
+            for timestamp, row in history.iterrows()
+        ]
+        signal = {**signals[0], "oracle_decision": outcome["decision"]}
+        evaluated = evaluate_outcomes(signal, bars, horizons=(outcome["horizon"],))[0]
+        if evaluated["status"] == "PENDING":
+            continue
+        updates.append({**outcome, **evaluated})
+        if evaluated["status"] == "MATURED":
+            matured += 1
+        else:
+            unavailable += 1
+    if updates:
+        upsert_oracle_outcomes(updates)
+    return {"checked": len(pending), "matured": matured, "unavailable": unavailable,
+            "updated": len(updates), "limit": bounded}

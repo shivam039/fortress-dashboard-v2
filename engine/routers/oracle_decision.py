@@ -13,6 +13,10 @@ class OracleRequest(BaseModel):
     signal_id: int = Field(..., gt=0)
 
 
+class MaturationRequest(BaseModel):
+    limit: int = Field(default=200, ge=1, le=200)
+
+
 @router.post("")
 async def oracle_decision(body: OracleRequest, user: dict = Depends(get_current_user)) -> Dict[str, Any]:
     from oracle_decision.service import build_decision
@@ -22,6 +26,12 @@ async def oracle_decision(body: OracleRequest, user: dict = Depends(get_current_
     if not matches:
         raise HTTPException(status_code=404, detail="Scanner signal not found")
     return build_decision(matches[0])
+
+
+@router.post("/outcomes/mature")
+async def mature_oracle_outcomes(body: MaturationRequest, user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    from oracle_outcomes.service import mature_pending
+    return mature_pending(body.limit)
 
 
 @router.get("/{signal_id}/outcomes")

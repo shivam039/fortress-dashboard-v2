@@ -1,0 +1,41 @@
+name: Oracle Outcomes Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Bounded number of signals to inspect (max 1000)
+        required: true
+        default: '50'
+      dry_run:
+        description: Preview only; keep true for the first run
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare SSH
+        env:
+          SSH_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail; test -n "$SSH_KEY"; test -n "$KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh; printf '%s\n' "$SSH_KEY" > ~/.ssh/oracle_production; chmod 600 ~/.ssh/oracle_production; printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Run bounded backfill on production VM
+        env:
+          HOST: ${{ secrets.ORACLE_HOST }}
+          USER: ${{ secrets.ORACLE_USER }}
+          LIMIT: ${{ inputs.limit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail; test -n "$HOST"; test -n "$USER"
+          flag=""; [ "$DRY_RUN" = true ] && flag="--dry-run"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "cd /opt/fortress-dashboard && docker compose -p fortress-production --env-file .env.oracle.production -f docker-compose.oracle-production.yml exec -T fortress-backend-production python -m oracle_outcomes.backfill --limit '$LIMIT' $flag"

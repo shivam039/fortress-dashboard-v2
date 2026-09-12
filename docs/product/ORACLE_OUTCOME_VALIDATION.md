@@ -40,3 +40,14 @@ Production rollout order is: additive schema/code deployment, health check,
 dry-run, small bounded backfill, verification, larger bounded backfill, then a
 single GitHub Actions-owned daily maturation job. No Oracle cron/systemd/
 Render scheduler is introduced and no production migration/backfill was run.
+
+## ORACLE3C operations
+
+- Deploy manually from `.github/workflows/deploy-oracle-production.yml` on
+  `main`; it uses the `production` environment and verifies `/api/health`.
+- Run `.github/workflows/oracle-outcomes-backfill.yml` with `dry_run=true`
+  first, then a bounded real run. Repeating the same batch is idempotent.
+- `.github/workflows/oracle-outcomes-mature.yml` runs at 16:30 UTC weekdays,
+  after both Bhav Copy refresh attempts, and can also be dispatched manually.
+  It calls `POST /api/oracle-decision/outcomes/mature` with a server-capped
+  batch of 200 using `FORTRESS_BACKEND_URL` and `FORTRESS_API_KEY`.
