@@ -4,6 +4,32 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from options_algo.contracts import OptionChainResponse
+
+
+def to_analytics_frame(response: OptionChainResponse) -> pd.DataFrame:
+    """Convert canonical contracts at the sole legacy DataFrame boundary."""
+    rows = []
+    for contract in response.contracts:
+        rows.append(
+            {
+                "Strike": contract.strike,
+                "Type": contract.option_type,
+                "LTP": contract.ltp,
+                "Bid": contract.bid,
+                "Ask": contract.ask,
+                "Volume": contract.volume,
+                "OI": contract.open_interest,
+                "ChangeOI": contract.change_in_open_interest,
+                "IV": contract.iv,
+                "Delta": contract.delta,
+                "Gamma": contract.gamma,
+                "Theta": contract.theta,
+                "Vega": contract.vega,
+            }
+        )
+    return pd.DataFrame(rows)
+
 
 def add_moneyness(chain: pd.DataFrame, spot: Optional[float]) -> pd.DataFrame:
     result = chain.copy()
