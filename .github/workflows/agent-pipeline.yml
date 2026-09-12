@@ -1,0 +1,187 @@
+name: AGENT4 GitHub Pipeline
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Approved issue number
+        required: true
+        type: string
+      action:
+        description: Start or resume a provider handoff
+        required: true
+        default: start
+        type: choice
+        options: [start, resume, cancel]
+      run_id:
+        description: Existing run ID (resume/cancel only)
+        required: false
+        type: string
+      provider_result_json:
+        description: Validated provider result JSON (resume only)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-pipeline-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:approved' || github.event.label.name == 'agent:cancelled'
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      PIPELINE_ACTION: ${{ github.event.label.name == 'agent:cancelled' && 'cancel' || inputs.action || 'start' }}
+      RUN_ID: ${{ inputs.run_id }}
+      PROVIDER_RESULT_JSON: ${{ inputs.provider_result_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate event and read untrusted issue as data
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const n = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(n) || n <= 0) core.setFailed('Invalid issue number');
+            const { data } = await github.rest.issues.get({ ...context.repo, issue_number: n });
+            const labels = data.labels.map(x => typeof x === 'string' ? x : x.name);
+            if (process.env.PIPELINE_ACTION !== 'cancel' && !labels.includes('agent:approved')) {
+              core.setFailed('Explicit agent:approved label is required');
+            }
+            require('fs').writeFileSync('issue.json', JSON.stringify({
+              number: data.number, title: data.title, body: data.body || '', labels,
+            }));
+
+      - name: Cancel without deleting retained work
+        if: env.PIPELINE_ACTION == 'cancel'
+        run: |
+          test -n "$RUN_ID" && node scripts/agent/agent.js cancel "$RUN_ID" || true
+          echo 'Pipeline cancelled. Branches and artifacts are retained.'
+
+      - name: Validate framework
+        if: env.PIPELINE_ACTION != 'cancel'
+        run: node scripts/agent/validate-agent-config.js
+
+      - name: Restore canonical run state
+        if: env.PIPELINE_ACTION == 'resume' || env.PIPELINE_ACTION == 'cancel'
+        uses: actions/cache/restore@v4
+        with:
+          path: .agent-room/sessions
+          key: agent-run-${{ env.RUN_ID }}
+
+      - name: Coordinator classification and provider resolution
+        if: env.PIPELINE_ACTION == 'start'
+        id: plan
+        run: |
+          node scripts/agent/agent.js issue-plan issue.json > plan.json
+          node -e "const p=require('./plan.json'); for (const k of ['run_id','branch','state','provider_mode']) console.log(k+'='+p[k])" >> "$GITHUB_OUTPUT"
+
+      - name: Synchronize blocked classification
+        if: env.PIPELINE_ACTION == 'start' && startsWith(steps.plan.outputs.state, 'BLOCKED')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const p = require('./plan.json');
+            await github.rest.issues.addLabels({ ...context.repo, issue_number: Number(process.env.ISSUE_NUMBER), labels: ['agent:blocked'] });
+            await github.rest.issues.createComment({ ...context.repo, issue_number: Number(process.env.ISSUE_NUMBER), body: `Agent pipeline stopped at **${p.state}**: ${p.reason || 'governance gate did not pass'}` });
+
+      - name: Create isolated task branch
+        if: env.PIPELINE_ACTION == 'start' && (steps.plan.outputs.state == 'WAITING_FOR_PROVIDER_RESULT' || steps.plan.outputs.state == 'RUNNING')
+        env:
+          BRANCH: ${{ steps.plan.outputs.branch }}
+        run: |
+          git check-ref-format --branch "$BRANCH"
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then exit 1; fi
+          git switch -c "$BRANCH"
+          git push --set-upstream origin "$BRANCH"
+
+      - name: Publish manual provider handoff
+        if: env.PIPELINE_ACTION == 'start' && steps.plan.outputs.state == 'WAITING_FOR_PROVIDER_RESULT'
+        uses: actions/github-script@v7
+        env:
+          PLAN_PATH: plan.json
+        with:
+          script: |
+            const p = require('./plan.json');
+            await github.rest.issues.createComment({ ...context.repo, issue_number: Number(process.env.ISSUE_NUMBER),
+              body: `### Agent pipeline paused\n\nState: **WAITING_FOR_PROVIDER_RESULT**\nRun ID: \`${p.run_id}\`\nProvider: \`${p.provider}\`\nModel: \`${p.model}\`\n\nThe configured provider has no secure headless adapter. Download the prompt artifact and dispatch this workflow with action=resume. All later gates run automatically.` });
+
+      - name: Upload redacted run artifacts
+        if: env.PIPELINE_ACTION == 'start' && steps.plan.outputs.run_id != 'undefined'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-run-${{ steps.plan.outputs.run_id }}
+          path: |
+            plan.json
+            .agent-room/sessions/${{ steps.plan.outputs.run_id }}.manifest.json
+            .agent-room/sessions/${{ steps.plan.outputs.run_id }}.prompt.md
+          retention-days: 14
+
+      - name: Persist canonical run state for resume
+        if: env.PIPELINE_ACTION == 'start' && steps.plan.outputs.run_id != 'undefined'
+        uses: actions/cache/save@v4
+        with:
+          path: .agent-room/sessions
+          key: agent-run-${{ steps.plan.outputs.run_id }}
+
+      - name: Import manual provider result
+        if: env.PIPELINE_ACTION == 'resume'
+        run: |
+          test -n "$RUN_ID"
+          BRANCH=$(node -e "console.log(require('./.agent-room/sessions/' + process.env.RUN_ID + '.manifest.json').branch)")
+          git check-ref-format --branch "$BRANCH"
+          git fetch origin "$BRANCH"
+          git switch --track "origin/$BRANCH"
+          printf '%s' "$PROVIDER_RESULT_JSON" > provider-result.json
+          node scripts/agent/agent.js import-result "$RUN_ID" provider-result.json
+          node scripts/agent/agent.js resume "$RUN_ID"
+
+      # A supported automated adapter enters here directly; a manual adapter
+      # reaches it only after validated import. Provider output never controls
+      # these commands or governance settings.
+      - name: Scope, tests, eval, review, docs, and PR gates
+        if: env.PIPELINE_ACTION == 'resume' || steps.plan.outputs.provider_mode == 'AUTOMATED'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RID="${RUN_ID:-${{ steps.plan.outputs.run_id }}}"
+          gh issue edit "$ISSUE_NUMBER" --remove-label agent:manual-action --add-label agent:testing || true
+          node --test scripts/agent/*.test.js
+          node --test tests/agent-eval/*.test.js tests/agent/*.test.js
+          node scripts/agent/agent.js workspace-scope "$RID" origin/main
+          gh issue edit "$ISSUE_NUMBER" --remove-label agent:testing --add-label agent:evaluating || true
+          node scripts/agent-eval/run-eval.js --mode=static --out=eval-report.json
+          gh issue edit "$ISSUE_NUMBER" --remove-label agent:evaluating --add-label agent:review || true
+          node scripts/agent/agent.js auto-gates "$RID" eval-report.json
+
+      - name: Create or update pull request and stop at human merge
+        if: env.PIPELINE_ACTION == 'resume' || steps.plan.outputs.provider_mode == 'AUTOMATED'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RID="${RUN_ID:-${{ steps.plan.outputs.run_id }}}"
+          export RID
+          STATE=$(node -e "console.log(require('./.agent-room/sessions/' + process.env.RID + '.manifest.json').state)")
+          test "$STATE" = AWAITING_HUMAN
+          BRANCH=$(git branch --show-current)
+          node scripts/agent/agent.js pr-body "$RID" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).body))" > pr-body.md
+          PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if test -n "$PR"; then
+            gh pr edit "$PR" --body-file pr-body.md
+          else
+            gh pr create --head "$BRANCH" --base main --title "Agent task #$ISSUE_NUMBER" --body-file pr-body.md
+          fi
+          PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          node scripts/agent/agent.js set-pr "$RID" "$PR"
+          gh issue edit "$ISSUE_NUMBER" --remove-label agent:review --add-label agent:ready || true
