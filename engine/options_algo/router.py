@@ -19,7 +19,11 @@ class OptionsProviderRouter:
     ) -> tuple[OptionChainResponse, bool, Dict[str, str]]:
         diagnostics: Dict[str, str] = {}
         for provider in self.providers:
-            expiries = provider.get_expiries(underlying)
+            try:
+                expiries = provider.get_expiries(underlying)
+            except Exception as exc:
+                diagnostics[provider.name] = classify_provider_error(exc)
+                continue
             if not expiries:
                 diagnostics[provider.name] = "NO_EXPIRIES"
                 continue
@@ -27,7 +31,11 @@ class OptionsProviderRouter:
             if selected not in expiries:
                 diagnostics[provider.name] = "EXPIRY_UNAVAILABLE"
                 continue
-            response = provider.get_chain(underlying, selected)
+            try:
+                response = provider.get_chain(underlying, selected)
+            except Exception as exc:
+                diagnostics[provider.name] = classify_provider_error(exc)
+                continue
             if response.contracts:
                 return response, provider is not self.providers[0], diagnostics
             diagnostics[provider.name] = "EMPTY_CHAIN"
@@ -42,6 +50,22 @@ class OptionsProviderRouter:
             False,
             diagnostics,
         )
+
+    def get_expiries(
+        self, underlying: str
+    ) -> tuple[list, str, Dict[str, str]]:
+        """Discover expiries through the same provider order as chain reads."""
+        diagnostics: Dict[str, str] = {}
+        for provider in self.providers:
+            try:
+                expiries = provider.get_expiries(underlying)
+            except Exception as exc:
+                diagnostics[provider.name] = classify_provider_error(exc)
+                continue
+            if expiries:
+                return expiries, provider.name, diagnostics
+            diagnostics[provider.name] = "NO_EXPIRIES"
+        return [], "unavailable", diagnostics
 
     @staticmethod
     def as_api_payload(
@@ -61,3 +85,19 @@ class OptionsProviderRouter:
 
 
 __all__ = ["OptionsProviderRouter"]
+
+
+def classify_provider_error(error: Exception) -> str:
+    """Map provider failures to safe, stable diagnostics."""
+    message = str(error).lower()
+    if "429" in message or "rate" in message or "thrott" in message:
+        return "RATE_LIMIT"
+    if "timeout" in message or "timed out" in message:
+        return "TIMEOUT"
+    if "401" in message or "403" in message or "unauthor" in message:
+        return "UPSTREAM_AUTH"
+    if "404" in message or "unsupported" in message:
+        return "UNSUPPORTED_SYMBOL"
+    if "5xx" in message or "500" in message:
+        return "UPSTREAM_5XX"
+    return "TRANSIENT_FAILURE"

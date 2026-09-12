@@ -49,10 +49,13 @@ class YFinanceOptionsProvider:
 
     def get_chain(self, underlying: str, expiry: str) -> OptionChainResponse:
         frame, spot, _ = logic.fetch_option_chain(underlying, expiry)
-        contracts = [
-            _contract_from_row(underlying, expiry, row)
-            for row in frame.to_dict("records")
-        ]
+        contracts = []
+        for row in frame.to_dict("records"):
+            try:
+                contracts.append(_contract_from_row(underlying, expiry, row))
+            except (KeyError, TypeError, ValueError):
+                # Preserve valid contracts; malformed rows are never coerced.
+                continue
         return OptionChainResponse(
             underlying=underlying,
             underlying_symbol=underlying,
