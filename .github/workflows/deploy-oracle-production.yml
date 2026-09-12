@@ -57,4 +57,4 @@ jobs:
           set -euo pipefail
           test -n "$BACKEND_URL"
           ssh -i ~/.ssh/oracle_production "$USER@$HOST" "cd /opt/fortress-dashboard/source/${{ github.sha }} && docker build -t '$IMAGE' ."
-          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "FORTRESS_IMAGE='$IMAGE' ORACLE_PRODUCTION_BACKEND_URL='$BACKEND_URL/api/health' /opt/fortress-dashboard/deploy-oracle-production.sh"
+          ssh -i ~/.ssh/oracle_production "$USER@$HOST" "FORTRESS_IMAGE='$IMAGE' FORTRESS_SKIP_IMAGE_PULL=1 ORACLE_PRODUCTION_BACKEND_URL='$BACKEND_URL/api/health' /opt/fortress-dashboard/deploy-oracle-production.sh"
