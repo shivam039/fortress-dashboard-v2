@@ -51,6 +51,12 @@ function classifyRole(text) {
     research: /\b(research|analysis|investigat|evidence)\b/i,
   };
   for (const [role, pattern] of Object.entries(rules)) if (pattern.test(text)) matches.push(role);
+  // A concrete docs path is stronger evidence of ownership than generic
+  // words such as "analysis" or "evidence" in the task description. Keep
+  // genuinely cross-domain requests ambiguous, but do not route a docs task
+  // to research solely because it describes why a report is needed.
+  if (matches.includes('docs') && matches.every((role) => role === 'docs' || role === 'research') &&
+      /\bdocs\/[^\s]+/i.test(text)) return 'docs';
   return matches.length === 1 ? matches[0] : null;
 }
 

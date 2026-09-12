@@ -42,6 +42,20 @@ test('manual export imports and resumes the same run idempotently', () => {
   assert.deepEqual(resumeRun(resumeRun(imported)), resumeRun(imported));
 });
 
+test('issue-driven manual pause accepts provider result import', () => {
+  const dir = tempDir();
+  const file = writeResult(dir, {
+    run_id: 'run-1', provider: 'codex', model: 'configured-model',
+    changed_files: ['engine/x.py'],
+  });
+  const imported = importProviderResult(
+    { ...base(), state: 'WAITING_FOR_PROVIDER_RESULT' },
+    file,
+    { artifactDir: dir },
+  );
+  assert.equal(imported.state, 'RESULT_IMPORTED');
+});
+
 test('wrong run id and provider mismatch are rejected', () => {
   const dir = tempDir();
   assert.throws(() => importProviderResult(base(), writeResult(dir, { run_id: 'wrong', provider: 'codex' }), { artifactDir: dir }), /run_id mismatch/);
