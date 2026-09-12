@@ -640,6 +640,8 @@ export const optionsApi = {
         expiry
       )}&oi_threshold=${oiThreshold}`
     ),
+  payoff: (legs: Array<{ option_type: 'CE' | 'PE'; strike: number; premium: number; quantity?: number; side?: 'BUY' | 'SELL' }>, prices: number[]) =>
+    api.post<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> }>('/api/options/payoff', { legs, prices }),
 };
 
 // ── REITs & InvITs ────────────────────────────────────────────────────────────

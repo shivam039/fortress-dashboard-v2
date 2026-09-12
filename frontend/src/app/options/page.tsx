@@ -21,6 +21,7 @@ export default function OptionsPage() {
   const [loadingExpiries, setLoadingExpiries] = useState(false);
   const [showAllStrikes, setShowAllStrikes] = useState(false);
   const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
+  const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
@@ -34,6 +35,16 @@ export default function OptionsPage() {
     : strikes.slice(Math.max(0, atmIndex - 5), atmIndex + 6);
   const visibleChain = chain.filter((row) => { const strike = numeric(row, 'Strike'); return strike !== null && visibleStrikes.includes(strike); });
   const largest = (key: string) => analytics[key] as { strike?: number; oi?: number } | null;
+  const explorePayoff = async () => {
+    if (atmStrike == null) return;
+    const premium = 10;
+    const prices = Array.from({ length: 9 }, (_, index) => Math.max(1, atmStrike - 4 * premium + index * premium));
+    try {
+      setPayoffResult(await optionsApi.payoff([{ option_type: 'CE', strike: atmStrike, premium }], prices));
+    } catch (err: unknown) {
+      error((err as Error).message);
+    }
+  };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -172,6 +183,14 @@ export default function OptionsPage() {
             {showAllStrikes ? 'Show ATM window' : `Show all ${strikes.length} strikes`}
           </button>
         )}
+      </div>
+
+      <div className="section">
+        <h3 className="section-title">Strategy Lab</h3>
+        <p className="page-subtitle">Read-only expiry payoff exploration using the canonical ATM strike. This does not place orders.</p>
+        <button className="btn btn-secondary" onClick={explorePayoff} disabled={atmStrike == null}>Explore ATM call payoff</button>
+        {payoffResult && <DataTable data={payoffResult.prices.map((price, index) => ({ Underlying: price, 'Expiry P/L': payoffResult.payoff[index] }))} columns={['Underlying', 'Expiry P/L']} emptyMessage="No payoff data." />}
+        {payoffResult && <p className="page-subtitle">Breakevens: {JSON.stringify(payoffResult.summary.breakevens ?? [])} · Max loss: {String(payoffResult.summary.max_loss ?? 'Unavailable')} · Max profit: {String(payoffResult.summary.max_profit ?? 'Unavailable')}</p>}
       </div>
 
       <div className="section">
