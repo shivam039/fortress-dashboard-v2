@@ -39,3 +39,12 @@ def test_nse_chain_without_provider_expiries_is_explicitly_unavailable(monkeypat
         "Premium",
         "contractSymbol",
     }
+
+
+def test_nse_expiries_without_provider_data_are_not_invented(monkeypatch):
+    class EmptyTicker:
+        options = []
+
+    monkeypatch.setattr(logic.yf, "Ticker", lambda _symbol: EmptyTicker())
+
+    assert logic.get_available_expiries("NIFTY.NS") == []

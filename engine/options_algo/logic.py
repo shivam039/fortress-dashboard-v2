@@ -62,19 +62,6 @@ def get_available_expiries(symbol: str) -> list[str]:
     except Exception:
         exps = []
 
-    if not exps and ("NSE" in symbol or ".NS" in symbol):
-        import datetime
-
-        today = datetime.date.today()
-        # Find next Thursday for weekly expiries
-        thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
-        if thursday <= today:
-            thursday += datetime.timedelta(7)
-        exps = [
-            (thursday + datetime.timedelta(days=7 * i)).strftime("%Y-%m-%d")
-            for i in range(3)
-        ]
-
     return exps[:3]
 
 
