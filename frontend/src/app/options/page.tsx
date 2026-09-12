@@ -7,7 +7,7 @@ import { useToast } from '@/contexts/ToastContext';
 
 export default function OptionsPage() {
   const { error } = useToast();
-  const [symbol, setSymbol] = useState('Nifty 50');
+  const [symbol, setSymbol] = useState(() => typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('symbol') || 'Nifty 50' : 'Nifty 50');
   const [expiries, setExpiries] = useState<string[]>([]);
   const [expiry, setExpiry] = useState('');
   const [oiThreshold, setOiThreshold] = useState(10000);
