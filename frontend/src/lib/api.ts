@@ -460,6 +460,10 @@ export const picksApi = {
 export interface PaperTrade {
   trade_id: number;
   signal_id: number;
+  source_type?: 'MANUAL' | 'ORACLE_SIGNAL' | 'LEGACY' | string;
+  oracle_version?: string | null;
+  oracle_decision?: string | null;
+  source_scan_id?: number | null;
   symbol: string;
   entry_timestamp: string;
   entry_price: number;

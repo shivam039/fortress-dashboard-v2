@@ -46,6 +46,9 @@ def test_open_paper_trade_from_valid_signal():
     assert body["symbol"] == "ZZPAPER1.NS"
     assert body["entry_price"] == 100.0
     assert body["signal_id"] == signal["id"]
+    assert body["source_type"] == "ORACLE_SIGNAL"
+    assert body["oracle_version"] == "oracle-v1"
+    assert body["oracle_decision"] == "UNAVAILABLE"
 
 
 # ── 13. invalid/nonexistent signal is rejected ──────────────────────────────

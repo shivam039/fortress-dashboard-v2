@@ -3077,6 +3077,10 @@ class PaperTradePersistenceError(RuntimeError):
 
 
 _PAPER_TRADE_EVOLVABLE_COLUMNS = {
+    "source_type": "TEXT DEFAULT 'MANUAL'",
+    "oracle_version": "TEXT",
+    "oracle_decision": "TEXT",
+    "source_scan_id": "BIGINT",
     "stop_price": "NUMERIC",
     "target_price": "NUMERIC",
     "status": "TEXT DEFAULT 'open'",
@@ -3097,6 +3101,10 @@ def _ensure_paper_trades_neon() -> None:
         CREATE TABLE IF NOT EXISTS paper_trades (
             trade_id            BIGSERIAL PRIMARY KEY,
             signal_id           BIGINT NOT NULL,
+            source_type         TEXT NOT NULL DEFAULT 'MANUAL',
+            oracle_version      TEXT,
+            oracle_decision     TEXT,
+            source_scan_id      BIGINT,
             symbol              TEXT NOT NULL,
             entry_timestamp     TEXT NOT NULL,
             entry_price         NUMERIC NOT NULL,
@@ -3130,6 +3138,10 @@ def _ensure_paper_trades_sqlite(conn) -> None:
         CREATE TABLE IF NOT EXISTS paper_trades (
             trade_id            INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_id           INTEGER NOT NULL,
+            source_type         TEXT NOT NULL DEFAULT 'MANUAL',
+            oracle_version      TEXT,
+            oracle_decision     TEXT,
+            source_scan_id      INTEGER,
             symbol              TEXT NOT NULL,
             entry_timestamp     TEXT NOT NULL,
             entry_price         REAL NOT NULL,
@@ -3153,6 +3165,10 @@ def _ensure_paper_trades_sqlite(conn) -> None:
         row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")
     }
     sqlite_definitions = {
+        "source_type": "TEXT DEFAULT 'MANUAL'",
+        "oracle_version": "TEXT",
+        "oracle_decision": "TEXT",
+        "source_scan_id": "INTEGER",
         "stop_price": "REAL",
         "target_price": "REAL",
         "status": "TEXT DEFAULT 'open'",
@@ -3198,6 +3214,10 @@ def create_paper_trade(trade: Dict[str, Any]) -> Optional[int]:
     for the expected keys) and return its trade_id, or None on failure."""
     payload = {
         "signal_id": trade["signal_id"],
+        "source_type": trade.get("source_type", "MANUAL"),
+        "oracle_version": trade.get("oracle_version"),
+        "oracle_decision": trade.get("oracle_decision"),
+        "source_scan_id": trade.get("source_scan_id"),
         "symbol": trade["symbol"],
         "entry_timestamp": trade["entry_timestamp"],
         "entry_price": trade["entry_price"],
@@ -3213,9 +3233,9 @@ def create_paper_trade(trade: Dict[str, Any]) -> Optional[int]:
             with engine.begin() as conn:
                 res = conn.execute(
                     text(
-                        "INSERT INTO paper_trades (signal_id, symbol, entry_timestamp, "
+                        "INSERT INTO paper_trades (signal_id, source_type, oracle_version, oracle_decision, source_scan_id, symbol, entry_timestamp, "
                         "entry_price, quantity, notional, stop_price, target_price, status) "
-                        "VALUES (:signal_id, :symbol, :entry_timestamp, :entry_price, "
+                        "VALUES (:signal_id, :source_type, :oracle_version, :oracle_decision, :source_scan_id, :symbol, :entry_timestamp, :entry_price, "
                         ":quantity, :notional, :stop_price, :target_price, 'open') "
                         "RETURNING trade_id"
                     ),
@@ -3226,9 +3246,9 @@ def create_paper_trade(trade: Dict[str, Any]) -> Optional[int]:
         with _sqlite_connection() as conn:
             _ensure_paper_trades_sqlite(conn)
             cur = conn.execute(
-                "INSERT INTO paper_trades (signal_id, symbol, entry_timestamp, entry_price, "
+                "INSERT INTO paper_trades (signal_id, source_type, oracle_version, oracle_decision, source_scan_id, symbol, entry_timestamp, entry_price, "
                 "quantity, notional, stop_price, target_price, status) "
-                "VALUES (:signal_id, :symbol, :entry_timestamp, :entry_price, :quantity, "
+                "VALUES (:signal_id, :source_type, :oracle_version, :oracle_decision, :source_scan_id, :symbol, :entry_timestamp, :entry_price, :quantity, "
                 ":notional, :stop_price, :target_price, 'open')",
                 payload,
             )
