@@ -202,7 +202,8 @@ export default function OptionsPage() {
       </div>
 
       <div className="section">
-        <h3 className="section-title">Strategy Scanner</h3>
+        <h3 className="section-title">Legacy Strategy Scanner</h3>
+        <p className="page-subtitle">Descriptive legacy suggestions only; not a recommendation or risk model. Use Strategy Lab above for explicit, read-only payoff analysis.</p>
         <DataTable
           data={strategies}
           emptyMessage="No strategy ideas matched the current threshold."
