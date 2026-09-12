@@ -7,7 +7,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { paperTradingApi, type FortressSignalLedgerRow, type PaperPositionValuation, type PaperTrade, type PaperTradeMetrics } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
-import DataTable from '@/components/DataTable';
 import MetricCard from '@/components/MetricCard';
 
 export default function PaperTradingPage() {
@@ -54,6 +53,7 @@ export default function PaperTradingPage() {
   };
 
   const handleClose = async (tradeId: number, symbol: string) => {
+    if (!window.confirm(`Close the PAPER TRADE for ${symbol}? This is an explicit simulated close.`)) return;
     setBusyId(tradeId);
     try {
       const result = await paperTradingApi.close(tradeId);
@@ -180,7 +180,26 @@ export default function PaperTradingPage() {
 
           <div className="section">
             <h3 className="section-title">Closed PAPER Trades ({closed.length})</h3>
-            <DataTable data={closed as unknown as Record<string, unknown>[]} emptyMessage="No closed paper trades yet." />
+            {closed.length === 0 ? (
+              <div className="empty-state"><p>No closed paper trades yet.</p></div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table">
+                  <thead><tr><th>Symbol</th><th>Source</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th><th>Opened</th><th>Closed</th></tr></thead>
+                  <tbody>{closed.map(t => (
+                    <tr key={t.trade_id}>
+                      <td>{t.symbol}</td>
+                      <td>{t.source_type === 'ORACLE_SIGNAL' ? 'Oracle' : t.source_type || 'Manual'}</td>
+                      <td>{t.entry_price}</td>
+                      <td>{t.exit_price ?? 'unavailable'}</td>
+                      <td>{t.net_pnl == null ? 'unavailable' : t.net_pnl.toFixed(2)}</td>
+                      <td>{t.entry_timestamp}</td>
+                      <td>{t.exit_timestamp ?? 'unavailable'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
           </div>
           {selected && (
             <div className="modal-backdrop" onClick={() => setSelected(null)}>

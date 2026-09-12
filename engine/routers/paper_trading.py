@@ -203,8 +203,6 @@ async def close_paper_trade_route(
         }
 
     if not close_paper_trade(trade_id, closed):
-        raise HTTPException(
-            status_code=500, detail="Failed to persist paper trade close"
-        )
+        raise HTTPException(status_code=409, detail="Paper trade is already closed or unavailable")
 
     return {**closed, "trade_id": trade_id, "label": "PAPER TRADE"}

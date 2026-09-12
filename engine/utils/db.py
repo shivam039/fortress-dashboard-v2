@@ -3281,19 +3281,19 @@ def close_paper_trade(trade_id: int, closed_trade: Dict[str, Any]) -> bool:
         if _can_use_neon():
             _ensure_paper_trades_neon()
             _exec(
-                f"UPDATE paper_trades SET {sql_common}, updated_at = NOW() WHERE trade_id = :trade_id",
+                f"UPDATE paper_trades SET {sql_common}, updated_at = NOW() WHERE trade_id = :trade_id AND status = 'open'",
                 payload,
             )
             return True
 
         with _sqlite_connection() as conn:
             _ensure_paper_trades_sqlite(conn)
-            conn.execute(
+            result = conn.execute(
                 f"UPDATE paper_trades SET {sql_common}, updated_at = CURRENT_TIMESTAMP "
-                "WHERE trade_id = :trade_id",
+                "WHERE trade_id = :trade_id AND status = 'open'",
                 payload,
             )
-        return True
+            return result.rowcount == 1
     except Exception as e:
         logger.error("close_paper_trade(%s) failed: %s", trade_id, e)
         return False
