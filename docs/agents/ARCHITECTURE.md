@@ -1,4 +1,4 @@
-# Agent Framework Architecture (AGENT1A through AGENT3)
+# Agent Framework Architecture (AGENT1A through AGENT4)
 
 **AGENT1A** = role/provider/budget definition + dry-run prompt building
 (agent contracts, config resolution, prompt generation — no execution).
@@ -9,6 +9,10 @@ creation — still no auto-merge, still no automated production access.
 **AGENT3** = the integration layer: one canonical run manifest, resumable
 manual-provider handoff, test/eval/review/docs gates, and advisory provider
 quality evidence.
+**AGENT4** = the GitHub-native automation layer: approved Issue trigger,
+automatic Coordinator classification, isolated branch, continuous gates,
+issue synchronization, PR creation, status/cancel controls, and a mandatory
+human merge. See `AGENT4_PIPELINE.md`.
 
 ## Flow (current — this is what's actually implemented, see GOVERNANCE.md)
 

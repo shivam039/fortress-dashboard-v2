@@ -23,8 +23,18 @@ defaults:
 # Gemini credential is read from GEMINI_API_KEY in the environment. Keep the
 # provider in MANUAL_EXPORT until a reviewed automated adapter is available.
 providers:
+  codex:
+    mode: MANUAL_EXPORT
+    cost_mode: included
+  anthropic:
+    mode: MANUAL_EXPORT
+    cost_mode: paid
+  xai:
+    mode: MANUAL_EXPORT
+    cost_mode: paid
   gemini:
     mode: MANUAL_EXPORT
+    cost_mode: free_tier
 
 agents:
   coordinator:

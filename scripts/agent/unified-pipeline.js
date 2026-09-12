@@ -215,7 +215,7 @@ function buildScoreboard(records) {
 }
 
 function buildUnifiedPrBody(m) {
-  return ['## Task', `${m.task_id} (Issue #${m.issue_number ?? 'none'})`, '',
+  return ['## Task', `${m.task_id} (Issue #${m.issue_number ?? 'none'})`, `Run ID: ${m.run_id}`, '',
     '## Implementation', `Agent: ${m.agent}`, `Provider: ${m.provider}`, `Model: ${m.model}`,
     `Token Budget: input=${m.input_budget}, output=${m.output_budget}`,
     `Changed Files: ${JSON.stringify(m.changed_files || [])}`, '', '## Tests', `${m.tests?.status || 'PENDING'}`,
