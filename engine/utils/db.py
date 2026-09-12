@@ -4547,20 +4547,44 @@ def upsert_mf_scan_results(df: pd.DataFrame):
             name = str(sanitized.get("Scheme") or sanitized.get("scheme_name") or "")
             yield code, name, json.dumps(sanitized, default=str)
 
+    records = list(_sanitized_records())
+    if not records:
+        return
+
     try:
         if _can_use_neon():
-            for code, name, payload in _sanitized_records():
-                _exec(
-                    "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
-                    "VALUES (:code, :name, CURRENT_DATE, CAST(:payload AS JSONB), NOW()) "
-                    "ON CONFLICT (scheme_code, scan_date) DO UPDATE "
-                    "SET result_json=EXCLUDED.result_json, scheme_name=EXCLUDED.scheme_name, updated_at=EXCLUDED.updated_at",
-                    {"code": code, "name": name, "payload": payload},
-                )
+            # One transaction and one multi-row statement per bounded chunk;
+            # the old per-row _exec path opened a remote Neon transaction for
+            # every fund in a full scan.
+            engine = get_db_engine()
+            chunk_size = 200
+            with engine.begin() as conn:
+                for start in range(0, len(records), chunk_size):
+                    chunk = records[start : start + chunk_size]
+                    values = []
+                    params = {}
+                    for index, (code, name, payload) in enumerate(chunk):
+                        suffix = f"_{index}"
+                        values.append(
+                            f"(:code{suffix}, :name{suffix}, CURRENT_DATE, "
+                            f"CAST(:payload{suffix} AS JSONB), NOW())"
+                        )
+                        params[f"code{suffix}"] = code
+                        params[f"name{suffix}"] = name
+                        params[f"payload{suffix}"] = payload
+                    sql = (
+                        "INSERT INTO mf_scan_results "
+                        "(scheme_code, scheme_name, scan_date, result_json, updated_at) "
+                        f"VALUES {', '.join(values)} "
+                        "ON CONFLICT (scheme_code, scan_date) DO UPDATE "
+                        "SET result_json=EXCLUDED.result_json, "
+                        "scheme_name=EXCLUDED.scheme_name, updated_at=EXCLUDED.updated_at"
+                    )
+                    conn.execute(text(sql), params)
         else:
             with _sqlite_connection() as conn:
                 _ensure_mf_scan_results_sqlite(conn)
-                for code, name, payload in _sanitized_records():
+                for code, name, payload in records:
                     conn.execute(
                         "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
                         "VALUES (:code, :name, CURRENT_DATE, :payload, CURRENT_TIMESTAMP) "
