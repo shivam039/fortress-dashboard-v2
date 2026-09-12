@@ -5396,6 +5396,11 @@ _BHAVCOPY_EOD_COLUMNS = [
     "deliv_pct",
 ]
 
+# DATA2: operational history contract. These are targets, not retention
+# limits; the database may retain more history indefinitely.
+BHAV_COPY_TARGET_SESSIONS = 750
+BHAV_COPY_MIN_HEALTHY_SESSIONS = 400
+
 
 def _ensure_bhavcopy_eod_neon():
     _exec("""
@@ -5814,6 +5819,10 @@ def get_bhavcopy_coverage_summary() -> Dict[str, Any]:
     """
     empty = {
         "trading_days_covered": 0,
+        "valid_sessions": 0,
+        "target_sessions": BHAV_COPY_TARGET_SESSIONS,
+        "minimum_sessions": BHAV_COPY_MIN_HEALTHY_SESSIONS,
+        "health_status": "INSUFFICIENT_HISTORY",
         "symbol_count": 0,
         "earliest_date": None,
         "latest_date": None,
@@ -5836,8 +5845,19 @@ def get_bhavcopy_coverage_summary() -> Dict[str, Any]:
             return empty
 
         row = rows[0]
+        sessions = int(row["trading_days"] or 0)
+        if sessions >= BHAV_COPY_TARGET_SESSIONS:
+            health_status = "HEALTHY_750"
+        elif sessions >= BHAV_COPY_MIN_HEALTHY_SESSIONS:
+            health_status = "HEALTHY_MINIMUM"
+        else:
+            health_status = "INSUFFICIENT_HISTORY"
         return {
-            "trading_days_covered": int(row["trading_days"] or 0),
+            "trading_days_covered": sessions,
+            "valid_sessions": sessions,
+            "target_sessions": BHAV_COPY_TARGET_SESSIONS,
+            "minimum_sessions": BHAV_COPY_MIN_HEALTHY_SESSIONS,
+            "health_status": health_status,
             "symbol_count": int(row["symbols"] or 0),
             "earliest_date": str(row["earliest"])[:10] if row["earliest"] else None,
             "latest_date": str(row["latest"])[:10] if row["latest"] else None,

@@ -59,7 +59,8 @@ def bhavcopy_refresh_status():
     currently running, and a coverage summary of what's actually stored in
     bhavcopy_eod (trading days covered, symbol count, earliest/latest date)
     — the practical way to watch backfill progress without polling NSE or
-    the fetch log day-by-day."""
+    the fetch log day-by-day. Coverage status is based on distinct stored
+    sessions, not requested calendar days."""
     from datetime import datetime
 
     import pytz
