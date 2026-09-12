@@ -13,6 +13,7 @@ import ScoreHeatmap, { type HeatmapData } from '@/components/ScoreHeatmap';
 import ScannerResultsView from '@/components/ScannerResultsView';
 import FortressScoreCard from '@/components/FortressScoreCard';
 import HistoricalEvidenceCard from '@/components/HistoricalEvidenceCard';
+import OracleDecisionCard from '@/components/OracleDecisionCard';
 import { toFortressSignal, fromRealEvidence, type HistoricalEvidence } from '@/lib/score-evidence';
 
 // FORTRESS-V2: single default horizon for historical evidence, per the
@@ -267,6 +268,7 @@ export default function ScreenerPage() {
             <HistoricalEvidenceCard evidence={historicalEvidence} />
           </div>
           <DataTable data={searchResult} />
+          {typeof searchResult[0].signal_id === 'number' && <OracleDecisionCard signalId={searchResult[0].signal_id as number} />}
         </div>
       )}
 
