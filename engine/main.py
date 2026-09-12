@@ -38,7 +38,9 @@ from stock_scanner.logic import (
     prefetch_metadata,
     _ohlcv_fallback_workers,
 )
-from options_algo.logic import fetch_option_chain, get_available_expiries, scan_strategies
+from options_algo.analytics import to_analytics_frame
+from options_algo.logic import get_available_expiries, scan_strategies
+from options_algo.router import OptionsProviderRouter
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.security_config import (
@@ -1380,20 +1382,21 @@ def get_options_expiries(symbol: str):
 @app.get("/api/options/chain")
 def get_options_chain(
     symbol: str,
-    expiry: str,
+    expiry: Optional[str] = None,
     oi_threshold: int = Query(10000, ge=0),
 ):
     symbol = INDEX_BENCHMARKS.get(symbol, symbol)
-    chain_df, spot, _ = fetch_option_chain(symbol, expiry)
-    chain_df = chain_df.fillna(0)
-    strategies = scan_strategies(chain_df, oi_threshold=oi_threshold)
-    return {
-        "symbol": symbol,
-        "expiry": expiry,
-        "spot": spot,
-        "chain": _sanitize_json_value(chain_df.to_dict(orient="records")),
-        "strategies": _sanitize_json_value(strategies.to_dict(orient="records")),
-    }
+    response, fallback_used, diagnostics = OptionsProviderRouter().get_chain(
+        symbol, expiry
+    )
+    payload = OptionsProviderRouter.as_api_payload(
+        response, fallback_used, diagnostics
+    )
+    strategies = scan_strategies(
+        to_analytics_frame(response), oi_threshold=oi_threshold
+    )
+    payload["strategies"] = _sanitize_json_value(strategies.to_dict("records"))
+    return _sanitize_json_value(payload)
 
 
 @app.get("/api/history/timestamps")
