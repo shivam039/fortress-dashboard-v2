@@ -11,6 +11,20 @@ QA-AUTO1 adds the provider-neutral contract in `qa_auto/` and the
 machine-readable surface manifest at `qa_auto/surfaces.json`. Production QA
 is read-only; mutations require an isolated staging/test environment.
 
+## AGENT6 closed QA loop
+
+`scripts/agent/qa-loop.js` is the bounded orchestration contract for converting
+a structured QA finding into a human-gated implementation task. It redacts
+evidence, fingerprints duplicates, classifies findings, assigns an existing
+specialist, and returns a conservative scope. It stops at `WAITING_APPROVAL`
+by default and never merges, deploys, changes production, switches providers,
+or creates an unbounded repair loop.
+
+Financial or Oracle-semantic findings, production mutations, ambiguous triage,
+provider failures, and unsafe evidence remain human-gated. A PR body is valid
+only after the original scenario is rerun, evaluations and reviewer checks pass,
+and the loop reaches `READY_FOR_PR`; merge and deployment remain manual.
+
 ## OWNS
 `tests/**` (backend and frontend), Playwright specs, test fixtures,
 failure-artifact triage.
