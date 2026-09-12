@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { historyApi, type ScanHistoryEntry } from '@/lib/api';
+import { historyApi, type ScanHistoryContext, type ScanHistoryEntry } from '@/lib/api';
 import {
   STOCK_SECTION, sectionsFromEntries, filterEntriesBySection,
   describeUniverseCoverage, resolveInitialSection, setStoredSection,
@@ -29,6 +29,7 @@ export default function HistoryPage() {
   const [historyData, setHistoryData] = useState<Record<string, unknown>[] | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
+  const [historyContext, setHistoryContext] = useState<ScanHistoryContext | null>(null);
 
   const loadEntries = useCallback(() => {
     setLoading(true);
@@ -56,6 +57,7 @@ export default function HistoryPage() {
     setSection(scanType);
     setSelectedScanId(null);
     setHistoryData(null);
+    setHistoryContext(null);
     setStoredSection(scanType);
     const params = new URLSearchParams(window.location.search);
     params.set('section', scanType);
@@ -67,8 +69,8 @@ export default function HistoryPage() {
     setHistoryData(null);
     setDataError(null);
     setLoadingData(true);
-    historyApi.data(scanId)
-      .then(setHistoryData)
+    Promise.all([historyApi.data(scanId), historyApi.context(scanId)])
+      .then(([data, context]) => { setHistoryData(data); setHistoryContext(context); })
       .catch((err: unknown) => setDataError((err as Error).message || 'Unknown error'))
       .finally(() => setLoadingData(false));
   }, []);
@@ -76,6 +78,7 @@ export default function HistoryPage() {
   const closeRun = useCallback(() => {
     setSelectedScanId(null);
     setHistoryData(null);
+    setHistoryContext(null);
     setDataError(null);
   }, []);
 
@@ -113,8 +116,8 @@ export default function HistoryPage() {
             <p>{activeMeta?.errorMessage}: {dataError}</p>
             <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => openRun(selectedEntry.scan_id)}>Retry</button>
           </div>
-        ) : section === STOCK_SECTION ? (
-          <HistoricalStockScreener entry={selectedEntry} rows={historyData || []} onBack={closeRun} />
+      ) : section === STOCK_SECTION ? (
+          <HistoricalStockScreener entry={selectedEntry} rows={historyData || []} context={historyContext} onBack={closeRun} />
         ) : (
           <HistoricalGenericScan entry={selectedEntry} rows={historyData || []} onBack={closeRun} />
         )
