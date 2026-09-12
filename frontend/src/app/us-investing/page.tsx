@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import Link from 'next/link';
 import { usInvestingApi } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import type { InvestmentInstrument } from '@/lib/types';
@@ -384,6 +385,7 @@ export default function USInvestingPage() {
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
                 Add to Watchlist
               </div>
+              <Link className="btn btn-secondary" style={{ marginTop: 10 }} href={`/options?symbol=${encodeURIComponent(selectedInstrument.symbol)}`}>Open Options context</Link>
             </div>
           </div>
         )}

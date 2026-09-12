@@ -2,12 +2,12 @@
 
 import React, { useEffect, useState } from 'react';
 import DataTable from '@/components/DataTable';
-import { optionsApi } from '@/lib/api';
+import { optionsApi, OptionsSnapshotSummary } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 
 export default function OptionsPage() {
   const { error } = useToast();
-  const [symbol, setSymbol] = useState('Nifty 50');
+  const [symbol, setSymbol] = useState(() => typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('symbol') || 'Nifty 50' : 'Nifty 50');
   const [expiries, setExpiries] = useState<string[]>([]);
   const [expiry, setExpiry] = useState('');
   const [oiThreshold, setOiThreshold] = useState(10000);
@@ -21,6 +21,8 @@ export default function OptionsPage() {
   const [loadingExpiries, setLoadingExpiries] = useState(false);
   const [showAllStrikes, setShowAllStrikes] = useState(false);
   const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
+  const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
+  const [snapshots, setSnapshots] = useState<OptionsSnapshotSummary[]>([]);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
@@ -34,6 +36,16 @@ export default function OptionsPage() {
     : strikes.slice(Math.max(0, atmIndex - 5), atmIndex + 6);
   const visibleChain = chain.filter((row) => { const strike = numeric(row, 'Strike'); return strike !== null && visibleStrikes.includes(strike); });
   const largest = (key: string) => analytics[key] as { strike?: number; oi?: number } | null;
+  const explorePayoff = async () => {
+    if (atmStrike == null) return;
+    const premium = 10;
+    const prices = Array.from({ length: 9 }, (_, index) => Math.max(1, atmStrike - 4 * premium + index * premium));
+    try {
+      setPayoffResult(await optionsApi.payoff([{ option_type: 'CE', strike: atmStrike, premium }], prices));
+    } catch (err: unknown) {
+      error((err as Error).message);
+    }
+  };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -60,6 +72,7 @@ export default function OptionsPage() {
       setFreshness(data.freshness || 'Unavailable');
       setLastUpdated(data.received_at || null);
       setAnalytics(data.analytics || {});
+      optionsApi.history(symbol, expiry).then(setSnapshots).catch(() => setSnapshots([]));
     } catch (err: unknown) {
       error((err as Error).message);
     } finally {
@@ -175,7 +188,27 @@ export default function OptionsPage() {
       </div>
 
       <div className="section">
-        <h3 className="section-title">Strategy Scanner</h3>
+        <h3 className="section-title">What Changed?</h3>
+        <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
+        <DataTable
+          data={snapshots.map((snapshot) => ({ ...snapshot }))}
+          columns={['captured_at', 'provider', 'spot', 'freshness', 'snapshot_id']}
+          maxRows={10}
+          emptyMessage="No prior options snapshots available."
+        />
+      </div>
+
+      <div className="section">
+        <h3 className="section-title">Strategy Lab</h3>
+        <p className="page-subtitle">Read-only expiry payoff exploration using the canonical ATM strike. This does not place orders.</p>
+        <button className="btn btn-secondary" onClick={explorePayoff} disabled={atmStrike == null}>Explore ATM call payoff</button>
+        {payoffResult && <DataTable data={payoffResult.prices.map((price, index) => ({ Underlying: price, 'Expiry P/L': payoffResult.payoff[index] }))} columns={['Underlying', 'Expiry P/L']} emptyMessage="No payoff data." />}
+        {payoffResult && <p className="page-subtitle">Breakevens: {JSON.stringify(payoffResult.summary.breakevens ?? [])} · Max loss: {String(payoffResult.summary.max_loss ?? 'Unavailable')} · Max profit: {String(payoffResult.summary.max_profit ?? 'Unavailable')}</p>}
+      </div>
+
+      <div className="section">
+        <h3 className="section-title">Legacy Strategy Scanner</h3>
+        <p className="page-subtitle">Descriptive legacy suggestions only; not a recommendation or risk model. Use Strategy Lab above for explicit, read-only payoff analysis.</p>
         <DataTable
           data={strategies}
           emptyMessage="No strategy ideas matched the current threshold."

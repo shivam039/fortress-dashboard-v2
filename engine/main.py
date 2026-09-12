@@ -41,6 +41,7 @@ from stock_scanner.logic import (
 from options_algo.analytics import to_analytics_frame
 from options_algo.logic import get_available_expiries, scan_strategies
 from options_algo.router import OptionsProviderRouter
+from options_algo.payoff import StrategyLeg, payoff, summary
 from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.security_config import (
@@ -62,6 +63,8 @@ from utils.db import (
     register_scan,
     save_scan_results,
     update_scan_job_progress,
+    fetch_options_snapshots,
+    compare_options_snapshots,
 )
 from routers.oracle_decision import router as oracle_decision_router
 
@@ -1394,11 +1397,48 @@ def get_options_chain(
     payload = OptionsProviderRouter.as_api_payload(
         response, fallback_used, diagnostics
     )
+    if response.contracts:
+        from utils.db import persist_options_snapshot
+        payload["snapshot_id"] = persist_options_snapshot(payload)
     strategies = scan_strategies(
         to_analytics_frame(response), oi_threshold=oi_threshold
     )
     payload["strategies"] = _sanitize_json_value(strategies.to_dict("records"))
     return _sanitize_json_value(payload)
+
+
+@app.get("/api/options/history")
+def get_options_history(symbol: str, expiry: Optional[str] = None,
+                        limit: int = Query(20, ge=1, le=100)):
+    """Return read-only successful snapshot metadata; contracts stay opt-in."""
+    return fetch_options_snapshots(INDEX_BENCHMARKS.get(symbol, symbol), expiry, limit)
+
+
+@app.get("/api/options/history/compare")
+def get_options_history_compare(symbol: str, expiry: Optional[str] = None):
+    return compare_options_snapshots(INDEX_BENCHMARKS.get(symbol, symbol), expiry)
+
+
+class OptionsPayoffLeg(BaseModel):
+    option_type: str = Field(pattern="^(CE|PE)$")
+    strike: float = Field(gt=0)
+    premium: float = Field(ge=0)
+    quantity: int = Field(default=1, gt=0, le=1000)
+    side: str = Field(default="BUY", pattern="^(BUY|SELL)$")
+
+
+class OptionsPayoffRequest(BaseModel):
+    legs: List[OptionsPayoffLeg] = Field(min_length=1, max_length=20)
+    prices: List[float] = Field(min_length=1, max_length=501)
+
+
+@app.post("/api/options/payoff")
+def get_options_payoff(request: OptionsPayoffRequest):
+    """Return deterministic expiry payoff data for read-only exploration."""
+    legs = [StrategyLeg(**leg.dict()) for leg in request.legs]
+    return {"prices": request.prices, "payoff": payoff(legs, request.prices),
+            "summary": summary(legs, price_floor=min(request.prices),
+                                 price_ceiling=max(request.prices))}
 
 
 @app.get("/api/history/timestamps")

@@ -75,11 +75,19 @@ class OptionsProviderRouter:
     ) -> dict:
         frame = add_moneyness(to_analytics_frame(response), response.spot)
         analytics = summarize(frame, response.spot)
+        capabilities = dict(response.capabilities)
+        for field, capability in (("LTP", "LTP"), ("OI", "OI"),
+                                  ("ChangeOI", "CHANGE_OI"), ("Volume", "VOLUME"),
+                                  ("IV", "IV"), ("Bid", "BID_ASK"),
+                                  ("Delta", "GREEKS")):
+            values = frame[field].notna() if field in frame else None
+            capabilities[capability] = "SUPPORTED" if values is not None and values.any() else "UNAVAILABLE"
         return {
             **response.dict(),
             "fallback_used": fallback_used,
             "analytics": analytics,
             "diagnostics": diagnostics,
+            "capabilities": capabilities,
             "chain": frame.where(frame.notna(), None).to_dict("records"),
         }
 
