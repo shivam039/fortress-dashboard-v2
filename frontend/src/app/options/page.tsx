@@ -190,7 +190,12 @@ export default function OptionsPage() {
       <div className="section">
         <h3 className="section-title">What Changed?</h3>
         <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
-        <DataTable data={snapshots} columns={['captured_at', 'provider', 'spot', 'freshness', 'snapshot_id']} maxRows={10} emptyMessage="No prior options snapshots available." />
+        <DataTable
+          data={snapshots.map((snapshot) => ({ ...snapshot }))}
+          columns={['captured_at', 'provider', 'spot', 'freshness', 'snapshot_id']}
+          maxRows={10}
+          emptyMessage="No prior options snapshots available."
+        />
       </div>
 
       <div className="section">
