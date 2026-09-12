@@ -529,6 +529,25 @@ export const paperTradingApi = {
     ),
 };
 
+export interface OracleDecision {
+  signal_id: number;
+  symbol: string | null;
+  decision: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'UNAVAILABLE';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  score: number | null;
+  reasons: { key: string; label: string; value: unknown }[];
+  cautions: { key: string; label: string; value: unknown }[];
+  data_as_of: string | null;
+  generated_at: string | null;
+  source_context: Record<string, unknown>;
+  paper_trade: { available: boolean; signal_id: number | null };
+}
+
+export const oracleApi = {
+  decision: (signalId: number) =>
+    api.post<OracleDecision>('/api/oracle-decision', { signal_id: signalId }),
+};
+
 // ── Scan History ─────────────────────────────────────────────────────────────
 
 export interface ScanHistoryEntry {

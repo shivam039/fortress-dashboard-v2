@@ -1,11 +1,12 @@
 # Oracle Decision MVP
 
-Status: ORACLE1 product contract  
-Baseline inspected: `8900ef7ecd234510c2be3715f09ef43d17cf8bb6`  
+Status: IMPLEMENTED MVP
+Baseline inspected: `8900ef7ecd234510c2be3715f09ef43d17cf8bb6`
 Scope: product design and codebase research only
 
-This document is the implementation contract for ORACLE2. It intentionally
-does not add an endpoint, UI, table, scoring formula, trade path, provider, or
+This document is the implementation contract for ORACLE2. The MVP now adds
+only a deterministic read-only decision service/API and a minimal decision
+card; it does not add a table, scoring formula, trade path, provider, or
 deployment change.
 
 ## Product decision
@@ -79,11 +80,10 @@ descriptive.
 | `NEGATIVE` | Existing evidence is directionally unfavorable or a blocking risk/quality condition dominates | Valid signal with explicit negative evidence or failed quality/risk condition | A sell instruction or claim that price will fall |
 | `UNAVAILABLE` | A decision cannot be safely formed | Missing signal, invalid required fields, stale required data, or partial data below the contract threshold | Neutrality, zero score, or a guessed decision |
 
-The mapping from existing fields to these labels is an ORACLE2 implementation
-policy and must be expressed as a small, reviewed rule table. It must not
-alter scanner score thresholds, paper-trading thresholds, or persisted scores.
-If the available fields cannot support a deterministic mapping, return
-`UNAVAILABLE` rather than guess.
+The implemented mapping reuses the scanner's persisted `Verdict`: `HIGH` or
+`PASS` maps to `POSITIVE`, `WATCH` maps to `NEUTRAL`, and `FAIL` or `AVOID`
+maps to `NEGATIVE`. Unknown semantics return `UNAVAILABLE`. This does not alter
+scanner score thresholds, paper-trading thresholds, or persisted scores.
 
 ## Confidence and explanation
 
@@ -331,7 +331,24 @@ score.
 - Qwengate/DeepSeek/Claude/other LLMs: deferred to AGENT5A-QWEN or a separate
   experiment.
 
-## ORACLE1 result
+## ORACLE2 implementation status
+
+Implemented on top of the immutable ledger snapshot:
+
+- `engine/oracle_decision/service.py` — pure deterministic interpretation.
+- `engine/routers/oracle_decision.py` — authenticated `POST /api/oracle-decision`.
+- `frontend/src/components/OracleDecisionCard.tsx` — loading, success, retry,
+  evidence, cautions, and freshness display.
+- `frontend/src/lib/api.ts` and the screener search-result integration.
+- `tests/backend/test_oracle_decision.py` — deterministic, stale, incomplete,
+  and unsupported-semantic coverage.
+
+The UI renders the action when a scanner result carries a persisted
+`signal_id`; ad-hoc search rows that have not been persisted remain safely
+ineligible rather than creating a new signal or rerunning a scan. Paper Trade
+remains a separate user-confirmed action and is not auto-submitted.
+
+## ORACLE2 result
 
 ORACLE1 is complete when this document is reviewed as the canonical contract.
 It contains no application implementation and introduces no production impact.
