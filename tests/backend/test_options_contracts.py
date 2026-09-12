@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from options_algo.contracts import (
     CapabilityState,
     OptionCapability,
@@ -33,5 +35,21 @@ def test_chain_contract_exposes_provider_capabilities():
         },
     )
 
-    assert response.capabilities[OptionCapability.OI] == CapabilityState.UNVERIFIED
+    assert (
+        response.capabilities[OptionCapability.OI]
+        == CapabilityState.UNVERIFIED
+    )
     assert response.contracts == []
+
+
+@pytest.mark.parametrize(
+    "option_type", ["CALL", "PUT", "UNKNOWN", "", None]
+)
+def test_contract_rejects_non_canonical_option_types(option_type):
+    with pytest.raises(ValueError):
+        OptionContract(
+            underlying="RELIANCE.NS",
+            expiry="2099-12-30",
+            strike=100,
+            option_type=option_type,
+        )
