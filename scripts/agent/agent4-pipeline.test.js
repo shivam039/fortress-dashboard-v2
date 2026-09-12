@@ -42,6 +42,15 @@ test('coordinator classifies a clearly scoped docs issue', () => {
   assert.equal(plan.docs_required, true);
 });
 
+test('docs scope is not made ambiguous by generic evidence language', () => {
+  const plan = classifyIssue({ ...issue,
+    title: 'Document gate reports',
+    body: 'The evidence and analysis are missing from docs/agents/AGENT4_PIPELINE.md.',
+  }, { defaults: { provider: 'codex', input_budget: 8000, output_budget: 2500 }, agents: { docs: {} } });
+  assert.equal(plan.state, 'CLASSIFIED');
+  assert.equal(plan.selected_agent, 'docs');
+});
+
 test('ambiguous tasks block rather than guessing', () => {
   const plan = classifyIssue({ ...issue, title: 'Improve things', body: 'make it better' }, { defaults: { provider: 'codex' }, agents: {} });
   assert.equal(plan.state, 'BLOCKED_CLASSIFICATION');
