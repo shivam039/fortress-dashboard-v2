@@ -41,8 +41,11 @@ class YFinanceOptionsProvider:
         return logic.get_available_expiries(underlying)
 
     def get_spot(self, underlying: str) -> Optional[float]:
-        _, spot, _ = logic.fetch_option_chain(underlying, "2099-12-30")
-        return spot or None
+        quote = logic.yf.download(underlying, period="2d", progress=False)
+        if quote.empty or "Close" not in quote:
+            return None
+        closes = quote["Close"].dropna()
+        return float(closes.iloc[-1]) if not closes.empty else None
 
     def get_chain(self, underlying: str, expiry: str) -> OptionChainResponse:
         frame, spot, _ = logic.fetch_option_chain(underlying, expiry)
