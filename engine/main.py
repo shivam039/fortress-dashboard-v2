@@ -1411,6 +1411,22 @@ def get_history_data(scan_id: int):
     return _sanitize_json_value(records)
 
 
+@app.get("/api/history/context")
+def get_history_context(scan_id: int):
+    """Return persisted signal and paper-trade context for one historical scan.
+
+    This is read-only and deliberately batch-shaped: the UI can render
+    historical provenance without recomputing today's Oracle decision or
+    issuing one database query per historical row.
+    """
+    from utils.db import fetch_paper_trades, fetch_signal_ledger
+
+    signals = fetch_signal_ledger(scan_id=scan_id, limit=500)
+    trades = fetch_paper_trades(limit=500)
+    linked = [trade for trade in trades if trade.get("source_scan_id") == scan_id]
+    return _sanitize_json_value({"signals": signals, "paper_trades": linked})
+
+
 app.include_router(mf_router)
 app.include_router(auth_router)
 app.include_router(users_router)

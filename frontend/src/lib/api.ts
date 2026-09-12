@@ -564,10 +564,16 @@ export interface ScanHistoryEntry {
   num_scanned?: number;
 }
 
+export interface ScanHistoryContext {
+  signals: Record<string, unknown>[];
+  paper_trades: PaperTrade[];
+}
+
 export const historyApi = {
   timestamps: () => api.get<ScanHistoryEntry[]>('/api/history/timestamps'),
   data: (scanId: number) =>
     api.get<Record<string, unknown>[]>(`/api/history/data?scan_id=${scanId}`),
+  context: (scanId: number) => api.get<ScanHistoryContext>(`/api/history/context?scan_id=${scanId}`),
 };
 
 // ── Research Evidence (FORTRESS-V2) ─────────────────────────────────────────

@@ -8,17 +8,18 @@
 'use client';
 
 import React, { useState } from 'react';
-import type { ScanHistoryEntry } from '@/lib/api';
+import type { ScanHistoryContext, ScanHistoryEntry } from '@/lib/api';
 import { describeUniverseCoverage, splitStockResults } from '@/lib/scan-history';
 import ScannerResultsView from '@/components/ScannerResultsView';
 
 interface HistoricalStockScreenerProps {
   entry: ScanHistoryEntry;
   rows: Record<string, unknown>[];
+  context: ScanHistoryContext | null;
   onBack: () => void;
 }
 
-export default function HistoricalStockScreener({ entry, rows, onBack }: HistoricalStockScreenerProps) {
+export default function HistoricalStockScreener({ entry, rows, context, onBack }: HistoricalStockScreenerProps) {
   const [showRaw, setShowRaw] = useState(false);
   const { actionable } = splitStockResults(rows);
 
@@ -43,6 +44,16 @@ export default function HistoricalStockScreener({ entry, rows, onBack }: Histori
           <div><div className="metric-label">Candidates</div><div className="metric-value">{actionable.length}</div></div>
           <div><div className="metric-label">Status</div><div className="metric-value">✅ Complete</div></div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <h3 className="section-title" style={{ marginTop: 0 }}>Historical Evidence Context</h3>
+        {context?.signals.length ? context.signals.slice(0, 10).map((signal) => (
+          <div key={String(signal.id)} style={{ marginBottom: 8 }}>
+            <strong>{String(signal.symbol || 'Signal')}</strong> · score {String(signal.score ?? 'not recorded')} · generated {String(signal.generated_at ?? 'not recorded')}
+            {(() => { const trade = context.paper_trades.find(t => t.signal_id === signal.id); return <div style={{ color: 'var(--text-muted)' }}>Oracle: {trade?.oracle_decision ?? 'not recorded'}{trade?.oracle_version ? ` (${trade.oracle_version})` : ''} · Paper trade: {trade ? 'linked' : 'none linked'}</div>; })()}
+          </div>
+        )) : <p style={{ color: 'var(--text-muted)' }}>Historical signal context not recorded for this run.</p>}
       </div>
 
       {rows.length === 0 ? (
