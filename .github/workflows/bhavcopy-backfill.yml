@@ -10,7 +10,7 @@ name: NSE Bhav Copy Backfill (manual, one-off)
 # The backfill runs server-side in chunks (max_fetches per call, default
 # 30 — see backfill_bhavcopy() in engine/bhavcopy/jobs.py) because a single
 # call walking the full `days` range in one BackgroundTask was found to
-# reliably outlive a Render deploy and get silently killed mid-run, well
+# reliably outlive a backend deploy and get silently killed mid-run, well
 # short of its target. This workflow drives that chunking to completion
 # automatically: it re-POSTs the same request repeatedly, waiting for each
 # chunk's background task to finish (polling GET /api/bhavcopy/status)
@@ -23,8 +23,8 @@ name: NSE Bhav Copy Backfill (manual, one-off)
 #
 # Uses the SAME repo secrets as bhavcopy-refresh.yml — no new secrets
 # needed if that workflow is already configured:
-#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
-#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+#   FORTRESS_BACKEND_URL  — configured Oracle backend URL (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the backend's FORTRESS_API_KEY
 
 on:
   workflow_dispatch:

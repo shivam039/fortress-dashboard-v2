@@ -9,7 +9,7 @@ name: Automated Multi-Universe EOD Scan (FORTRESS-E3)
 # see docs/research/AUTOMATED_MULTI_UNIVERSE_SCANNING.md "Cold/sleeping
 # backend behavior" and docs/research/AUTO_SCAN_SCHEDULER_RELIABILITY.md.
 #
-# WAKE (bounded retries against a sleeping/cold Render service) -> TRIGGER
+# WAKE (bounded retries against the configured Oracle backend) -> TRIGGER
 # (retried on transient failures only) -> CAPTURE run_id -> POLL the
 # durable run -> VERIFY terminal status. Manual workflow_dispatch runs the
 # exact same steps as the schedule.
@@ -21,10 +21,10 @@ name: Automated Multi-Universe EOD Scan (FORTRESS-E3)
 # research.auto_scan.run_daily_auto_scan() is idempotent per trading date.
 #
 # Required repo secrets (same as bhavcopy-refresh.yml):
-#   FORTRESS_BACKEND_URL  — e.g. https://your-backend.onrender.com (no trailing slash)
-#   FORTRESS_API_KEY      — same value as the FORTRESS_API_KEY env var on Render
+#   FORTRESS_BACKEND_URL  — configured Oracle backend URL (no trailing slash)
+#   FORTRESS_API_KEY      — same value as the backend's FORTRESS_API_KEY
 #
-# Required production env on the backend itself (Render), documented here
+# Required production env on the backend itself, documented here
 # because this workflow does not and should not set it:
 #   FORTRESS_AUTO_SCAN_UNIVERSES=Nifty 50,Nifty Next 50,Nifty Midcap 150,Nifty Smallcap 250
 
