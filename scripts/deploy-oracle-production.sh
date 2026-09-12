@@ -27,6 +27,10 @@ fi
 
 export FORTRESS_IMAGE="$IMAGE_REF"
 
+previous_image="$(docker inspect --format '{{.Config.Image}}' fortress-backend-production 2>/dev/null || true)"
+echo "Previous image: ${previous_image:-none}"
+echo "New image: $IMAGE_REF"
+
 COMPOSE=(
   docker compose
   -p fortress-production
@@ -56,4 +60,8 @@ done
 echo "Production deploy failed health verification."
 "${COMPOSE[@]}" ps
 "${COMPOSE[@]}" logs --tail=150 fortress-backend-production
+if [ -n "$previous_image" ]; then
+  echo "Attempting rollback to previous image $previous_image"
+  FORTRESS_IMAGE="$previous_image" "${COMPOSE[@]}" up -d || echo "Rollback command failed; manual intervention required."
+fi
 exit 1

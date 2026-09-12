@@ -1,0 +1,39 @@
+name: Mature Oracle Outcomes
+
+on:
+  schedule:
+    - cron: '30 16 * * 1-5'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: oracle-outcomes-maturation
+  cancel-in-progress: false
+
+jobs:
+  mature:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake and mature bounded batch
+        env:
+          BASE_URL: ${{ secrets.FORTRESS_BACKEND_URL }}
+          API_KEY: ${{ secrets.FORTRESS_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BASE_URL"; test -n "$API_KEY"
+          for i in $(seq 1 12); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 "$BASE_URL/api/health" || true)
+            [ "$code" = 200 ] && break
+            [ "$i" = 12 ] && { echo "Backend did not wake"; exit 1; }; sleep 15
+          done
+          for i in $(seq 1 5); do
+            code=$(curl -sS -o /tmp/mature.json -w '%{http_code}' --connect-timeout 10 --max-time 120 \
+              -X POST "$BASE_URL/api/oracle-decision/outcomes/mature" \
+              -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" -d '{"limit":200}' || true)
+            cat /tmp/mature.json 2>/dev/null || true
+            [ "$code" = 401 ] || [ "$code" = 403 ] && exit 1
+            [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && exit 0
+            [ "$i" -lt 5 ] && sleep 15
+          done
+          exit 1
