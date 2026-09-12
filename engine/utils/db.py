@@ -7,6 +7,7 @@ import math
 import os
 import random
 import sqlite3
+import hashlib
 import time
 from datetime import date as Date
 from datetime import datetime, timezone
@@ -798,6 +799,80 @@ def _ensure_options_chain_cache_neon():
             PRIMARY KEY (symbol, expiry_date)
         )
     """)
+    _exec("""
+        CREATE TABLE IF NOT EXISTS options_snapshots (
+            snapshot_id TEXT PRIMARY KEY, underlying TEXT NOT NULL,
+            expiry TEXT, spot REAL, provider TEXT NOT NULL,
+            provider_timestamp TIMESTAMPTZ, captured_at TIMESTAMPTZ NOT NULL,
+            freshness TEXT, capabilities JSONB, UNIQUE (underlying, expiry, provider, captured_at)
+        )
+    """)
+    _exec("""
+        CREATE TABLE IF NOT EXISTS options_contract_snapshots (
+            snapshot_id TEXT NOT NULL REFERENCES options_snapshots(snapshot_id),
+            contract_json JSONB NOT NULL, PRIMARY KEY (snapshot_id, contract_json)
+        )
+    """)
+
+
+def _ensure_options_snapshots_sqlite(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS options_snapshots (
+        snapshot_id TEXT PRIMARY KEY, underlying TEXT NOT NULL, expiry TEXT,
+        spot REAL, provider TEXT NOT NULL, provider_timestamp TEXT,
+        captured_at TEXT NOT NULL, freshness TEXT, capabilities TEXT,
+        UNIQUE (underlying, expiry, provider, captured_at))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS options_contract_snapshots (
+        snapshot_id TEXT NOT NULL, contract_json TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, contract_json))""")
+
+
+def persist_options_snapshot(payload: dict) -> str:
+    """Idempotently persist a normalized successful options observation."""
+    captured = payload.get("received_at") or ""
+    identity = {"underlying": payload.get("underlying_symbol"),
+                "expiry": payload.get("expiry"), "provider": payload.get("provider"),
+                "captured_at": captured}
+    snapshot_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    contracts = payload.get("contracts") or payload.get("chain") or []
+    if _can_use_neon():
+        _exec("""INSERT INTO options_snapshots
+            (snapshot_id, underlying, expiry, spot, provider, provider_timestamp,
+             captured_at, freshness, capabilities)
+            VALUES (:id,:underlying,:expiry,:spot,:provider,:provider_timestamp,
+                    :captured_at,:freshness,CAST(:capabilities AS JSONB))
+            ON CONFLICT (snapshot_id) DO NOTHING""",
+            {"id": snapshot_id, **identity, "spot": payload.get("spot"),
+             "provider_timestamp": payload.get("provider_timestamp"),
+             "freshness": payload.get("freshness"),
+             "capabilities": json.dumps(payload.get("capabilities") or {})})
+        for contract in contracts:
+            _exec("""INSERT INTO options_contract_snapshots (snapshot_id, contract_json)
+                     VALUES (:id, CAST(:contract AS JSONB)) ON CONFLICT DO NOTHING""",
+                  {"id": snapshot_id, "contract": json.dumps(contract, sort_keys=True)})
+    else:
+        with _sqlite_connection() as conn:
+            _ensure_options_snapshots_sqlite(conn)
+            conn.execute("""INSERT OR IGNORE INTO options_snapshots
+                (snapshot_id, underlying, expiry, spot, provider, provider_timestamp,
+                 captured_at, freshness, capabilities)
+                VALUES (?,?,?,?,?,?,?,?,?)""", (snapshot_id, identity["underlying"],
+                identity["expiry"], payload.get("spot"), identity["provider"],
+                payload.get("provider_timestamp"), captured, payload.get("freshness"),
+                json.dumps(payload.get("capabilities") or {}, sort_keys=True)))
+            for contract in contracts:
+                conn.execute("INSERT OR IGNORE INTO options_contract_snapshots VALUES (?,?)",
+                             (snapshot_id, json.dumps(contract, sort_keys=True)))
+    return snapshot_id
+
+
+def fetch_options_snapshots(underlying: str, expiry: Optional[str] = None, limit: int = 20):
+    params = {"underlying": underlying, "limit": limit}
+    clause = " AND expiry = :expiry" if expiry else ""
+    if expiry:
+        params["expiry"] = expiry
+    return _query("""SELECT snapshot_id, underlying, expiry, spot, provider,
+        provider_timestamp, captured_at, freshness FROM options_snapshots
+        WHERE underlying = :underlying""" + clause + " ORDER BY captured_at DESC LIMIT :limit", params)
 
 
 def fetch_options_chain_cache(symbol: str, expiry: str, max_age_minutes: int = 5):
@@ -1406,6 +1481,7 @@ def init_db():
             sub_scores TEXT,
             raw_data TEXT
         )""")
+        _ensure_options_snapshots_sqlite(conn)
 
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)"

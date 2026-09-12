@@ -63,6 +63,7 @@ from utils.db import (
     register_scan,
     save_scan_results,
     update_scan_job_progress,
+    fetch_options_snapshots,
 )
 from routers.oracle_decision import router as oracle_decision_router
 
@@ -1395,11 +1396,21 @@ def get_options_chain(
     payload = OptionsProviderRouter.as_api_payload(
         response, fallback_used, diagnostics
     )
+    if response.contracts:
+        from utils.db import persist_options_snapshot
+        payload["snapshot_id"] = persist_options_snapshot(payload)
     strategies = scan_strategies(
         to_analytics_frame(response), oi_threshold=oi_threshold
     )
     payload["strategies"] = _sanitize_json_value(strategies.to_dict("records"))
     return _sanitize_json_value(payload)
+
+
+@app.get("/api/options/history")
+def get_options_history(symbol: str, expiry: Optional[str] = None,
+                        limit: int = Query(20, ge=1, le=100)):
+    """Return read-only successful snapshot metadata; contracts stay opt-in."""
+    return fetch_options_snapshots(INDEX_BENCHMARKS.get(symbol, symbol), expiry, limit)
 
 
 class OptionsPayoffLeg(BaseModel):
