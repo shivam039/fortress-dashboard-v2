@@ -6,7 +6,7 @@ quote fields deliberately distinguish an unknown value from a measured zero.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Protocol
+from typing import List, Literal, Optional, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -39,7 +39,7 @@ class OptionContract(BaseModel):
     underlying: str
     expiry: str
     strike: float
-    option_type: str
+    option_type: Literal["CE", "PE"]
     ltp: Optional[float] = None
     bid: Optional[float] = None
     ask: Optional[float] = None
