@@ -69,7 +69,7 @@ function parseProviderResult(filePath) {
 }
 
 function importProviderResult(manifest, resultPath, options = {}) {
-  if (!['MANUAL_EXPORT', 'RESULT_IMPORTED'].includes(manifest.state)) {
+  if (!['MANUAL_EXPORT', 'WAITING_FOR_PROVIDER_RESULT', 'RESULT_IMPORTED'].includes(manifest.state)) {
     throw new Error(`cannot import result while run is ${manifest.state}`);
   }
   const { raw, parsed } = parseProviderResult(resultPath);
