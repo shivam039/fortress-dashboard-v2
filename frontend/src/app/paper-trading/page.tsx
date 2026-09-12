@@ -156,7 +156,7 @@ export default function PaperTradingPage() {
                   <tbody>
                     {valuations.map(t => (
                       <tr key={t.trade_id} onClick={() => setSelected(t)} style={{ cursor: 'pointer' }}>
-                        <td>{t.symbol}</td>
+                        <td>{t.symbol}<br /><small>Source: {t.source_type === 'ORACLE_SIGNAL' ? 'Oracle' : t.source_type || 'Manual'}</small></td>
                         <td>{t.entry_price}</td>
                         <td>{t.current_price ?? 'unavailable'}</td>
                         <td>{t.unrealized_pnl == null ? 'unavailable' : t.unrealized_pnl.toFixed(2)}</td>
@@ -194,6 +194,7 @@ export default function PaperTradingPage() {
                 <h3>Fortress Signal</h3>
                 <p>{selected.signal ? `Score: ${selected.signal.score ?? 'n/a'} · ${selected.signal.market_regime ?? 'n/a'} · ${selected.signal.sector ?? 'n/a'}` : 'Signal detail unavailable'}</p>
                 <p>Trade ID: #{selected.trade_id} · Signal ID: #{selected.signal_id} · Policy: {selected.policy_version ?? 'n/a'}</p>
+                <p>Source: {selected.source_type === 'ORACLE_SIGNAL' ? 'Oracle signal' : selected.source_type || 'Manual'} · Original Oracle decision: {selected.oracle_decision ?? 'n/a'} · Version: {selected.oracle_version ?? 'n/a'}</p>
                 <button className="btn btn-primary" onClick={() => handleClose(selected.trade_id, selected.symbol)}>Close PAPER TRADE</button>
               </div>
             </div>

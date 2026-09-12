@@ -137,6 +137,8 @@ async def open_paper_trade(
             status_code=404, detail=f"No signal found with id={signal_id}"
         )
     signal = matches[0]
+    from oracle_decision.service import build_decision
+    oracle = build_decision(signal)
 
     config = PaperTradingConfig()
     open_positions = fetch_paper_trades(status="open")
@@ -144,11 +146,18 @@ async def open_paper_trade(
     if not result.accepted:
         raise HTTPException(status_code=400, detail=result.reason)
 
-    trade_id = create_paper_trade(result.trade)
+    trade = {
+        **result.trade,
+        "source_type": "ORACLE_SIGNAL",
+        "oracle_version": "oracle-v1",
+        "oracle_decision": oracle.get("decision", "UNAVAILABLE"),
+        "source_scan_id": signal.get("scan_id"),
+    }
+    trade_id = create_paper_trade(trade)
     if trade_id is None:
         raise HTTPException(status_code=500, detail="Failed to persist paper trade")
 
-    return {**result.trade, "trade_id": trade_id, "label": "PAPER TRADE"}
+    return {**trade, "trade_id": trade_id, "label": "PAPER TRADE"}
 
 
 @router.post("/{trade_id}/close")
