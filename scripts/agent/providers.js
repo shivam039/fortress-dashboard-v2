@@ -26,6 +26,15 @@
  */
 
 const ADAPTERS = {
+  qwen_web: {
+    name: 'qwen_web',
+    // Experimental, unofficial browser-session gateway. Fortress never
+    // stores or receives the Qwen browser cookie; Qwengate owns that session.
+    status() {
+      return process.env.QWEN_WEB_BASE_URL && process.env.QWEN_WEB_GATEWAY_TOKEN
+        ? 'SUPPORTED' : 'NOT_CONFIGURED';
+    },
+  },
   codex: {
     name: 'codex',
     // Codex Cloud/CLI execution in this environment is invoked
@@ -115,4 +124,54 @@ function executeAgent({ provider, model, prompt, inputBudget, outputBudget, conf
   };
 }
 
-module.exports = { ADAPTERS, providerStatus, resolveExecutionMode, executeAgent };
+async function executeQwenWeb({ runId, model, prompt, inputBudget, outputBudget, baseUrl, token, fetchImpl = fetch }) {
+  if (!baseUrl || !token) return { status: 'NOT_CONFIGURED', transient: false };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ model: model || 'qwen', messages: [{ role: 'user', content: prompt }], max_tokens: outputBudget }),
+      signal: controller.signal,
+    });
+    if (response.status === 401 || response.status === 403) return { status: 'SESSION_EXPIRED', transient: false };
+    if (response.status >= 500 || response.status === 408 || response.status === 429) return { status: 'GATEWAY_ERROR', transient: true };
+    if (!response.ok) return { status: 'PROVIDER_ERROR', transient: false };
+    const payload = await response.json();
+    const content = payload?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) return { status: 'MALFORMED_RESPONSE', transient: false };
+    const parsed = parseQwenResult(content, { runId, model });
+    if (!parsed.ok) return { status: parsed.status, transient: false };
+    return { status: 'AUTOMATED_EXPERIMENTAL', run_id: runId, provider: 'qwen_web', model, result: parsed.value, token_usage: 'NOT_AVAILABLE', transient: false };
+  } catch (error) {
+    return { status: error?.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE', transient: true };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseQwenResult(content, { runId, model }) {
+  let value;
+  try { value = JSON.parse(content); } catch (_) { return { ok: false, status: 'MALFORMED_RESPONSE' }; }
+  if (!value || value.run_id !== runId || value.provider !== 'qwen_web' || (model && value.model && value.model !== model)) {
+    return { ok: false, status: 'INVALID_PROVIDER_RESULT' };
+  }
+  if (value.production_access !== false || value.auto_merge !== false || !Array.isArray(value.changed_files)) {
+    return { ok: false, status: 'GOVERNANCE_VIOLATION' };
+  }
+  return { ok: true, value };
+}
+
+async function qwenWebHealth({ baseUrl, token, fetchImpl = fetch }) {
+  if (!baseUrl || !token) return 'MISCONFIGURED';
+  try {
+    const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/health`, { headers: { authorization: `Bearer ${token}` } });
+    if (response.status === 401 || response.status === 403) return 'SESSION_EXPIRED';
+    return response.ok ? 'AVAILABLE' : 'UNREACHABLE';
+  } catch (_) {
+    return 'UNREACHABLE';
+  }
+}
+
+module.exports = { ADAPTERS, providerStatus, resolveExecutionMode, executeAgent, executeQwenWeb, qwenWebHealth, parseQwenResult };
