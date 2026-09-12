@@ -44,7 +44,8 @@ export async function installSafeApi(page: Page): Promise<void> {
     if (path === '/api/picks/summary') return json(route, { total: 0, hits: 0, misses: 0, expired: 0, trailing: 0, hit_rate: 0, avg_pnl: 0, avg_days: 0, best_pnl: 0, worst_pnl: 0 });
     if (path === '/api/paper-trades/metrics') return json(route, { trade_count: 0, total_gross_pnl: 0, total_net_pnl: 0, win_rate_pct: null, avg_win: null, avg_loss: null, expectancy: null, max_drawdown: 0, total_exposure: 0, turnover: 0, portfolio_return_pct: null, benchmark_excess_return_pct: null });
     if (path === '/api/options/expiries') return json(route, ['2026-09-24']);
-    if (path === '/api/options/chain') return json(route, { symbol: 'NIFTY', expiry: '2026-09-24', spot: 25000, chain: [], strategies: [] });
+    if (path === '/api/options/chain') return json(route, { underlying: 'NIFTY', underlying_symbol: 'NIFTY', spot: 25000, expiry: '2026-09-24', available_expiries: ['2026-09-24'], provider: 'fixture', fallback_used: false, provider_timestamp: null, received_at: '2026-09-12T10:00:00Z', freshness: 'RECENT', capabilities: {}, analytics: { atm: null, oi_pcr: null, max_pain: null }, chain: [], strategies: [], diagnostics: {} });
+    if (path === '/api/options/history') return json(route, []);
     if (path === '/api/research-evidence') return json(route, { available: false, reason: 'insufficient evidence' });
     return json(route, []);
   });

@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
+import Link from 'next/link';
 import { scanApi, researchEvidenceApi, type ScanPayload, type SymbolSuggestion } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -259,6 +260,7 @@ export default function ScreenerPage() {
       {searchResult.length > 0 && (
         <div className="section" style={{ marginBottom: '24px' }}>
           <h3 className="section-title">📌 Search Result — {searchedSymbol}</h3>
+          <Link className="btn btn-secondary" href={`/options?symbol=${encodeURIComponent(searchedSymbol)}`}>Open in Options</Link>
           <div className="grid-2" style={{ gap: 16, marginBottom: 16, alignItems: 'start' }}>
             <FortressScoreCard signal={toFortressSignal(searchResult[0])} />
             {/* FORTRESS-V2: real GET /api/research-evidence result, mapped
