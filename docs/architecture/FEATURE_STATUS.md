@@ -1,6 +1,6 @@
-# Fortress feature reachability (PAPER-AUTO1 audit)
+# Fortress feature and architecture reachability (ARCH-CLEAN1 audit)
 
-Baseline: `8583007` (audit performed against current `main`).
+Baseline: `179ae7b` (audit performed against current `main`).
 
 | Feature | Reachable chain | Status | Evidence / boundary |
 |---|---|---|---|
@@ -20,6 +20,19 @@ Baseline: `8583007` (audit performed against current `main`).
 | GitHub Issue Sync | actionable finding → fingerprint → create/update issue | ON_DEMAND_ACTIVE | observation-only filtered; issue closure remains human-owned |
 | Qwen/qwen_web | experimental provider branch only | INTENTIONALLY_PARKED | `experiment/qwen-dogfood1`; excluded from production paths |
 | Render | historical deployment/migration references | ROLLBACK_ONLY | no active workflow/runtime dependency; Oracle workflows use secrets-based backend URL |
+
+## Architecture audit
+
+| Surface | Status | Evidence / boundary |
+|---|---|---|
+| Next.js frontend | CANONICAL_PRODUCTION | `frontend/src/app/**`; deployment workflow and product routes target the Next.js client |
+| Streamlit frontend | INTERNAL_DEBUG_LEGACY | `streamlit_app.py`, `ui/**`; not the active UI. Its scheduler is now opt-in via `FORTRESS_ENABLE_STREAMLIT_SCHEDULER` to prevent duplicate production ownership |
+| Database pooling | SUFFICIENT_CURRENTLY | `engine/utils/db.py`; pooled primary engine uses bounded timeout, pre-ping/recycle, and transaction context managers. No read replica is configured, so replica routing is NOT_APPLICABLE_CURRENTLY |
+| Financial serialization | SUFFICIENT_CURRENTLY | `engine/utils/db.py:normalize_paper_trade_for_json` explicitly normalizes Decimal, datetime, UUID, and non-finite values at the API boundary; no blanket numeric-to-string conversion |
+| Agent scope enforcement | SUFFICIENT_CURRENTLY | `scripts/agent/scope-check.js`, `sanitize.js`, and agent tests reject unsafe paths and forbidden files before completion |
+| Frontend bundle loading | NO_CHANGE_REQUIRED | `ScoreHeatmap`/`HistoricalEvidenceCard` are small route components; no measured SSR bottleneck or browser-only requirement justifies dynamic imports |
+| Playwright architecture | SUFFICIENT_CURRENTLY | `frontend/e2e/fixtures.ts` mocks API mutations and blocks unsafe methods; production smoke remains separate in `smoke-production.spec.ts` |
+| Cache architecture | KEEP_SEPARATE | `engine/utils/caching.py` is generic in-process TTL caching; `engine/utils/instruments_cache.py` is a daily persisted market-instrument cache with different invalidation semantics. Redis is not justified by current evidence |
 
 ## Render audit
 

@@ -77,15 +77,31 @@ if not st.session_state.get("_db_initialized"):
     st.session_state["_db_initialized"] = True
 
 # ---------------------------------------------------------------------------
-# Background scheduler (idempotent — starts threads once per process)
+# Background scheduler (legacy/debug only; disabled unless explicitly opted in)
 # ---------------------------------------------------------------------------
-try:
-    from scripts.scheduler import start_scheduler  # noqa: E402
+def _streamlit_scheduler_enabled() -> bool:
+    """Return whether the internal Streamlit scheduler harness is enabled."""
+    return os.environ.get("FORTRESS_ENABLE_STREAMLIT_SCHEDULER", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
-    if start_scheduler():
-        logging.getLogger("fortress").info("Background scheduler initialized.")
-except Exception as _sched_err:
-    logging.getLogger("fortress").warning(f"Scheduler start skipped: {_sched_err}")
+
+if _streamlit_scheduler_enabled():
+    try:
+        from scripts.scheduler import start_scheduler  # noqa: E402
+
+        if start_scheduler():
+            logging.getLogger("fortress").info("Background scheduler initialized.")
+    except Exception as _sched_err:
+        logging.getLogger("fortress").warning(
+            f"Scheduler start skipped: {_sched_err}"
+        )
+else:
+    logging.getLogger("fortress").info(
+        "Streamlit scheduler disabled; use the canonical scheduled workflow."
+    )
 
 # ---------------------------------------------------------------------------
 # Auth gate
