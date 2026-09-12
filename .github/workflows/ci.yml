@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORTRESS_DB_BACKEND: sqlite
+      PYTHONPATH: .:engine
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
