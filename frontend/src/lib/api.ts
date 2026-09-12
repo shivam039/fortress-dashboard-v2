@@ -624,7 +624,7 @@ export interface OptionsChainResponse {
   received_at: string;
   freshness: string | null;
   capabilities: Record<string, string>;
-  analytics: Record<string, number | null>;
+  analytics: Record<string, unknown>;
   contracts: OptionsContract[];
   chain: Record<string, unknown>[];
   strategies: Record<string, unknown>[];

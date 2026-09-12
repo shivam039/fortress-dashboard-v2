@@ -20,28 +20,20 @@ export default function OptionsPage() {
   const [loading, setLoading] = useState(false);
   const [loadingExpiries, setLoadingExpiries] = useState(false);
   const [showAllStrikes, setShowAllStrikes] = useState(false);
+  const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
 
-  const numeric = (row: Record<string, unknown>, key: string) => {
-    const value = Number(row[key]);
-    return Number.isFinite(value) ? value : 0;
+  const numeric = (row: Record<string, unknown>, key: string): number | null => {
+    const value = row[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
   };
-  const strikes = [...new Set(chain.map((row) => numeric(row, 'Strike')).filter(Boolean))].sort((a, b) => a - b);
-  const atmStrike = spot == null || strikes.length === 0
-    ? null
-    : strikes.reduce((nearest, strike) => Math.abs(strike - spot) < Math.abs(nearest - spot) ? strike : nearest, strikes[0]);
+  const strikes = [...new Set(chain.map((row) => numeric(row, 'Strike')).filter((value): value is number => value !== null))].sort((a, b) => a - b);
+  const atmStrike = typeof analytics.atm === 'number' ? analytics.atm : null;
   const atmIndex = atmStrike == null ? -1 : strikes.indexOf(atmStrike);
   const visibleStrikes = showAllStrikes || atmIndex < 0
     ? strikes
     : strikes.slice(Math.max(0, atmIndex - 5), atmIndex + 6);
-  const visibleChain = chain.filter((row) => visibleStrikes.includes(numeric(row, 'Strike')));
-  const isCall = (row: Record<string, unknown>) => ['CALL', 'CE'].includes(String(row.Type ?? '').toUpperCase());
-  const isPut = (row: Record<string, unknown>) => ['PUT', 'PE'].includes(String(row.Type ?? '').toUpperCase());
-  const callOi = chain.filter(isCall)
-    .sort((a, b) => numeric(b, 'OI') - numeric(a, 'OI')).slice(0, 3);
-  const putOi = chain.filter(isPut)
-    .sort((a, b) => numeric(b, 'OI') - numeric(a, 'OI')).slice(0, 3);
-  const pcr = chain.filter(isPut).reduce((sum, row) => sum + numeric(row, 'OI'), 0)
-    / Math.max(1, chain.filter(isCall).reduce((sum, row) => sum + numeric(row, 'OI'), 0));
+  const visibleChain = chain.filter((row) => { const strike = numeric(row, 'Strike'); return strike !== null && visibleStrikes.includes(strike); });
+  const largest = (key: string) => analytics[key] as { strike?: number; oi?: number } | null;
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -67,6 +59,7 @@ export default function OptionsPage() {
       setProvider(data.provider || 'Unavailable');
       setFreshness(data.freshness || 'Unavailable');
       setLastUpdated(data.received_at || null);
+      setAnalytics(data.analytics || {});
     } catch (err: unknown) {
       error((err as Error).message);
     } finally {
@@ -159,18 +152,18 @@ export default function OptionsPage() {
           <div><span className="metric-label">Freshness</span><div>{freshness}</div></div>
           <div><span className="metric-label">Last updated</span><div>{lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}</div></div>
           <div><span className="metric-label">Rows shown</span><div>{visibleChain.length} / {chain.length}</div></div>
-          <div><span className="metric-label">Put/Call OI</span><div>{chain.length ? pcr.toFixed(2) : '—'}</div></div>
-          <div><span className="metric-label">Highest call OI</span><div>{callOi[0] ? `${numeric(callOi[0], 'Strike').toFixed(2)} (${numeric(callOi[0], 'OI').toLocaleString()})` : '—'}</div></div>
+          <div><span className="metric-label">Put/Call OI</span><div>{typeof analytics.oi_pcr === 'number' ? analytics.oi_pcr.toFixed(2) : 'Unavailable'}</div></div>
+          <div><span className="metric-label">Highest call OI</span><div>{largest('largest_call_oi')?.strike != null ? `${largest('largest_call_oi')!.strike!.toFixed(2)} (${largest('largest_call_oi')!.oi?.toLocaleString() ?? '—'})` : 'Unavailable'}</div></div>
         </div>
-        <div style={{ marginTop: '12px' }}><span className="metric-label">Highest put OI</span>{putOi.length ? putOi.map((row) => `${numeric(row, 'Strike').toFixed(2)} (${numeric(row, 'OI').toLocaleString()})`).join(' · ') : ' —'}</div>
+        <div style={{ marginTop: '12px' }}><span className="metric-label">Highest put OI</span>{largest('largest_put_oi')?.strike != null ? `${largest('largest_put_oi')!.strike!.toFixed(2)} (${largest('largest_put_oi')!.oi?.toLocaleString() ?? '—'})` : ' Unavailable'}</div>
         <p className="page-subtitle" style={{ marginTop: '12px' }}>OI and PCR are descriptive indicators, not trading recommendations. ATM is the available strike nearest to spot.</p>
       </div>
 
       <div className="section" style={{ marginBottom: '24px' }}>
         <h3 className="section-title">Chain Snapshot</h3>
         <DataTable
-          data={visibleChain.map((row) => ({ ...row, Moneyness: numeric(row, 'Strike') === atmStrike ? 'ATM' : numeric(row, 'Strike') < (spot ?? 0) ? 'ITM' : 'OTM' }))}
-          columns={['Strike', 'Type', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'OI', 'Premium']}
+          data={visibleChain}
+          columns={['Strike', 'Type', 'Moneyness', 'LTP', 'OI', 'ChangeOI', 'Volume', 'IV', 'Bid', 'Ask']}
           emptyMessage="No options chain loaded yet."
           maxRows={24}
         />

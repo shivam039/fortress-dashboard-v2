@@ -93,9 +93,37 @@ def max_pain(chain: pd.DataFrame) -> Optional[float]:
 
 def summarize(chain: pd.DataFrame, spot: Optional[float]) -> Dict[str, Any]:
     enriched = add_moneyness(chain, spot)
+    strikes = pd.to_numeric(enriched.get("Strike", pd.Series(dtype=float)), errors="coerce")
+    atm = None
+    if spot is not None and not strikes.dropna().empty:
+        atm = float(strikes.loc[(strikes - spot).abs().idxmin()])
+
+    def largest(option_type: str) -> Optional[Dict[str, float]]:
+        if not {"Strike", "OI", "Type"}.issubset(enriched.columns):
+            return None
+        rows = enriched[enriched["Type"].eq(option_type)].copy()
+        rows["Strike"] = pd.to_numeric(rows["Strike"], errors="coerce")
+        rows["OI"] = pd.to_numeric(rows["OI"], errors="coerce")
+        rows = rows.dropna(subset=["Strike", "OI"])
+        if rows.empty:
+            return None
+        row = rows.sort_values(["OI", "Strike"], ascending=[False, True]).iloc[0]
+        return {"strike": float(row["Strike"]), "oi": float(row["OI"])}
+
+    def concentration(option_type: str) -> Optional[float]:
+        rows = enriched[enriched["Type"].eq(option_type)]
+        values = pd.to_numeric(rows.get("OI", pd.Series(dtype=float)), errors="coerce").dropna()
+        total = values.sum()
+        return round(float(values.max() / total), 4) if len(values) and total > 0 else None
+
     return {
         "spot": spot,
+        "atm": atm,
         "oi_pcr": pcr(enriched, "OI"),
         "volume_pcr": pcr(enriched, "Volume"),
         "max_pain": max_pain(enriched),
+        "largest_call_oi": largest("CE"),
+        "largest_put_oi": largest("PE"),
+        "call_oi_concentration": concentration("CE"),
+        "put_oi_concentration": concentration("PE"),
     }
