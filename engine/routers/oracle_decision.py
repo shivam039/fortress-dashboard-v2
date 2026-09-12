@@ -29,7 +29,7 @@ async def oracle_decision(body: OracleRequest, user: dict = Depends(get_current_
 
 
 @router.post("/outcomes/mature")
-async def mature_oracle_outcomes(body: MaturationRequest, user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+async def mature_oracle_outcomes(body: MaturationRequest) -> Dict[str, Any]:
     from oracle_outcomes.service import mature_pending
     return mature_pending(body.limit)
 
