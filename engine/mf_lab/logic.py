@@ -669,8 +669,21 @@ def run_full_mf_scan(
                 result = future.result(timeout=10)
                 if result:
                     rows.append(result)
-            except Exception:
-                pass
+            except Exception as exc:
+                # A single malformed/provider response must not discard the
+                # complete scan, but silently swallowing this exception made
+                # the intermittent MF failure impossible to locate. Keep the
+                # existing skip semantics and retain only safe identifiers.
+                code = futures[future]
+                logger.warning(
+                    "MF scan worker failed: stage=score_fund scheme_code=%s "
+                    "completed=%d/%d error=%s",
+                    code,
+                    done,
+                    total,
+                    exc,
+                    exc_info=True,
+                )
             if progress_callback:
                 progress_callback(done, total)
 
