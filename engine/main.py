@@ -1376,7 +1376,9 @@ def get_commodities(force_refresh: bool = Query(False)):
 @app.get("/api/options/expiries")
 def get_options_expiries(symbol: str):
     symbol = INDEX_BENCHMARKS.get(symbol, symbol)
-    return get_available_expiries(symbol)
+    expiries, provider, diagnostics = OptionsProviderRouter().get_expiries(symbol)
+    # Keep the established array contract; chain responses carry provenance.
+    return expiries
 
 
 @app.get("/api/options/chain")

@@ -55,3 +55,16 @@ def test_router_reports_no_expiries_without_fabricating_data():
     assert response.provider == "unavailable"
     assert response.contracts == []
     assert diagnostics == {"fake": "NO_EXPIRIES"}
+
+
+def test_router_isolates_provider_exception():
+    class BrokenProvider(FakeProvider):
+        def get_expiries(self, underlying):
+            raise TimeoutError("provider timeout")
+
+    response, _, diagnostics = OptionsProviderRouter(
+        providers=[BrokenProvider()]
+    ).get_chain("NIFTY")
+
+    assert response.provider == "unavailable"
+    assert diagnostics == {"fake": "TIMEOUT"}
