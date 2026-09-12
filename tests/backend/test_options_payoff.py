@@ -1,5 +1,6 @@
 from options_algo.payoff import StrategyLeg, payoff, summary
 from main import get_options_payoff, OptionsPayoffRequest
+from utils.db import compare_options_snapshots
 
 
 def test_long_call_payoff_and_breakeven():
@@ -33,3 +34,11 @@ def test_payoff_api_is_read_only_and_returns_requested_grid():
     result = get_options_payoff(request)
     assert result["prices"] == [90, 110]
     assert result["payoff"] == [-10.0, 0.0]
+
+
+def test_snapshot_comparison_is_explicit_when_history_is_insufficient(monkeypatch):
+    monkeypatch.setattr("utils.db.fetch_options_snapshots", lambda *args, **kwargs: [])
+    assert compare_options_snapshots("RELIANCE.NS") == {
+        "status": "INSUFFICIENT_HISTORY", "latest": None,
+        "previous": None, "changes": {},
+    }

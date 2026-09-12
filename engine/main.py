@@ -64,6 +64,7 @@ from utils.db import (
     save_scan_results,
     update_scan_job_progress,
     fetch_options_snapshots,
+    compare_options_snapshots,
 )
 from routers.oracle_decision import router as oracle_decision_router
 
@@ -1411,6 +1412,11 @@ def get_options_history(symbol: str, expiry: Optional[str] = None,
                         limit: int = Query(20, ge=1, le=100)):
     """Return read-only successful snapshot metadata; contracts stay opt-in."""
     return fetch_options_snapshots(INDEX_BENCHMARKS.get(symbol, symbol), expiry, limit)
+
+
+@app.get("/api/options/history/compare")
+def get_options_history_compare(symbol: str, expiry: Optional[str] = None):
+    return compare_options_snapshots(INDEX_BENCHMARKS.get(symbol, symbol), expiry)
 
 
 class OptionsPayoffLeg(BaseModel):

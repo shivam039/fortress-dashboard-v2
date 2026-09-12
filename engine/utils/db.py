@@ -875,6 +875,21 @@ def fetch_options_snapshots(underlying: str, expiry: Optional[str] = None, limit
         WHERE underlying = :underlying""" + clause + " ORDER BY captured_at DESC LIMIT :limit", params)
 
 
+def compare_options_snapshots(underlying: str, expiry: Optional[str] = None) -> dict:
+    """Compare the two latest observations without treating missing data as zero."""
+    rows = fetch_options_snapshots(underlying, expiry, limit=2)
+    if len(rows) < 2:
+        return {"status": "INSUFFICIENT_HISTORY", "latest": rows[0] if rows else None,
+                "previous": None, "changes": {}}
+    latest, previous = rows[0], rows[1]
+    changes = {}
+    for field in ("spot", "provider", "freshness"):
+        current, prior = latest.get(field), previous.get(field)
+        changes[field] = {"current": current, "previous": prior,
+                          "changed": current != prior if current is not None and prior is not None else None}
+    return {"status": "COMPARABLE", "latest": latest, "previous": previous, "changes": changes}
+
+
 def fetch_options_chain_cache(symbol: str, expiry: str, max_age_minutes: int = 5):
     """Return cached option-chain dict {chain_json, spot} if fresh, else None."""
     if not _can_use_neon():
