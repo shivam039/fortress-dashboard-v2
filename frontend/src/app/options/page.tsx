@@ -22,6 +22,7 @@ export default function OptionsPage() {
   const [showAllStrikes, setShowAllStrikes] = useState(false);
   const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
   const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
+  const [snapshots, setSnapshots] = useState<Record<string, unknown>[]>([]);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
@@ -71,6 +72,7 @@ export default function OptionsPage() {
       setFreshness(data.freshness || 'Unavailable');
       setLastUpdated(data.received_at || null);
       setAnalytics(data.analytics || {});
+      optionsApi.history(symbol, expiry).then(setSnapshots).catch(() => setSnapshots([]));
     } catch (err: unknown) {
       error((err as Error).message);
     } finally {
@@ -183,6 +185,12 @@ export default function OptionsPage() {
             {showAllStrikes ? 'Show ATM window' : `Show all ${strikes.length} strikes`}
           </button>
         )}
+      </div>
+
+      <div className="section">
+        <h3 className="section-title">What Changed?</h3>
+        <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
+        <DataTable data={snapshots} columns={['captured_at', 'provider', 'spot', 'freshness', 'snapshot_id']} maxRows={10} emptyMessage="No prior options snapshots available." />
       </div>
 
       <div className="section">

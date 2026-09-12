@@ -631,6 +631,17 @@ export interface OptionsChainResponse {
   diagnostics: Record<string, string>;
 }
 
+export interface OptionsSnapshotSummary {
+  snapshot_id: string;
+  underlying: string;
+  expiry: string | null;
+  spot: number | null;
+  provider: string;
+  provider_timestamp: string | null;
+  captured_at: string;
+  freshness: string | null;
+}
+
 export const optionsApi = {
   expiries: (symbol: string) =>
     api.get<string[]>(`/api/options/expiries?symbol=${encodeURIComponent(symbol)}`),
@@ -642,6 +653,8 @@ export const optionsApi = {
     ),
   payoff: (legs: Array<{ option_type: 'CE' | 'PE'; strike: number; premium: number; quantity?: number; side?: 'BUY' | 'SELL' }>, prices: number[]) =>
     api.post<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> }>('/api/options/payoff', { legs, prices }),
+  history: (symbol: string, expiry?: string) =>
+    api.get<OptionsSnapshotSummary[]>(`/api/options/history?symbol=${encodeURIComponent(symbol)}${expiry ? `&expiry=${encodeURIComponent(expiry)}` : ''}`),
 };
 
 // ── REITs & InvITs ────────────────────────────────────────────────────────────
