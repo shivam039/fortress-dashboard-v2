@@ -50,12 +50,13 @@ class YFinanceOptionsProvider:
     def get_chain(self, underlying: str, expiry: str) -> OptionChainResponse:
         frame, spot, _ = logic.fetch_option_chain(underlying, expiry)
         contracts = []
+        malformed_count = 0
         for row in frame.to_dict("records"):
             try:
                 contracts.append(_contract_from_row(underlying, expiry, row))
             except (KeyError, TypeError, ValueError):
                 # Preserve valid contracts; malformed rows are never coerced.
-                continue
+                malformed_count += 1
         return OptionChainResponse(
             underlying=underlying,
             underlying_symbol=underlying,
@@ -65,6 +66,11 @@ class YFinanceOptionsProvider:
             provider=self.name,
             received_at=datetime.now(timezone.utc),
             capabilities=self.get_capabilities(),
+            diagnostics={
+                "raw_contract_count": len(frame),
+                "parsed_contract_count": len(contracts),
+                "malformed_contract_count": malformed_count,
+            },
             contracts=contracts,
         )
 

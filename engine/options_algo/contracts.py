@@ -67,6 +67,7 @@ class OptionChainResponse(BaseModel):
     capabilities: dict[OptionCapability, CapabilityState] = Field(
         default_factory=dict
     )
+    diagnostics: dict[str, int] = Field(default_factory=dict)
     contracts: List[OptionContract] = Field(default_factory=list)
 
 

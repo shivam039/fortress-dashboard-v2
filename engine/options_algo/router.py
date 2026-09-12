@@ -78,10 +78,15 @@ class OptionsProviderRouter:
         capabilities = dict(response.capabilities)
         for field, capability in (("LTP", "LTP"), ("OI", "OI"),
                                   ("ChangeOI", "CHANGE_OI"), ("Volume", "VOLUME"),
-                                  ("IV", "IV"), ("Bid", "BID_ASK"),
-                                  ("Delta", "GREEKS")):
+                                  ("IV", "IV"), ("Bid", "BID_ASK")):
             values = frame[field].notna() if field in frame else None
             capabilities[capability] = "SUPPORTED" if values is not None and values.any() else "UNAVAILABLE"
+        greek_fields = ("Delta", "Gamma", "Theta", "Vega")
+        capabilities["GREEKS"] = (
+            "SUPPORTED"
+            if any(field in frame and frame[field].notna().any() for field in greek_fields)
+            else "UNAVAILABLE"
+        )
         return {
             **response.dict(),
             "fallback_used": fallback_used,
