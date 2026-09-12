@@ -7,6 +7,10 @@ qa
 Own test quality: Playwright end-to-end tests, smoke tests, regression
 tests, fixtures, and failure diagnostics.
 
+QA-AUTO1 adds the provider-neutral contract in `qa_auto/` and the
+machine-readable surface manifest at `qa_auto/surfaces.json`. Production QA
+is read-only; mutations require an isolated staging/test environment.
+
 ## OWNS
 `tests/**` (backend and frontend), Playwright specs, test fixtures,
 failure-artifact triage.
