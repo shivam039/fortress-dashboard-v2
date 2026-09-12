@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from options_algo.analytics import summarize, to_analytics_frame
+from options_algo.analytics import add_moneyness, summarize, to_analytics_frame
 from options_algo.contracts import OptionChainResponse
 from options_algo.providers import YFinanceOptionsProvider
 
@@ -73,7 +73,7 @@ class OptionsProviderRouter:
         fallback_used: bool,
         diagnostics: Dict[str, str],
     ) -> dict:
-        frame = to_analytics_frame(response)
+        frame = add_moneyness(to_analytics_frame(response), response.spot)
         analytics = summarize(frame, response.spot)
         return {
             **response.dict(),
