@@ -3,7 +3,7 @@
   "surfaces": [
     {"name": "Dashboard", "route": "/dashboard", "risk": "READ_ONLY"},
     {"name": "Scanner", "route": "/screener", "risk": "READ_ONLY"},
-    {"name": "Scan History", "route": "/scan-history", "risk": "READ_ONLY"},
+    {"name": "Scan History", "route": "/history", "risk": "READ_ONLY"},
     {"name": "Oracle Performance", "route": "/oracle-performance", "risk": "READ_ONLY"},
     {"name": "Watchlist", "route": "/watchlist", "risk": "SAFE_TEST_MUTATION"},
     {"name": "Paper Trading", "route": "/paper-trading", "risk": "READ_ONLY"},
