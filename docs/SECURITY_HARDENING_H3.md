@@ -81,7 +81,7 @@ environment variable Fortress uses to make this decision — no second
 | `FORTRESS_JWT_SECRET` | Yes — `RuntimeError` at import | Signs every session token; a known/blank secret lets anyone forge an admin JWT. |
 | `FORTRESS_APP_PASSWORD` | Yes — `RuntimeError` at import | The admin account's only credential; a known/blank password is a walk-in admin login. |
 | `FORTRESS_CORS_ORIGINS` (resolved list) | Yes — `RuntimeError` at import | A wildcard origin with `allow_credentials=True` defeats the browser's same-origin protections for cookie-based auth. |
-| `FORTRESS_API_KEY` | **No — intentionally optional** | Every account-scoped endpoint already requires a valid JWT (cookie or `Authorization: Bearer`) via `auth_utils.get_current_user`; that is the real authentication boundary. `FORTRESS_API_KEY` is a *supplementary* gate for non-browser/machine clients hitting the API directly. Forcing it on in production would change the authentication model (a listed non-goal) for no additional protection on the JWT-protected surface, and would break any legitimate unauthenticated read (e.g. `/api/health`) that's deliberately public. It remains warn-only, documented as a deliberate choice in `engine/main.py` and `DEPLOYMENT.md`. |
+| `FORTRESS_API_KEY` | **Yes, since FORTRESS-NEXT Epic 16** — `RuntimeError` at import | Originally left warn-only (see below); revisited once `/api/research/prospective/export` shipped with no JWT dependency at all (it returns a full SQLite database) — for that endpoint, `FORTRESS_API_KEY` is the *only* auth boundary, not merely supplementary, so a missing/placeholder key is a real, not theoretical, exposure. `/api/health` and `/api/auth/*` stay exempt from the `X-API-Key` check itself (see `api_key_auth_middleware` in `engine/main.py`) — this change only requires that *if* the key gate exists, its value can't be blank or a known `.env.*.example` placeholder. |
 | Broker/TOTP credentials (`INDSTOCKS_*`) | Reviewed, no change needed | Read only from environment (`os.getenv`, never hardcoded); `routers/brokers.py` already strips `access_token_encrypted`/`refresh_token_encrypted` before any API response; `indstocks_client.py` logs only generic status messages ("token refreshed successfully", "Token refresh failed: %s") — never the token/secret value; missing credentials make `_indstocks_available()` return `False` and the app falls back to yfinance rather than enabling any unsafe path or blocking startup. No code change was needed here — confirmed by reading `engine/routers/brokers.py` and `engine/utils/indstocks_client.py`. |
 
 ## 6. CORS / error-handling findings
@@ -144,11 +144,11 @@ No real provider/broker credentials were used or required by any test.
   rejecting *known* insecure defaults, not building a general secret-
   strength policy — flagged here as a possible follow-up, not implemented
   to avoid scope creep beyond the story's stated objective.
-- **`FORTRESS_API_KEY` remains genuinely optional** (§5) — a deployment
-  that wants to block unauthenticated access to public/read-only endpoints
-  (e.g. `/api/health`, `/api/universes`) still needs to set it explicitly
-  and accept the tradeoff; this was a deliberate choice, not an oversight,
-  but is worth re-confirming if the threat model changes.
+- **`FORTRESS_API_KEY` is now required in production** (§5, since
+  FORTRESS-NEXT Epic 16 — the threat model changed once a machine-only,
+  no-JWT export endpoint shipped). `/api/health` and `/api/auth/*` are
+  still exempt from the `X-API-Key` check itself by design, unaffected by
+  this change.
 - **This story validates configuration, not runtime secret handling** —
   e.g. it does not audit every log line in the codebase for accidental
   secret exposure outside the auth/CORS/error-handling paths explicitly
@@ -163,5 +163,5 @@ other than `sqlite`/`local`) at production traffic:
 - [ ] `FORTRESS_JWT_SECRET` set to a unique random value (`openssl rand -hex 32`) — the app will otherwise refuse to start.
 - [ ] `FORTRESS_APP_PASSWORD` set to a real password (and consider a non-`admin` `FORTRESS_APP_USERNAME`) — the app will otherwise refuse to start.
 - [ ] `FORTRESS_CORS_ORIGINS` set to the exact trusted frontend origin(s), comma-separated, if the default localhost origins don't already match your deployment.
-- [ ] Decide on `FORTRESS_API_KEY` deliberately (optional — see §5) rather than leaving it unset by omission.
+- [ ] `FORTRESS_API_KEY` set to a unique random value (`openssl rand -hex 32`) — see §5; the app will otherwise refuse to start.
 - [ ] Confirm `FORTRESS_DB_BACKEND` reflects reality (`sqlite`/`local` only for genuine local dev) — this single variable now also gates every check above.

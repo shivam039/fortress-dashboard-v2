@@ -158,7 +158,7 @@ production deploy:
 |---|---|
 | `FORTRESS_JWT_SECRET` | Signs every login session token. The hardcoded dev fallback (`fortress-dev-jwt-secret-change-in-production-2024`) would let anyone forge a valid JWT for any user, including `admin`, without ever logging in. Generate with `openssl rand -hex 32`. |
 | `FORTRESS_APP_PASSWORD` | The admin account's password. The hardcoded dev fallback (`fortress123`) is publicly known from this repo. Set this to a real password (and consider setting `FORTRESS_APP_USERNAME` to something other than `admin` too). |
-| `FORTRESS_API_KEY` | See [§6 above](#6-indstocks-market-data). Optional by design (see the security section below) — every account-scoped endpoint already requires a valid JWT regardless. |
+| `FORTRESS_API_KEY` | See [§6 above](#6-indstocks-market-data). **Required in production** (FORTRESS-NEXT Epic 16) — a few machine-only endpoints (e.g. `/api/research/prospective/export`, which returns a full SQLite database) have no JWT dependency and rely on this as their only gate. Generate with `openssl rand -hex 32`. |
 
 **Local dev** (`FORTRESS_DB_BACKEND=sqlite` or `local`) runs fine with none
 of these set — that's intentional, so a fresh checkout never needs any
@@ -173,11 +173,13 @@ WARNING:fortress-api:FORTRESS_API_KEY is not set — FastAPI endpoints are unaut
 **Production** (`FORTRESS_DB_BACKEND` unset, or anything other than
 `sqlite`/`local` — this includes every real Render deploy pointed at Neon)
 is stricter: Fortress **refuses to start** — `RuntimeError` at import time,
-before any request is served — if `FORTRESS_JWT_SECRET` or
-`FORTRESS_APP_PASSWORD` is missing, blank, or one of the known
-default/placeholder values above. This is deliberate (FORTRESS-H3): a
+before any request is served — if `FORTRESS_JWT_SECRET`,
+`FORTRESS_APP_PASSWORD`, or `FORTRESS_API_KEY` is missing, blank, or one
+of the known default/placeholder values above. This is deliberate
+(FORTRESS-H3, extended to `FORTRESS_API_KEY` by FORTRESS-NEXT Epic 16): a
 warning that's easy to miss in Render's logs used to be the only thing
-standing between a real deployment and a forgeable admin session. See
+standing between a real deployment and a forgeable admin session, or an
+unauthenticated pull of a full SQLite database export. See
 [docs/SECURITY_HARDENING_H3.md](docs/SECURITY_HARDENING_H3.md) for the
 full validation behavior, including CORS.
 
@@ -446,7 +448,7 @@ curl -X POST http://localhost:8000/mf/trigger-job \
 | `FORTRESS_DB_BACKEND` | No | `neon` | `neon` or `sqlite` — **this is also Fortress's single production/dev signal**; see the security section below |
 | `DATABASE_URL` | Neon only | — | Neon PostgreSQL connection string |
 | `NEON_CONNECTION_STRING` | Neon only | — | Alternative to `DATABASE_URL` |
-| `FORTRESS_API_KEY` | No — optional by design | — (unset = unauthenticated at the API-key layer) | Supplementary gate for non-browser clients; JWT auth already protects account-scoped endpoints. Not enforced at startup — see the security section below. |
+| `FORTRESS_API_KEY` | **Yes (prod) — enforced** | — | Gate for non-browser clients and a few JWT-free machine-only endpoints (e.g. the research export). Production refuses to start if missing/blank/placeholder — see the security section below. |
 | `FORTRESS_CORS_ORIGINS` | No | `http://localhost:3000,http://127.0.0.1:3000` | Allowed CORS origins, comma-separated. Production refuses to start if this resolves to `*`. |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | No | — | Default broadcast chat ID |

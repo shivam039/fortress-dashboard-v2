@@ -87,3 +87,49 @@ def test_F_production_secure_admin_password_imports_cleanly():
         },
     )
     assert result.returncode == 0, result.stderr
+
+
+# ── FORTRESS-NEXT Epic 16: FORTRESS_API_KEY production fail-fast ────────
+# Same subprocess-import structure as test_E/test_C above, applied to
+# `main` (where the FORTRESS_API_KEY check actually lives) instead of
+# `routers.auth`/`auth_utils`. There is deliberately no "imports cleanly"
+# positive-path test here (unlike test_D/test_F): `main`'s module-level
+# validate_database_configuration() call, which runs after the API-key
+# check, requires a live reachable Postgres/Neon database in production
+# mode — not available in this sandbox. The positive path (a real API key
+# passes validate_api_key()) is covered at the unit level instead, in
+# test_security_config.py::test_epic16_production_real_api_key_passes.
+# What's proven here is real: the check raises before main.py ever reaches
+# the DB-dependent code, so it needs no live database to fail correctly.
+
+
+def test_epic16_production_missing_api_key_refuses_to_import():
+    result = _run_import(
+        "main",
+        {
+            "FORTRESS_DB_BACKEND": "neon",
+            "FORTRESS_JWT_SECRET": "x" * 64,
+        },
+    )
+    assert result.returncode != 0
+    assert "FORTRESS_API_KEY" in result.stderr
+
+
+def test_epic16_production_placeholder_api_key_refuses_to_import():
+    result = _run_import(
+        "main",
+        {
+            "FORTRESS_DB_BACKEND": "neon",
+            "FORTRESS_JWT_SECRET": "x" * 64,
+            "FORTRESS_API_KEY": "replace-with-the-existing-production-api-key",
+        },
+    )
+    assert result.returncode != 0
+    assert "FORTRESS_API_KEY" in result.stderr
+    assert "replace-with-the-existing-production-api-key" not in result.stderr
+
+
+def test_epic16_dev_mode_missing_api_key_imports_with_warning_only():
+    result = _run_import("main", {"FORTRESS_DB_BACKEND": "sqlite"})
+    assert result.returncode == 0, result.stderr
+    assert "FORTRESS_API_KEY is not set" in result.stderr

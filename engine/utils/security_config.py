@@ -37,8 +37,19 @@ DEFAULT_ADMIN_PASSWORD = "fortress123"
 _GENERIC_UNSAFE_SECRETS = {"changeme", "change-me", "change_me", "secret", "your-secret-key", ""}
 _GENERIC_UNSAFE_PASSWORDS = {"changeme", "change-me", "change_me", "password", "admin", "admin123", ""}
 
+# Literal placeholder strings that appear in this repo's own
+# .env.*.example files/docs — anyone who has read them knows these values,
+# so a deployment still using one is trivially guessable.
+_GENERIC_UNSAFE_API_KEYS = _GENERIC_UNSAFE_SECRETS | {
+    "replace-with-the-existing-production-api-key",
+    "replace-with-a-unique-staging-api-key",
+    "api-key",
+    "your-api-key",
+}
+
 _KNOWN_UNSAFE_JWT_SECRETS = _GENERIC_UNSAFE_SECRETS | {DEFAULT_JWT_SECRET}
 _KNOWN_UNSAFE_ADMIN_PASSWORDS = _GENERIC_UNSAFE_PASSWORDS | {DEFAULT_ADMIN_PASSWORD.lower()}
+_KNOWN_UNSAFE_API_KEYS = _GENERIC_UNSAFE_API_KEYS
 
 
 def is_production_environment() -> bool:
@@ -92,6 +103,36 @@ def validate_admin_password(password: str | None) -> None:
             "FORTRESS_APP_PASSWORD is set to a known default/placeholder "
             "value (public in this repo's history or documentation). "
             "Refusing to start in production — set it to a real password."
+        )
+
+
+def validate_api_key(api_key: str | None) -> None:
+    """Raise RuntimeError if `api_key` is missing/blank or a known-unsafe
+    placeholder value. Never includes the key's value in the message.
+
+    FORTRESS-NEXT Epic 16: previously `FORTRESS_API_KEY` only ever logged a
+    warning in `engine/main.py`, regardless of environment — unlike
+    `FORTRESS_JWT_SECRET`/`FORTRESS_APP_PASSWORD`, which already fail
+    startup in production. This closes that gap as defense-in-depth: some
+    endpoints (e.g. `/api/research/prospective/export`, which returns a
+    full SQLite database) rely on the `X-API-Key` gate as their only
+    protection, since they intentionally have no JWT dependency. Callers
+    decide whether this applies (production only) — this function itself
+    has no notion of dev vs. prod, it just says whether the value is safe.
+    """
+    normalized = (api_key or "").strip()
+    if not normalized:
+        raise RuntimeError(
+            "FORTRESS_API_KEY is not set (or is blank). Refusing to start "
+            "in production without a real API key — set FORTRESS_API_KEY "
+            "to a unique, unguessable value (e.g. `openssl rand -hex 32`)."
+        )
+    if normalized.lower() in _KNOWN_UNSAFE_API_KEYS:
+        raise RuntimeError(
+            "FORTRESS_API_KEY is set to a known placeholder value (public "
+            "in this repo's .env.*.example files or documentation). "
+            "Refusing to start in production — generate a real key with "
+            "`openssl rand -hex 32`."
         )
 
 

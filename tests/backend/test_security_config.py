@@ -14,6 +14,7 @@ from utils.security_config import (
     DEFAULT_JWT_SECRET,
     is_production_environment,
     validate_admin_password,
+    validate_api_key,
     validate_cors_origins,
     validate_jwt_secret,
     validate_security_configuration,
@@ -230,6 +231,50 @@ def test_I_security_validation_does_not_require_broker_credentials(monkeypatch):
         cors_origins=["https://app.example.com"],
         production=True,
     )  # must not raise
+
+
+# ── FORTRESS-NEXT Epic 16: FORTRESS_API_KEY production fail-fast ────────
+# Mirrors test_E_* (validate_admin_password) above — same shape, same
+# "missing/blank fails, known placeholder fails, real value passes,
+# secret never leaks into the exception text" coverage.
+
+
+def test_epic16_production_default_placeholder_api_key_fails():
+    # These exact strings appear in .env.oracle.*.example — anyone who has
+    # read them knows these values.
+    for placeholder in (
+        "replace-with-the-existing-production-api-key",
+        "replace-with-a-unique-staging-api-key",
+    ):
+        with pytest.raises(RuntimeError, match="FORTRESS_API_KEY"):
+            validate_api_key(placeholder)
+
+
+def test_epic16_production_generic_placeholder_api_key_fails():
+    for placeholder in ("changeme", "your-api-key", "api-key", "secret"):
+        with pytest.raises(RuntimeError):
+            validate_api_key(placeholder)
+
+
+def test_epic16_production_missing_api_key_fails():
+    with pytest.raises(RuntimeError, match="FORTRESS_API_KEY"):
+        validate_api_key(None)
+    with pytest.raises(RuntimeError):
+        validate_api_key("")
+    with pytest.raises(RuntimeError):
+        validate_api_key("   ")
+
+
+def test_epic16_production_real_api_key_passes():
+    validate_api_key("f3a9c8e1d2b74e6a9f0c1d2e3b4a5968")  # must not raise
+
+
+def test_epic16_api_key_value_never_appears_in_exception_text():
+    real_looking_key = "sk-live-not-a-real-key-but-a-known-placeholder"
+    with pytest.raises(RuntimeError) as exc_info:
+        validate_api_key("changeme")
+    assert real_looking_key not in str(exc_info.value)
+    assert "changeme" not in str(exc_info.value)
 
 
 # ── validate_security_configuration: full integration of A-F ────────────

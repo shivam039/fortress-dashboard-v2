@@ -46,6 +46,7 @@ from fortress_config import INDEX_BENCHMARKS
 from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 from utils.security_config import (
     is_production_environment,
+    validate_api_key,
     validate_cors_origins,
     validate_staging_database_isolation,
 )
@@ -176,18 +177,26 @@ if os.environ.get("FORTRESS_LOG_STARTUP", "").strip().lower() in ("1", "true", "
 
 # API key auth — set FORTRESS_API_KEY env var to enable. Unset = local dev (no auth).
 #
-# FORTRESS-H3: deliberately NOT required in production, unlike
-# FORTRESS_JWT_SECRET/FORTRESS_APP_PASSWORD. Every endpoint that returns
-# user/account data already requires a valid JWT (cookie or Bearer token —
-# see api_key_auth_middleware below and auth_utils.get_current_user), which
-# is the actual authentication boundary; FORTRESS_API_KEY is a *supplementary*
-# gate for non-browser/machine clients hitting the API directly. Forcing it
-# on would change the authentication model (a non-goal for this story) for
-# no additional safety on the JWT-protected surface. If a deployment wants
-# to lock out unauthenticated read-only endpoints too, set FORTRESS_API_KEY —
-# this stays a warning, not a startup failure, either way.
+# Every endpoint that returns user/account data already requires a valid
+# JWT (cookie or Bearer token — see api_key_auth_middleware below and
+# auth_utils.get_current_user), which is the actual authentication
+# boundary for browser clients; FORTRESS_API_KEY is the *supplementary*
+# gate for non-browser/machine clients (cron workflows, etc.) hitting the
+# API directly, and the *only* gate for a few intentionally-unauthenticated
+# machine endpoints (e.g. /api/research/prospective/export, which returns a
+# full SQLite database — see routers/research_prospective.py).
+#
+# FORTRESS-NEXT Epic 16: this previously stayed a warning in every
+# environment, unlike FORTRESS_JWT_SECRET/FORTRESS_APP_PASSWORD, which
+# already fail startup in production (see utils/security_config.py). That
+# was a real gap for the export endpoint above — closed here by reusing
+# the exact is_production_environment() fail-fast pattern already used for
+# FORTRESS_APP_PASSWORD in routers/auth.py. Local/dev (FORTRESS_DB_BACKEND
+# in {"sqlite","local"}) keeps the warn-and-continue behavior.
 _FORTRESS_API_KEY = os.environ.get("FORTRESS_API_KEY", "")
-if not _FORTRESS_API_KEY:
+if is_production_environment():
+    validate_api_key(_FORTRESS_API_KEY)
+elif not _FORTRESS_API_KEY:
     logger.warning(
         "FORTRESS_API_KEY is not set — FastAPI endpoints are unauthenticated. Set this env var in production."
     )
