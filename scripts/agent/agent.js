@@ -10,6 +10,7 @@ const githubPipeline = require('./github-pipeline');
 const { resolveExecutionMode } = require('./providers');
 const { getChangedFiles, checkScope } = require('./scope-check');
 const { runTests } = require('./test-runner');
+const { docsLikelyRequired } = require('./docs-evidence');
 
 const sessions = path.join(lib.REPO_ROOT, '.agent-room', 'sessions');
 const manifestPath = (runId) => path.join(sessions, `${runId}.manifest.json`);
@@ -83,7 +84,18 @@ function autoGatesCommand(runId, evalPath, testPath, reviewPath, docsPath) {
   if (manifest.state === 'BLOCKED_TESTS') return save(manifest);
   manifest = pipeline.evaluateGate(manifest, report);
   if (manifest.state === 'BLOCKED_EVAL') return save(manifest);
-  manifest = pipeline.reviewerGate(manifest, review);
+  // FORTRESS "LUNA MISSES CLOSEOUT" Epic 7: docs_required was previously
+  // fixed at classification time (selectedAgent === 'docs' only) and never
+  // revisited once the real changed_files were known - a backend/infra/
+  // agent-framework-classified run touching an API route, security config,
+  // or workflow file could reach PR with docs_status NOT_REQUIRED no
+  // matter what it changed. reviewerGate()'s docsImpact parameter already
+  // existed for exactly this, but nothing ever populated it. Wire it to
+  // docs-evidence.js's path-category check (reused from
+  // reviewer-evidence.js's classifier) - see docs-evidence.js's
+  // DOCS_LIKELY_CATEGORIES for exactly which categories this covers.
+  const docsImpact = docsLikelyRequired(manifest.changed_files || []).required;
+  manifest = pipeline.reviewerGate(manifest, review, docsImpact);
   if (manifest.state === 'REPAIR_PENDING' || manifest.state === 'BLOCKED') return save(manifest);
   if (manifest.docs_required) {
     if (!docsPath) throw new Error('docs evidence is required when docs are required');

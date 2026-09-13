@@ -123,6 +123,36 @@ evidenced at all) and skips the one-shot repair cycle that `NOT_MERGEABLE`
 gets; `MERGEABLE`/`MERGEABLE_WITH_NOTES`/`MERGEABLE_WITH_MINOR_FIXES` all
 proceed to the docs/PR gates.
 
+### Docs-required escalation (not just classification)
+
+`docs_required` used to be fixed the moment the Coordinator classified the
+issue (`true` only when `selected_agent === 'docs'`) and never revisited once
+the real diff was known — a `backend`/`infra`/`agent-framework`-classified run
+that touched an API route, a security/auth file, a workflow file, or the
+agent framework itself could reach `AWAITING_HUMAN` with `docs_status:
+NOT_REQUIRED`, regardless of what it actually changed.
+
+`scripts/agent/agent.js`'s `auto-gates` now also calls
+`docs-evidence.js`'s `docsLikelyRequired(changed_files)` — reusing
+`reviewer-evidence.js`'s same path-category classifier — and passes the
+result as `reviewerGate()`'s `docsImpact` argument. A changed file in
+`api_contract`, `security_auth`, `infra_workflow`, or `agent_framework`
+escalates `docs_required` to `true` even if the run was never classified as
+`docs`. `backend_logic`/`frontend_logic`/`db_persistence`/`tests`/`docs`/
+`other` never escalate — an internal refactor, a test-only change, or a
+docs-only change does not need more docs just because a file moved.
+
+**PROVEN vs. CONFIGURED, stated plainly:** there is still no automated check
+that verifies docs were *actually written correctly* for an escalated run —
+`docs-evidence.js`'s advisory report has no `status` field, so `docsGate()`
+reading it always resolves to `docs_status: PENDING`, which blocks
+`prGate()` (`state: BLOCKED_PR`) rather than silently passing. This is
+deliberate: escalating `docs_required` without also being able to prove docs
+were written would otherwise silently do nothing. Once escalated, a human
+must supply real doc-satisfaction evidence (`node scripts/agent/agent.js
+docs <run-id> pass`, or a future automated check with a real `status`
+field) before the run can proceed — it does not currently unblock itself.
+
 ## Production and secret safety
 
 Oracle, Caddy, DNS, Vercel/Neon production, schedulers, secrets, trading or

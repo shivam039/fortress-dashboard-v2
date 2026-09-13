@@ -15,6 +15,34 @@
 
 const fs = require('fs');
 const path = require('path');
+const { classifyFile } = require('./reviewer-evidence');
+
+// FORTRESS "LUNA MISSES CLOSEOUT" Epic 7: the reference-match check above
+// answers "does an EXISTING doc claim something about a file this PR
+// changed?" - useful, but it says nothing when no doc happens to reference
+// the changed area yet. Separately, `docs_required` in the real pipeline
+// (github-pipeline.js's classifyIssue()) was purely `selectedAgent ===
+// 'docs'` - a backend/infra/agent-framework-classified change to an API
+// route, security config, or workflow file never set docs_required, no
+// matter what it touched. Reusing reviewer-evidence.js's path-category
+// classifier (already proven, already tested) closes that: any changed
+// file landing in one of these categories is the kind of change this
+// closeout's own examples call out as normally requiring docs (new/changed
+// API, security requirement, agent behavior, provider behavior,
+// deployment/operations change). backend_logic/frontend_logic/
+// db_persistence/tests/docs/other are deliberately excluded - an internal
+// refactor, a test-only change, or a docs-only change does not require
+// more docs just because a file was touched.
+const DOCS_LIKELY_CATEGORIES = new Set(['api_contract', 'security_auth', 'infra_workflow', 'agent_framework']);
+
+function docsLikelyRequired(changedFiles) {
+  const hits = [];
+  for (const file of changedFiles) {
+    const category = classifyFile(file);
+    if (DOCS_LIKELY_CATEGORIES.has(category)) hits.push({ file, category });
+  }
+  return { required: hits.length > 0, hits };
+}
 
 const DOCS_DIRS = ['docs/research', 'docs/product'];
 // Matches a backtick-quoted path like `engine/research/auto_scan.py`,
@@ -64,16 +92,24 @@ function checkDocsImpact({ changedFiles, repoRoot }) {
       }
     }
   }
+  const likely = docsLikelyRequired(changedFiles);
   return {
     role: 'docs',
-    advisory: true, // never blocks a merge - see file header
+    advisory: true, // this report's flags/reference-check never block a merge - see file header
     docs_impacted: flags.length > 0,
     flags,
+    // Unlike `docs_impacted` above, `docs_required` DOES feed the real
+    // pipeline: agent.js's auto-gates passes it as reviewerGate()'s
+    // docsImpact argument, which can flip docs_required to true even for a
+    // non-docs-classified run. This is the one part of this report that is
+    // NOT merely advisory.
+    docs_required: likely.required,
+    docs_required_reasons: likely.hits,
     completed_at: new Date().toISOString(),
   };
 }
 
-module.exports = { checkDocsImpact, extractReferences, listDocFiles };
+module.exports = { checkDocsImpact, extractReferences, listDocFiles, docsLikelyRequired, DOCS_LIKELY_CATEGORIES };
 
 if (require.main === module) {
   // Usage: node docs-evidence.js <changed-files.json> [repoRoot]
