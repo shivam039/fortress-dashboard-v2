@@ -18,21 +18,25 @@ from utils.db import (
     update_scan_status,
 )
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN", "8586585011:AAHFal_zfoGEtjol86GMI49OKCSlCgvclMA"
-)
+# SECURITY: never hardcode a token here, even as a "default" fallback - a
+# hardcoded value is committed to git history and public the moment the
+# repo is public, regardless of whether the env var is normally set. A
+# previously-committed token here was reported exposed and must be treated
+# as compromised/rotated; see .agent-room/decisions.md for the incident
+# writeup. TELEGRAM_BOT_TOKEN is required via env var only, with no
+# fallback - send_telegram_message() below already skips cleanly when
+# unset.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# Read subscriber list: env var > subscribers file > default
-_DEFAULT_CHAT_ID = "677141544,-1003933571318"
+# Read subscriber list: env var > subscribers file > unset (skip sending)
 _SUBS_FILE = os.path.join(os.path.dirname(__file__), "telegram_subscribers.txt")
 if os.environ.get("TELEGRAM_CHAT_ID"):
     TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 elif os.path.exists(_SUBS_FILE):
     with open(_SUBS_FILE, "r") as _f:
-        _file_ids = _f.read().strip()
-    TELEGRAM_CHAT_ID = _file_ids if _file_ids else _DEFAULT_CHAT_ID
+        TELEGRAM_CHAT_ID = _f.read().strip() or None
 else:
-    TELEGRAM_CHAT_ID = _DEFAULT_CHAT_ID
+    TELEGRAM_CHAT_ID = None
 
 
 def _clear_stock_market_cache():
