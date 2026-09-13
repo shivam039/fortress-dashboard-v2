@@ -19,6 +19,17 @@ const { reviewerGate, prGate, createManifest, MANIFEST_FIELDS } = require('./uni
 const BASE_MANIFEST = { docs_required: false, repair_count: 0, scope_status: 'PASS',
   tests: { status: 'PASS' }, eval_status: 'EVAL_PASS', eval_hard_failures: [], human_gate_status: 'VALID' };
 
+// FORTRESS "LUNA MISSES CLOSEOUT" Epic 7: docsImpact is what
+// agent.js's autoGatesCommand now populates from docs-evidence.js's
+// docsLikelyRequired() - proving it actually flips docs_required even
+// when the run's own classification said docs were not required.
+test('reviewerGate: docsImpact=true escalates docs_required even when the manifest said false', () => {
+  const result = reviewerGate(BASE_MANIFEST, { verdict: 'MERGEABLE' }, true);
+  assert.equal(result.docs_required, true);
+  assert.equal(result.docs_status, 'PENDING');
+  assert.equal(result.state, 'DOCS_PENDING');
+});
+
 test('reviewerGate: MERGEABLE proceeds to PR_GATE_PENDING when docs are not required', () => {
   const result = reviewerGate(BASE_MANIFEST, { verdict: 'MERGEABLE' });
   assert.equal(result.state, 'PR_GATE_PENDING');

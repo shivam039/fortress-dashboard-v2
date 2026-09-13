@@ -180,7 +180,16 @@ jobs:
             ")
             gh issue comment "$ISSUE_NUMBER" --body "$BODY" || true
           fi
-          node scripts/agent/agent.js auto-gates "$RID" eval-report.json "$TEST_REPORT" "$REVIEW_REPORT"
+          # docs-report.json is always generated above (with a safe
+          # zero-impact fallback on failure) and always passed here.
+          # auto-gates only reads it when docs turn out to be required -
+          # FORTRESS "LUNA MISSES CLOSEOUT" Epic 7 made that no longer
+          # solely a function of which specialist was selected: it now
+          # also escalates from the real changed-file categories (see
+          # docs-evidence.js's docsLikelyRequired()), so a docs-report.json
+          # must be available whenever that escalation fires, not only for
+          # docs-classified runs.
+          node scripts/agent/agent.js auto-gates "$RID" eval-report.json "$TEST_REPORT" "$REVIEW_REPORT" docs-report.json
 
       - name: Create or update pull request and stop at human merge
         if: env.PIPELINE_ACTION == 'resume' || steps.plan.outputs.provider_mode == 'AUTOMATED'

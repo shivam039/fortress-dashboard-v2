@@ -21,8 +21,52 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const { checkDocsImpact, extractReferences } = require('./docs-evidence');
+const { checkDocsImpact, extractReferences, docsLikelyRequired } = require('./docs-evidence');
 const { REPO_ROOT } = require('./lib');
+
+// ── FORTRESS "LUNA MISSES CLOSEOUT" Epic 7 ───────────────────────────────
+// docs_required in the real pipeline used to be fixed at classification
+// time (selectedAgent === 'docs' only) - a backend/infra/agent-framework
+// change could reach PR with docs_status NOT_REQUIRED no matter what it
+// touched. docsLikelyRequired() is what closes that (wired into agent.js's
+// autoGatesCommand as reviewerGate()'s docsImpact argument).
+
+test('docsLikelyRequired: a new/changed API route requires docs', () => {
+  const result = docsLikelyRequired(['engine/routers/paper_trading.py']);
+  assert.equal(result.required, true);
+  assert.equal(result.hits[0].category, 'api_contract');
+});
+
+test('docsLikelyRequired: a security/auth change requires docs', () => {
+  const result = docsLikelyRequired(['engine/auth_utils.py']);
+  assert.equal(result.required, true);
+  assert.equal(result.hits[0].category, 'security_auth');
+});
+
+test('docsLikelyRequired: an agent-framework/workflow change requires docs', () => {
+  const result = docsLikelyRequired(['.github/workflows/agent-pipeline.yml']);
+  assert.equal(result.required, true);
+  assert.equal(result.hits[0].category, 'agent_framework');
+});
+
+test('docsLikelyRequired: a pure backend-logic refactor does not require docs', () => {
+  const result = docsLikelyRequired(['engine/stock_scanner/logic.py']);
+  assert.equal(result.required, false);
+  assert.deepEqual(result.hits, []);
+});
+
+test('docsLikelyRequired: a test-only or docs-only change does not require docs', () => {
+  assert.equal(docsLikelyRequired(['tests/backend/test_options_provider.py']).required, false);
+  assert.equal(docsLikelyRequired(['docs/agents/AGENT_STATUS.md']).required, false);
+});
+
+test('checkDocsImpact reports docs_required alongside the advisory docs_impacted flag', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-evidence-epic7-'));
+  const result = checkDocsImpact({ changedFiles: ['engine/routers/paper_trading.py'], repoRoot: dir });
+  assert.equal(result.docs_required, true);
+  assert.equal(result.docs_required_reasons[0].category, 'api_contract');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 test('extractReferences finds a backtick-quoted file path', () => {
   const refs = extractReferences('See `engine/utils/db.py` for details.');
