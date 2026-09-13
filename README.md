@@ -166,7 +166,7 @@ source .env.local
 | `DATABASE_URL` | Neon only | — | Neon PostgreSQL connection string |
 | `FORTRESS_APP_USERNAME` | No | `admin` | Login username |
 | `FORTRESS_APP_PASSWORD` | **Yes (prod)** | choose a unique value | Login password; production refuses unset/default credentials |
-| `FORTRESS_API_KEY` | No | — | API key for protected endpoints |
+| `FORTRESS_API_KEY` | **Yes (prod)** | — | API key for protected/machine-only endpoints; production refuses unset/placeholder values |
 | `FORTRESS_CORS_ORIGINS` | No | — | Allowed CORS origins |
 
 ### Backend — Market Data (INDstocks)
