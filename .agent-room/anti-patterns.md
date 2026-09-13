@@ -21,6 +21,12 @@ Append a new entry every time:
 
 <!-- Entries go below this line, newest first. -->
 
+### 2026-09-13 — "6 agent roles are NOT WIRED" was verified against the wrong mechanism
+
+**What happened:** `docs/agents/AGENT_STATUS.md` (written earlier the same day) claimed Backend/Frontend/QA/Performance/Infra/Research were "NOT WIRED (intentional)", with evidence `grep -rn "orchestrate-task" .github/workflows/` returning no matches. Re-auditing for the LUNA MISSES CLOSEOUT program (Epic 2), running the REAL dispatch path directly (`node scripts/agent/agent.js issue-plan <issue.json>` with real trigger words for each role) showed Backend, Frontend, Performance, and Infra all classify and reach `WAITING_FOR_PROVIDER_RESULT` exactly like Docs already did — they were wired the whole time.
+**Root cause:** The verification grepped for `orchestrate-task.js`, a genuinely-never-invoked *separate* CLI (`task.yaml`-driven local `plan`/`apply`), and concluded "not wired" from its absence — without checking whether the mechanism `agent-pipeline.yml` **actually uses** (`agent.js issue-plan` → `github-pipeline.js`'s `classifyRole()`) has role-specific gating. It does not: `classifyRole()` maps issue text to any of 7 roles through identical generic logic, with zero special-casing for `docs`. A grep for the wrong file's name produced a confident, specific-sounding, and wrong answer.
+**Avoid:** When verifying "is X wired," trace the actual call chain a real trigger (a label, a schedule, a webhook) takes — do not grep for the name of a plausible-looking, similarly-purposed file and treat its absence as proof. When two files could plausibly be "the dispatcher" (here, `orchestrate-task.js` and `github-pipeline.js` both drive an agent lifecycle), read the actual workflow YAML's `run:` commands to see which one it really calls, then verify that one's behavior directly with a real invocation and real output — not a keyword search.
+
 ### 2026-09-13 — Options snapshot persistence crashed on every real chain fetch (Pydantic `.dict()` leaves `datetime` live)
 
 **What happened:** Post-merge review of the new "OPTIONS-MEGA-FINAL" subsystem found `persist_options_snapshot()` (`engine/utils/db.py`) would raise `TypeError: Object of type datetime is not JSON serializable` on any options-chain fetch that returned real contracts. `engine/main.py` calls it unconditionally after every successful fetch (`payload["snapshot_id"] = persist_options_snapshot(payload)`), so this wasn't a rare edge case — it was on the hot path for the entire new feature.
