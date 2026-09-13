@@ -24,6 +24,9 @@ export default function OptionsPage() {
   const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
   const [snapshots, setSnapshots] = useState<OptionsSnapshotSummary[]>([]);
   const [comparison, setComparison] = useState<OptionsSnapshotComparison | null>(null);
+  type LabLeg = { option_type: 'CE' | 'PE'; strike: number; premium: number; quantity: number; side: 'BUY' | 'SELL' };
+  const [labLegs, setLabLegs] = useState<LabLeg[]>([]);
+  const [labRange, setLabRange] = useState(40);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
@@ -38,15 +41,37 @@ export default function OptionsPage() {
   const visibleChain = chain.filter((row) => { const strike = numeric(row, 'Strike'); return strike !== null && visibleStrikes.includes(strike); });
   const largest = (key: string) => analytics[key] as { strike?: number; oi?: number } | null;
   const riskMetric = (value: unknown) => value === null ? 'UNBOUNDED / NOT FINITE' : typeof value === 'number' ? value.toFixed(2) : 'Unavailable';
-  const explorePayoff = async () => {
+  const runStrategy = async (legs = labLegs) => {
     if (atmStrike == null) return;
-    const premium = 10;
-    const prices = Array.from({ length: 9 }, (_, index) => Math.max(1, atmStrike - 4 * premium + index * premium));
+    if (legs.length === 0) return;
+    const step = Math.max(1, Math.round(atmStrike * 0.05));
+    const prices = Array.from({ length: 17 }, (_, index) => Math.max(1, atmStrike - labRange + index * Math.ceil((labRange * 2) / 16 / step) * step));
     try {
-      setPayoffResult(await optionsApi.payoff([{ option_type: 'CE', strike: atmStrike, premium }], prices));
+      setPayoffResult(await optionsApi.payoff(legs, prices));
     } catch (err: unknown) {
       error((err as Error).message);
     }
+  };
+
+  const loadPreset = (preset: 'call' | 'put' | 'straddle' | 'spread') => {
+    if (atmStrike == null) return;
+    const premium = 10;
+    const width = Math.max(1, Math.round(atmStrike * 0.05));
+    const presets: Record<string, LabLeg[]> = {
+      call: [{ option_type: 'CE', strike: atmStrike, premium, quantity: 1, side: 'BUY' }],
+      put: [{ option_type: 'PE', strike: atmStrike, premium, quantity: 1, side: 'BUY' }],
+      straddle: [
+        { option_type: 'CE', strike: atmStrike, premium, quantity: 1, side: 'BUY' },
+        { option_type: 'PE', strike: atmStrike, premium, quantity: 1, side: 'BUY' },
+      ],
+      spread: [
+        { option_type: 'CE', strike: atmStrike, premium, quantity: 1, side: 'BUY' },
+        { option_type: 'CE', strike: atmStrike + width, premium: premium / 2, quantity: 1, side: 'SELL' },
+      ],
+    };
+    const next = presets[preset];
+    setLabLegs(next);
+    void runStrategy(next);
   };
 
   useEffect(() => {
@@ -208,8 +233,26 @@ export default function OptionsPage() {
 
       <div className="section">
         <h3 className="section-title">Strategy Lab</h3>
-        <p className="page-subtitle">Read-only expiry payoff exploration using the canonical ATM strike. This does not place orders.</p>
-        <button className="btn btn-secondary" onClick={explorePayoff} disabled={atmStrike == null}>Explore ATM call payoff</button>
+        <p className="page-subtitle">Read-only, expiry-only multi-leg analysis. Premiums and legs are explicit; this never places orders or predicts probability.</p>
+        <div className="grid-4" style={{ marginBottom: '12px' }}>
+          <button className="btn btn-secondary" onClick={() => loadPreset('call')} disabled={atmStrike == null}>Long call</button>
+          <button className="btn btn-secondary" onClick={() => loadPreset('put')} disabled={atmStrike == null}>Long put</button>
+          <button className="btn btn-secondary" onClick={() => loadPreset('straddle')} disabled={atmStrike == null}>Long straddle</button>
+          <button className="btn btn-secondary" onClick={() => loadPreset('spread')} disabled={atmStrike == null}>Call spread</button>
+        </div>
+        {labLegs.map((leg, index) => (
+          <div className="grid-4" key={`${index}-${leg.option_type}`} style={{ marginBottom: '8px' }}>
+            <select className="input" value={leg.side} onChange={(e) => setLabLegs((items) => items.map((item, i) => i === index ? { ...item, side: e.target.value as LabLeg['side'] } : item))}><option>BUY</option><option>SELL</option></select>
+            <select className="input" value={leg.option_type} onChange={(e) => setLabLegs((items) => items.map((item, i) => i === index ? { ...item, option_type: e.target.value as LabLeg['option_type'] } : item))}><option>CE</option><option>PE</option></select>
+            <input className="input" type="number" aria-label={`Strike ${index + 1}`} value={leg.strike} onChange={(e) => setLabLegs((items) => items.map((item, i) => i === index ? { ...item, strike: Number(e.target.value) } : item))} />
+            <input className="input" type="number" aria-label={`Premium ${index + 1}`} value={leg.premium} onChange={(e) => setLabLegs((items) => items.map((item, i) => i === index ? { ...item, premium: Number(e.target.value) } : item))} />
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'end' }}>
+          <button className="btn btn-secondary" onClick={() => setLabLegs((items) => [...items, { option_type: 'CE', strike: atmStrike ?? 0, premium: 10, quantity: 1, side: 'BUY' }])} disabled={atmStrike == null}>Add leg</button>
+          <label className="input-group"><span className="metric-label">Range around ATM</span><input className="input" type="number" value={labRange} min={1} onChange={(e) => setLabRange(Number(e.target.value))} /></label>
+          <button className="btn btn-primary" onClick={() => void runStrategy()} disabled={labLegs.length === 0 || atmStrike == null}>Calculate payoff</button>
+        </div>
         {payoffResult && <DataTable data={payoffResult.prices.map((price, index) => ({ Underlying: price, 'Expiry P/L': payoffResult.payoff[index] }))} columns={['Underlying', 'Expiry P/L']} emptyMessage="No payoff data." />}
         {payoffResult && <p className="page-subtitle">Breakevens: {JSON.stringify(payoffResult.summary.breakevens ?? [])} · Theoretical max loss: {riskMetric(payoffResult.summary.max_loss)} · Theoretical max profit: {riskMetric(payoffResult.summary.max_profit)}</p>}
       </div>
