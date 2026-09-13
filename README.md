@@ -129,7 +129,7 @@ export INDSTOCKS_MPIN=<your_mpin>
 export INDSTOCKS_TOTP_SECRET=<base32_setup_key>
 
 # Optional auth
-export FORTRESS_APP_PASSWORD=fortress123
+Set `FORTRESS_APP_PASSWORD` to a unique value through your local environment or secret manager; never copy a default credential into production.
 
 uvicorn engine.main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -154,7 +154,7 @@ source .env.local
 ## Default Login
 
 - Username: `admin`
-- Password: `fortress123`
+- Password: the value of `FORTRESS_APP_PASSWORD` (the insecure development default is not permitted in production)
 
 ## Environment Variables
 
@@ -165,7 +165,7 @@ source .env.local
 | `FORTRESS_DB_BACKEND` | No | `neon` | `sqlite` or `neon` |
 | `DATABASE_URL` | Neon only | — | Neon PostgreSQL connection string |
 | `FORTRESS_APP_USERNAME` | No | `admin` | Login username |
-| `FORTRESS_APP_PASSWORD` | **Yes (prod)** | `fortress123` | Login password |
+| `FORTRESS_APP_PASSWORD` | **Yes (prod)** | choose a unique value | Login password; production refuses unset/default credentials |
 | `FORTRESS_API_KEY` | No | — | API key for protected endpoints |
 | `FORTRESS_CORS_ORIGINS` | No | — | Allowed CORS origins |
 

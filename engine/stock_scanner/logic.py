@@ -1609,8 +1609,25 @@ def check_institutional_fortress(
         return None
 
 
+def _anchored_forward_return(series, scan_timestamp, days):
+    """Return the forward percentage change from scan date to ``days`` later."""
+    if series.empty:
+        return np.nan
+    start = series.index.searchsorted(pd.Timestamp(scan_timestamp), side="left")
+    end = start + days
+    if start >= len(series) or end >= len(series):
+        return np.nan
+    return (float(series.iloc[end]) / float(series.iloc[start]) - 1) * 100
+
+
 def backtest_top_picks(scan_timestamp):
-    """Backtest top picks from a scan timestamp against Nifty benchmark forward returns."""
+    """Measure forward returns anchored at the scan timestamp.
+
+    This UI-facing compatibility wrapper remains the single path used by the
+    Streamlit history views.  It deliberately uses the scan-date candle as the
+    baseline and the candle ``days`` observations later; it never uses the
+    latest available candle as an implicit entry point.
+    """
     try:
         from utils.db import get_connection
 
@@ -1638,21 +1655,11 @@ def backtest_top_picks(scan_timestamp):
             data = _download_close_series(symbol, period="2y")
             if data.empty:
                 continue
-            latest = float(data.iloc[-1])
             stock_returns = {}
             nifty_returns = {}
             for days in horizon_days:
-                if len(data) > days and len(benchmark) > days:
-                    stock_returns[f"Stock_{days}D_%"] = (
-                        (latest / float(data.iloc[-(days + 1)])) - 1
-                    ) * 100
-                    nifty_returns[f"Nifty_{days}D_%"] = (
-                        (float(benchmark.iloc[-1]) / float(benchmark.iloc[-(days + 1)]))
-                        - 1
-                    ) * 100
-                else:
-                    stock_returns[f"Stock_{days}D_%"] = np.nan
-                    nifty_returns[f"Nifty_{days}D_%"] = np.nan
+                stock_returns[f"Stock_{days}D_%"] = _anchored_forward_return(data, scan_timestamp, days)
+                nifty_returns[f"Nifty_{days}D_%"] = _anchored_forward_return(benchmark, scan_timestamp, days)
             out_rows.append({"Symbol": symbol, **stock_returns, **nifty_returns})
 
         detail_df = pd.DataFrame(out_rows)
