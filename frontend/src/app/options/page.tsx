@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import DataTable from '@/components/DataTable';
-import { optionsApi, OptionsSnapshotSummary } from '@/lib/api';
+import { optionsApi, OptionsSnapshotComparison, OptionsSnapshotSummary } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 
 export default function OptionsPage() {
@@ -23,6 +23,7 @@ export default function OptionsPage() {
   const [analytics, setAnalytics] = useState<Record<string, unknown>>({});
   const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
   const [snapshots, setSnapshots] = useState<OptionsSnapshotSummary[]>([]);
+  const [comparison, setComparison] = useState<OptionsSnapshotComparison | null>(null);
 
   const numeric = (row: Record<string, unknown>, key: string): number | null => {
     const value = row[key];
@@ -73,6 +74,7 @@ export default function OptionsPage() {
       setLastUpdated(data.received_at || null);
       setAnalytics(data.analytics || {});
       optionsApi.history(symbol, expiry).then(setSnapshots).catch(() => setSnapshots([]));
+      optionsApi.compareHistory(symbol, expiry).then(setComparison).catch(() => setComparison(null));
     } catch (err: unknown) {
       error((err as Error).message);
     } finally {
@@ -190,6 +192,11 @@ export default function OptionsPage() {
       <div className="section">
         <h3 className="section-title">What Changed?</h3>
         <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
+        <p className="page-subtitle">
+          {comparison?.status === 'COMPARABLE'
+            ? `Compared with the previous snapshot: spot ${comparison.changes.spot?.changed ? 'changed' : 'unchanged'}, provider ${comparison.changes.provider?.changed ? 'changed' : 'unchanged'}.`
+            : 'What Changed? is unavailable until two successful snapshots exist.'}
+        </p>
         <DataTable
           data={snapshots.map((snapshot) => ({ ...snapshot }))}
           columns={['captured_at', 'provider', 'spot', 'freshness', 'snapshot_id']}
