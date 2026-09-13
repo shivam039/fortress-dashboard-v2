@@ -20,7 +20,7 @@ const lib = require('./lib');
 const lifecycle = require('./lifecycle');
 const { slugify, sanitizeTaskId, buildBranchName, isSafeRepoPath } = require('./sanitize');
 const { checkScope, matchesAny } = require('./scope-check');
-const { resolveExecutionMode, providerStatus } = require('./providers');
+const { resolveExecutionMode, providerStatus, executeAgent } = require('./providers');
 const { writeRunRecord, RECORD_FIELDS } = require('./run-record');
 const { buildPrompt, loadTask } = require('./build-agent-prompt');
 const { selectAgent } = require('./select-agent');
@@ -86,6 +86,51 @@ test('resolveExecutionMode: unavailable provider blocks only when AUTOMATED is r
   const configDefault = {};
   const manual = resolveExecutionMode('codex', configDefault);
   assert.equal(manual.mode, 'MANUAL_EXPORT');
+});
+
+// FORTRESS "LUNA MISSES CLOSEOUT" Epic 5 (Provider Truth): the SUPPORTED
+// path (a real credential present) had no test before this - only the
+// permanently-UNAVAILABLE codex path was covered. Do not claim "Claude
+// supported" from config alone; this proves the actual resolved mode when
+// a credential really is present.
+test('resolveExecutionMode: a real credential resolves AUTOMATED only when explicitly configured', () => {
+  const original = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+  try {
+    assert.equal(providerStatus('anthropic'), 'SUPPORTED');
+    const automated = resolveExecutionMode('anthropic', { providers: { anthropic: { mode: 'AUTOMATED' } } });
+    assert.equal(automated.mode, 'AUTOMATED');
+    // Presence of a credential alone (no explicit AUTOMATED mode) still
+    // defaults to the always-safe manual path - a key being set is not
+    // itself authorization to run unattended.
+    const manual = resolveExecutionMode('anthropic', {});
+    assert.equal(manual.mode, 'MANUAL_EXPORT');
+  } finally {
+    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = original;
+  }
+});
+
+// The single most important provider-truth invariant: even a fully
+// "AUTOMATED"-resolved provider must never actually be called. Config
+// accepting `provider: anthropic` + `mode: AUTOMATED` is not evidence any
+// inference happens - only executeAgent()'s own `executed` flag is.
+test('executeAgent never actually executes, even when AUTOMATED and SUPPORTED', () => {
+  const original = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+  try {
+    const result = executeAgent({
+      provider: 'anthropic', model: 'default', prompt: 'do something',
+      inputBudget: 100, outputBudget: 100,
+      config: { providers: { anthropic: { mode: 'AUTOMATED' } } },
+    });
+    assert.equal(result.mode, 'AUTOMATED');
+    assert.equal(result.status, 'SUPPORTED');
+    assert.equal(result.executed, false);
+  } finally {
+    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = original;
+  }
 });
 
 // 8. invalid budget blocks before execution / 9. budget ceiling enforced
