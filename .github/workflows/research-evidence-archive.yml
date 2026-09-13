@@ -1,0 +1,47 @@
+name: Archive prospective real-data evidence (FORTRESS-R1)
+
+# E3 is the sole production scan scheduler. This job runs after E3 and only
+# reads the append-only prospective store; it never triggers another scan.
+# The downloaded SQLite export is an artifact for provenance and later R2/R4
+# analysis. It is not evidence until its metadata reports real production data.
+
+on:
+  schedule:
+    - cron: '30 16 * * 1-5' # 22:00 IST, after E3's 21:15 IST schedule
+  workflow_dispatch:
+
+concurrency:
+  group: fortress-research-evidence-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read status and archive the prospective R1 export
+        env:
+          BACKEND_URL: ${{ secrets.FORTRESS_BACKEND_URL }}
+          API_KEY: ${{ secrets.FORTRESS_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BACKEND_URL" ] || [ -z "$API_KEY" ]; then
+            echo "FORTRESS_BACKEND_URL and FORTRESS_API_KEY must be configured"
+            exit 1
+          fi
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+            -H "X-API-Key: $API_KEY" "$BACKEND_URL/api/research/prospective/status" \
+            | tee status.json
+          count=$(jq -r '.total_observations // 0' status.json)
+          echo "Prospective observations accumulated: $count"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 180 \
+            -H "X-API-Key: $API_KEY" \
+            -o fortress-r1-prospective.sqlite \
+            "$BACKEND_URL/api/research/prospective/export"
+      - name: Upload immutable run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fortress-r1-prospective-${{ github.run_id }}
+          path: |
+            status.json
+            fortress-r1-prospective.sqlite
+          retention-days: 90
