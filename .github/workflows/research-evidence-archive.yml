@@ -45,3 +45,6 @@ jobs:
             status.json
             fortress-r1-prospective.sqlite
           retention-days: 90
+      - name: Report failure
+        if: failure()
+        run: echo "::error::EVIDENCE ARCHIVE FAILED — see logs above"
