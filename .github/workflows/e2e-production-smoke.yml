@@ -1,0 +1,84 @@
+name: Production-Safe Smoke
+
+# LUNA MISSES CLOSEOUT Epic 13 (QA1 Functional Safety Net): PRODUCTION_SAFE_SMOKE
+# tier. Runs frontend/e2e/smoke-production.spec.ts (the `deployed-smoke`
+# Playwright project) against the REAL deployed frontend, using
+# PLAYWRIGHT_BASE_URL/PLAYWRIGHT_USERNAME/PLAYWRIGHT_PASSWORD. That spec
+# already enforces its own safety guard — it aborts any non-GET/HEAD API
+# call other than login/logout, so this can never mutate production state
+# no matter what the app does — this workflow only adds the missing
+# "actually run it somewhere" piece; see docs/agents/WORKFLOW_PROOF.md for
+# the CONFIGURED-but-never-invoked gap this closes.
+#
+# Required repo secrets (not yet configured as of this workflow's addition
+# — see the note below):
+#   PLAYWRIGHT_BASE_URL  — the deployed production frontend URL
+#   PLAYWRIGHT_USERNAME  — a real login for a read-only-safe test account
+#   PLAYWRIGHT_PASSWORD  — that account's password
+#
+# Until those three secrets are set, this workflow intentionally exits 0
+# without running Playwright at all (matching the existing skip-cleanly
+# pattern used by auto-scan-eod.yml/bhavcopy-refresh.yml for
+# FORTRESS_BACKEND_URL) rather than failing CI or a schedule run for a
+# precondition nobody has configured yet. This is a deliberately honest
+# CONFIGURED_NOT_YET_OBSERVED state, not a fabricated pass — provisioning
+# a real test account against production is a human decision (who the
+# account is, what data it can see) this closeout does not make on its
+# own authority.
+
+on:
+  schedule:
+    # 22:00 UTC = 03:30 IST daily — after the nightly functional run above,
+    # so a broken production deploy and a broken PR-gate suite are never
+    # confused with each other in the same run.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fortress-e2e-production-smoke
+  cancel-in-progress: true
+
+jobs:
+  production-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required secrets
+        id: guard
+        run: |
+          if [ -z "${{ secrets.PLAYWRIGHT_BASE_URL }}" ] || [ -z "${{ secrets.PLAYWRIGHT_USERNAME }}" ] || [ -z "${{ secrets.PLAYWRIGHT_PASSWORD }}" ]; then
+            echo "PLAYWRIGHT_BASE_URL/PLAYWRIGHT_USERNAME/PLAYWRIGHT_PASSWORD are not all set — skipping (nothing to run against)."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.configured == 'true'
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        if: steps.guard.outputs.configured == 'true'
+        run: npm ci
+      - name: Install Chromium
+        if: steps.guard.outputs.configured == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Run production-safe smoke
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+          PLAYWRIGHT_USERNAME: ${{ secrets.PLAYWRIGHT_USERNAME }}
+          PLAYWRIGHT_PASSWORD: ${{ secrets.PLAYWRIGHT_PASSWORD }}
+        run: npm run test:e2e:smoke
+      - name: Upload Playwright report
+        if: failure() && steps.guard.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-production-smoke
+          path: |
+            frontend/playwright-report
+            frontend/test-results
