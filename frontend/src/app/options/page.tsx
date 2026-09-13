@@ -37,6 +37,7 @@ export default function OptionsPage() {
     : strikes.slice(Math.max(0, atmIndex - 5), atmIndex + 6);
   const visibleChain = chain.filter((row) => { const strike = numeric(row, 'Strike'); return strike !== null && visibleStrikes.includes(strike); });
   const largest = (key: string) => analytics[key] as { strike?: number; oi?: number } | null;
+  const riskMetric = (value: unknown) => value === null ? 'UNBOUNDED / NOT FINITE' : typeof value === 'number' ? value.toFixed(2) : 'Unavailable';
   const explorePayoff = async () => {
     if (atmStrike == null) return;
     const premium = 10;
@@ -210,7 +211,7 @@ export default function OptionsPage() {
         <p className="page-subtitle">Read-only expiry payoff exploration using the canonical ATM strike. This does not place orders.</p>
         <button className="btn btn-secondary" onClick={explorePayoff} disabled={atmStrike == null}>Explore ATM call payoff</button>
         {payoffResult && <DataTable data={payoffResult.prices.map((price, index) => ({ Underlying: price, 'Expiry P/L': payoffResult.payoff[index] }))} columns={['Underlying', 'Expiry P/L']} emptyMessage="No payoff data." />}
-        {payoffResult && <p className="page-subtitle">Breakevens: {JSON.stringify(payoffResult.summary.breakevens ?? [])} · Max loss: {String(payoffResult.summary.max_loss ?? 'Unavailable')} · Max profit: {String(payoffResult.summary.max_profit ?? 'Unavailable')}</p>}
+        {payoffResult && <p className="page-subtitle">Breakevens: {JSON.stringify(payoffResult.summary.breakevens ?? [])} · Theoretical max loss: {riskMetric(payoffResult.summary.max_loss)} · Theoretical max profit: {riskMetric(payoffResult.summary.max_profit)}</p>}
       </div>
 
       <div className="section">
