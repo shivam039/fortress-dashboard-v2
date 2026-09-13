@@ -164,3 +164,25 @@ test('workflow creates PRs but contains no merge or production apply path', () =
   assert.doesNotMatch(workflow, /gh pr merge|enablePullRequestAutoMerge|terraform apply|kubectl apply/);
   assert.doesNotMatch(workflow, /write-all/);
 });
+
+test('LUNA MISSES CLOSEOUT Epic 17/18 real-canary fix: blocked-classification sync survives the plan step exiting non-zero', () => {
+  // Real bug found via an actual triggered run (issue #90), not a unit
+  // test: agent.js's CLI exits 1 for any BLOCKED_* state by design, but
+  // the "Coordinator classification" step ran under `bash -e`, so that
+  // exit aborted the script before steps.plan.outputs.state was ever set
+  // - meaning "Synchronize blocked classification" (which posts the
+  // agent:blocked label + explanatory comment) could never fire for ANY
+  // blocked run. Assert both halves of the fix stay in place: the plan
+  // step captures $GITHUB_OUTPUT regardless of exit code, and the sync
+  // step's `if:` runs despite the plan step having failed.
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'agent-pipeline.yml'), 'utf8');
+  const planStepMatch = workflow.match(/Coordinator classification and provider resolution[\s\S]*?run: \|([\s\S]*?)\n\n {6}- name:/);
+  assert.ok(planStepMatch, 'could not locate the Coordinator classification step body');
+  const planStepBody = planStepMatch[1];
+  assert.match(planStepBody, /set \+e/, 'plan step must disable -e before the classification command so a non-zero exit does not abort before GITHUB_OUTPUT is written');
+  assert.match(planStepBody, />> "\$GITHUB_OUTPUT"/, 'plan step must still write GITHUB_OUTPUT');
+  assert.match(planStepBody, /exit \$status/, 'plan step must still propagate the original exit code so the job shows red for a blocked run');
+  const syncStepMatch = workflow.match(/- name: Synchronize blocked classification\n\s*if: ([^\n]+)/);
+  assert.ok(syncStepMatch, 'could not locate the Synchronize blocked classification step');
+  assert.match(syncStepMatch[1], /always\(\)/, 'sync step must run with always() since the plan step it depends on now legitimately fails for BLOCKED_* states');
+});

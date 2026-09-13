@@ -84,11 +84,27 @@ jobs:
         if: env.PIPELINE_ACTION == 'start'
         id: plan
         run: |
+          # LUNA MISSES CLOSEOUT Epic 17/18 real-canary finding: agent.js's
+          # CLI sets a non-zero exit code for any BLOCKED_* state (by
+          # design, so the job shows red and a human notices) - but this
+          # step runs under `bash -e`, so that non-zero exit previously
+          # aborted the script BEFORE the second line ever ran, meaning
+          # steps.plan.outputs.state was NEVER set for a blocked run. The
+          # "Synchronize blocked classification" step below (which posts
+          # the explanatory comment and agent:blocked label) could
+          # therefore never fire, for ANY blocked run, regardless of why
+          # classification was blocked - discovered via a real triggered
+          # run (issue #90), not a unit test, which is exactly why this
+          # class of bug survives unit-level coverage of agent.js alone.
+          set +e
           node scripts/agent/agent.js issue-plan issue.json > plan.json
+          status=$?
+          set -e
           node -e "const p=require('./plan.json'); for (const k of ['run_id','branch','state','provider_mode']) console.log(k+'='+p[k])" >> "$GITHUB_OUTPUT"
+          exit $status
 
       - name: Synchronize blocked classification
-        if: env.PIPELINE_ACTION == 'start' && startsWith(steps.plan.outputs.state, 'BLOCKED')
+        if: always() && env.PIPELINE_ACTION == 'start' && startsWith(steps.plan.outputs.state, 'BLOCKED')
         uses: actions/github-script@v7
         with:
           script: |
