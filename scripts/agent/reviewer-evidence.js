@@ -27,7 +27,12 @@ const path = require('path');
 const CATEGORY_RULES = [
   { category: 'tests', test: (f) => /(^|\/)tests\//.test(f) || /\.test\.(js|ts|tsx|mjs)$/.test(f) || /^frontend\/e2e\//.test(f) },
   { category: 'docs', test: (f) => /^docs\//.test(f) || /(^|\/)(README|AGENTS)\.md$/i.test(f) || /\.md$/i.test(f) },
-  { category: 'security_auth', test: (f) => /auth/i.test(f) || /security_config/i.test(f) },
+  // Widened per Epic 20's adversarial review: the original /auth/i test
+  // missed genuinely security-sensitive files with no "auth" in their
+  // name (token/session/crypto/secret handling, rate limiting) - those
+  // fell through to backend_logic, which docs-evidence.js's
+  // DOCS_LIKELY_CATEGORIES doesn't escalate.
+  { category: 'security_auth', test: (f) => /auth|token|session|crypto|secret|rate_limit/i.test(f) || /security_config/i.test(f) },
   { category: 'agent_framework', test: (f) => /^scripts\/agent/.test(f) || /^agents\//.test(f) || /^config\/agents/.test(f) || /^\.github\/workflows\/agent-/.test(f) },
   { category: 'infra_workflow', test: (f) => /^\.github\/workflows\//.test(f) || /^Dockerfile/.test(f) || /^docker-compose/.test(f) || /^Caddyfile/.test(f) || /^scripts\/deploy-/.test(f) },
   { category: 'api_contract', test: (f) => /^engine\/routers\//.test(f) },
@@ -36,22 +41,38 @@ const CATEGORY_RULES = [
   { category: 'frontend_logic', test: (f) => /^frontend\/src\//.test(f) },
 ];
 
+// LUNA MISSES CLOSEOUT Epic 20 (final adversarial review) finding: every
+// category above is scoped to a specific directory prefix
+// (backend_logic: engine/**.py, frontend_logic: frontend/src/**), so a
+// real code change living outside those trees (e.g. scripts/*.py,
+// worker/*.py, a frontend file outside src/) fell all the way through to
+// 'other' - which requires NO evidence at all. That let a genuine,
+// unreviewed logic change dodge the evidence gate entirely just by living
+// in an unanticipated directory. CODE_EXTENSIONS below catches any file
+// with a recognizable source-code extension that none of the named
+// categories claimed, classifying it 'other_code' (evidence-required)
+// instead of silently falling into the free-pass 'other' bucket. Only
+// genuinely non-code files (configs, images, lockfiles, etc.) still land
+// in 'other'.
+const CODE_EXTENSIONS = /\.(py|js|jsx|ts|tsx|mjs|cjs|go|rs|java|rb|sh|bash)$/i;
+
 function classifyFile(file) {
   for (const rule of CATEGORY_RULES) if (rule.test(file)) return rule.category;
-  return 'other';
+  return CODE_EXTENSIONS.test(file) ? 'other_code' : 'other';
 }
 
 // A category here requires at least one changed file that looks like
 // relevant evidence for it. 'tests', 'docs', and 'other' are absent from
 // this map on purpose - they never require evidence (a docs-only or
-// test-only PR, or an unclassified file like package.json, is not held
-// to a test-evidence bar it can't sensibly clear).
+// test-only PR, or an unclassified non-code file like package.json, is
+// not held to a test-evidence bar it can't sensibly clear).
 const EVIDENCE_REQUIREMENTS = {
+  other_code: { label: 'test evidence for an unclassified code change', test: (files) => files.some((f) => /^tests\//.test(f) || /^frontend\/(e2e|tests)\//.test(f) || /\.test\.(js|ts|tsx|mjs|py)$/.test(f)) },
   backend_logic: { label: 'backend test evidence', test: (files) => files.some((f) => /^tests\/backend\//.test(f) || /^tests\/[^/]*\.py$/.test(f)) },
   db_persistence: { label: 'backend test evidence', test: (files) => files.some((f) => /^tests\/backend\//.test(f)) },
   api_contract: { label: 'backend contract test or frontend integration evidence', test: (files) => files.some((f) => /^tests\/backend\//.test(f) || /^frontend\/e2e\//.test(f) || /^frontend\/tests\//.test(f)) },
   frontend_logic: { label: 'frontend unit/E2E evidence', test: (files) => files.some((f) => /^frontend\/tests\//.test(f) || /^frontend\/e2e\//.test(f) || /\.test\.(ts|tsx|js|jsx)$/.test(f)) },
-  security_auth: { label: 'focused security/auth test evidence', test: (files) => files.some((f) => /^tests\//.test(f) && (/auth/i.test(f) || /security/i.test(f))) },
+  security_auth: { label: 'focused security/auth test evidence', test: (files) => files.some((f) => /^tests\//.test(f) && (/auth|token|session|crypto|secret|rate_limit/i.test(f) || /security/i.test(f))) },
   infra_workflow: { label: 'workflow validation/static test evidence', test: (files) => files.some((f) => /^tests\/backend\/test_.*workflow.*\.py$/i.test(f)) },
   agent_framework: { label: 'agent framework test evidence', test: (files) => files.some((f) => /^scripts\/agent.*\.test\.js$/.test(f) || /^tests\/agent(-eval)?\//.test(f)) },
 };
