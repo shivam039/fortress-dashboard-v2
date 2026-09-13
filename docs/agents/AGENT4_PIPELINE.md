@@ -82,14 +82,23 @@ gate.
 `scripts/agent/reviewer-evidence.js` classifies every file in
 `manifest.changed_files` into one category (`backend_logic`,
 `frontend_logic`, `api_contract`, `db_persistence`, `security_auth`,
-`infra_workflow`, `agent_framework`, `tests`, `docs`, or `other`) by path
-pattern — a deterministic check, not diff-content/semantic analysis. `docs`,
-`tests`, and `other` never require additional evidence. Every other category
-requires at least one changed file that looks like matching evidence (e.g.
-`backend_logic` requires a `tests/backend/*` file in the same
-`changed_files` list; `frontend_logic` requires `frontend/tests/*`,
-`frontend/e2e/*`, or a `*.test.{ts,tsx,js,jsx}` file; `security_auth`
-requires a `tests/*` file whose path also mentions `auth`/`security`).
+`infra_workflow`, `agent_framework`, `tests`, `docs`, `other_code`, or
+`other`) by path pattern — a deterministic check, not diff-content/semantic
+analysis. `docs`, `tests`, and `other` never require additional evidence.
+Every other category (including `other_code`) requires at least one
+changed file that looks like matching evidence (e.g. `backend_logic`
+requires a `tests/backend/*` file in the same `changed_files` list;
+`frontend_logic` requires `frontend/tests/*`, `frontend/e2e/*`, or a
+`*.test.{ts,tsx,js,jsx}` file; `security_auth` requires a `tests/*` file
+whose path also mentions `auth`/`token`/`session`/`crypto`/`secret`/
+`rate_limit`/`security`). `other_code` exists to close a real gap found in
+this closeout's own Epic 20 adversarial review: any file with a recognized
+source-code extension that no named category claimed (e.g.
+`scripts/pricing_engine.py`, living outside `engine/`) used to fall into
+the free-pass `other` bucket — a real logic change could dodge the
+evidence gate entirely just by living in an unanticipated directory.
+`other_code` requires generic test evidence instead; only genuinely
+non-code files (configs, lockfiles, images) still land in `other`.
 A category present in the diff with no matching evidence is a finding and
 the verdict is `NOT_MERGEABLE` — a green existing test suite that doesn't
 exercise the changed behavior is not treated as evidence for it. The
