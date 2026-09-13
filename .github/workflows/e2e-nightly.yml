@@ -1,0 +1,53 @@
+name: Nightly Functional E2E
+
+# LUNA MISSES CLOSEOUT Epic 13 (QA1 Functional Safety Net): NIGHTLY_FUNCTIONAL
+# tier. Runs the exact same deterministic Playwright suite ci.yml already
+# gates every PR with (frontend/e2e/*.spec.ts, chromium-ci + mobile-ci
+# projects — auth, navigation, options, paper-trading, scan-history,
+# stock-screener, failure-injection, responsive), but on a schedule against
+# a fresh build, independent of any PR being open. This exists to catch
+# regressions from things a PR-scoped run can't see: dependency drift,
+# flakiness that only shows up on a cold build, or a merge of two PRs that
+# were each individually green. It intentionally reuses the existing
+# `npm run test:e2e` script rather than inventing new nightly-only test
+# scenarios — see .agent-room/decisions.md for why.
+
+on:
+  schedule:
+    # 21:00 UTC = 02:30 IST — well after market hours and the EOD scan
+    # pipeline's own scheduled workflows, so it never competes with them
+    # for CI minutes or attention.
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fortress-e2e-nightly
+  cancel-in-progress: true
+
+jobs:
+  nightly-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run deterministic E2E (same suite as PR gate)
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-nightly
+          path: |
+            frontend/playwright-report
+            frontend/test-results
