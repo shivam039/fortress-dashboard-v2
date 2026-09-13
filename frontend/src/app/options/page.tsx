@@ -226,7 +226,7 @@ export default function OptionsPage() {
         <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
         <p className="page-subtitle">
           {comparison?.status === 'COMPARABLE'
-            ? `Compared with the previous snapshot: spot ${comparison.changes.spot?.changed ? 'changed' : 'unchanged'}, provider ${comparison.changes.provider?.changed ? 'changed' : 'unchanged'}${comparison.changes.contracts ? `, contracts added ${String((comparison.changes.contracts as unknown as Record<string, unknown>).added)}, removed ${String((comparison.changes.contracts as unknown as Record<string, unknown>).removed)}, changed ${String((comparison.changes.contracts as unknown as Record<string, unknown>).changed)}` : ''}.`
+            ? `Compared with the previous snapshot: spot ${comparison.changes.spot?.changed ? 'changed' : 'unchanged'}, provider ${comparison.changes.provider?.changed ? 'changed' : 'unchanged'}${comparison.changes.contracts ? `, contracts added ${comparison.changes.contracts.added}, removed ${comparison.changes.contracts.removed}, changed ${comparison.changes.contracts.changed}` : ''}.`
             : 'What Changed? is unavailable until two successful snapshots exist.'}
         </p>
         <DataTable

@@ -646,7 +646,15 @@ export interface OptionsSnapshotComparison {
   status: 'COMPARABLE' | 'INSUFFICIENT_HISTORY';
   latest: OptionsSnapshotSummary | null;
   previous: OptionsSnapshotSummary | null;
-  changes: Record<string, { current: unknown; previous: unknown; changed: boolean | null }>;
+  changes: Record<string, { current: unknown; previous: unknown; changed: boolean | null }> & {
+    contracts?: {
+      added: number;
+      removed: number;
+      changed: number;
+      current_count: number;
+      previous_count: number;
+    };
+  };
 }
 
 export const optionsApi = {
