@@ -74,3 +74,20 @@ def test_snapshot_comparison_is_explicit_when_history_is_insufficient(monkeypatc
         "status": "INSUFFICIENT_HISTORY", "latest": None,
         "previous": None, "changes": {},
     }
+
+
+def test_snapshot_comparison_reports_contract_changes(monkeypatch):
+    monkeypatch.setattr("utils.db.fetch_options_snapshots", lambda *args, **kwargs: [
+        {"snapshot_id": "new", "spot": 101, "provider": "yf", "freshness": "LIVE"},
+        {"snapshot_id": "old", "spot": 100, "provider": "yf", "freshness": "LIVE"},
+    ])
+    contracts = {
+        "new": {("N", "E", 100, "CE"): {"ltp": 12}, ("N", "E", 110, "CE"): {"ltp": 3}},
+        "old": {("N", "E", 100, "CE"): {"ltp": 10}, ("N", "E", 90, "PE"): {"ltp": 4}},
+    }
+    monkeypatch.setattr("utils.db._snapshot_contracts", lambda snapshot_id: contracts[snapshot_id])
+    result = compare_options_snapshots("N", "E")
+    assert result["changes"]["contracts"] == {
+        "added": 1, "removed": 1, "changed": 1,
+        "current_count": 2, "previous_count": 2,
+    }
