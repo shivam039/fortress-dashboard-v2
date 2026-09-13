@@ -75,8 +75,22 @@ function classifyIssue(rawIssue, config = {}) {
   // backtick, not whitespace. Real-world regression: issue #39's body used
   // exactly this style and the pipeline blocked with "no explicit
   // repository path" despite the path being right there.
-  const allowedFiles = [...new Set((text.match(/(?:^|[\s`])([A-Za-z0-9_.-]+\/[A-Za-z0-9_./*-]+)/g) || [])
-    .map((item) => item.trim().replace(/^`/, '')).filter((item) => !item.includes('..')))];
+  const nestedPaths = text.match(/(?:^|[\s`])([A-Za-z0-9_.-]+\/[A-Za-z0-9_./*-]+)/g) || [];
+  // A NESTED-path match requires a '/', so any root-level file (Dockerfile,
+  // README.md, docker-compose.yml, Caddyfile, ...) could never satisfy the
+  // scope gate at all - found while auditing whether infra/docs-category
+  // issues actually classify (LUNA MISSES CLOSEOUT Epic 2/3): a real issue
+  // body naming only "Dockerfile" or "README.md" blocked with the same
+  // false "no explicit repository path" error nested paths used to hit.
+  // Extension-based match covers any current or future root file without
+  // needing per-filename updates; the short bare-name list covers the
+  // handful of common extension-less ones this repo actually has.
+  const rootFilesByExt = text.match(/(?:^|[\s`])([A-Za-z][A-Za-z0-9_.-]*\.(?:md|ya?ml|json|toml|txt|cfg|ini))\b/gi) || [];
+  const rootBareNames = text.match(/(?:^|[\s`])(Dockerfile|Caddyfile|Makefile)\b/g) || [];
+  const allowedFiles = [...new Set(
+    [...nestedPaths, ...rootFilesByExt, ...rootBareNames]
+      .map((item) => item.trim().replace(/^`/, '')).filter((item) => !item.includes('..'))
+  )];
   if (!allowedFiles.length) {
     return { state: 'BLOCKED_CLASSIFICATION', reason: 'Coordinator requires at least one explicit repository path for the scope gate.' };
   }
