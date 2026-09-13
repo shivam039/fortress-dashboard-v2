@@ -23,7 +23,12 @@ def _configured_users() -> Dict[str, Dict[str, str]]:
     username = os.environ.get("FORTRESS_APP_USERNAME", "admin")
     return {
         username: {
-            "password": os.environ.get("FORTRESS_APP_PASSWORD", "fortress123"),
+            # No hardcoded fallback: a hardcoded default here previously
+            # meant the "admin login disabled when unconfigured" check
+            # below could never actually trigger, since os.environ.get()
+            # never returned empty. See .agent-room/decisions.md for the
+            # matching incident in engine/scripts/telegram_bot.py.
+            "password": os.environ.get("FORTRESS_APP_PASSWORD", ""),
             "full_name": os.environ.get("FORTRESS_APP_FULL_NAME", "Fortress Admin"),
             "email": os.environ.get("FORTRESS_APP_EMAIL", "admin@fortress.local"),
             "phone": os.environ.get("FORTRESS_APP_PHONE", "+91 99999 99999"),
@@ -44,7 +49,7 @@ def authenticate(username: str, password: str) -> bool:
     username = username.strip()
 
     if username == "admin":
-        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "fortress123")
+        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "")
         if not admin_pwd:
             st.error(
                 "⚠️ Admin login is disabled: the **FORTRESS_APP_PASSWORD** "
