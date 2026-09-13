@@ -45,6 +45,19 @@ def test_vertical_spreads_have_bounded_theoretical_risk():
         assert result["max_loss"] is not None
 
 
+def test_straddle_and_strangle_preserve_unbounded_tails():
+    long_straddle = [StrategyLeg("CE", 100, 5), StrategyLeg("PE", 100, 5)]
+    short_straddle = [StrategyLeg("CE", 100, 5, side="SELL"), StrategyLeg("PE", 100, 5, side="SELL")]
+    long_strangle = [StrategyLeg("CE", 110, 4), StrategyLeg("PE", 90, 4)]
+    short_strangle = [StrategyLeg("CE", 110, 4, side="SELL"), StrategyLeg("PE", 90, 4, side="SELL")]
+    assert summary(long_straddle, price_ceiling=220)["max_profit"] is None
+    assert summary(long_straddle, price_ceiling=220)["max_loss"] == -10.0
+    assert summary(short_straddle, price_ceiling=220)["max_profit"] == 10.0
+    assert summary(short_straddle, price_ceiling=220)["max_loss"] is None
+    assert summary(long_strangle, price_ceiling=220)["max_profit"] is None
+    assert summary(short_strangle, price_ceiling=220)["max_loss"] is None
+
+
 def test_payoff_api_is_read_only_and_returns_requested_grid():
     request = OptionsPayoffRequest(
         legs=[{"option_type": "CE", "strike": 100, "premium": 10}],
