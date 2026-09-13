@@ -51,6 +51,25 @@ test('docs scope is not made ambiguous by generic evidence language', () => {
   assert.equal(plan.selected_agent, 'docs');
 });
 
+test('real regression: issue #39 body with a backtick-fenced path classifies instead of blocking', () => {
+  // Real GitHub issue #39 body (GitHub-Flavored Markdown inline-code
+  // style: `docs/agents/AGENT4_PIPELINE.md`). Two real pipeline runs
+  // (2026-09-12, run IDs 34674828166 and 34674837803) failed with
+  // BLOCKED_CLASSIFICATION: "Coordinator requires at least one explicit
+  // repository path for the scope gate" - the path was right there, but
+  // the old allowedFiles regex only accepted a path preceded by
+  // whitespace or start-of-string, and a backtick is neither.
+  const plan = classifyIssue({
+    number: 39,
+    title: 'docs(agent): document evidence-based gate commands',
+    body: '## Problem\nThe current agent pipeline uses evidence-based `run-tests` and `auto-gates` commands, but the operator documentation does not document those commands or their artifact requirements.\n\n## Scope\nUpdate `docs/agents/AGENT4_PIPELINE.md` only.\n\n## Non-goals\nNo framework code, provider changes, production changes, or auto-merge changes.\n\n## Acceptance criteria\n- Document `run-tests` and the required evidence arguments to `auto-gates`.\n- Explain that missing or failed evidence blocks the pipeline.\n- Keep the human merge gate and manual provider flow documented.',
+    labels: [{ name: 'agent:approved' }],
+  }, { defaults: { provider: 'codex', model: 'default', input_budget: 4500, output_budget: 1800 }, agents: { docs: {} } });
+  assert.equal(plan.state, 'CLASSIFIED');
+  assert.equal(plan.selected_agent, 'docs');
+  assert.deepEqual(plan.allowed_files, ['docs/agents/AGENT4_PIPELINE.md']);
+});
+
 test('ambiguous tasks block rather than guessing', () => {
   const plan = classifyIssue({ ...issue, title: 'Improve things', body: 'make it better' }, { defaults: { provider: 'codex' }, agents: {} });
   assert.equal(plan.state, 'BLOCKED_CLASSIFICATION');
