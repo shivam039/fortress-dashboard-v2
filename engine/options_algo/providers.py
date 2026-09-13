@@ -13,6 +13,7 @@ from options_algo.contracts import (
     OptionContract,
     OptionsProvider,
 )
+from utils.market_data_provider import get_ltp
 
 
 class YFinanceOptionsProvider:
@@ -41,11 +42,12 @@ class YFinanceOptionsProvider:
         return logic.get_available_expiries(underlying)
 
     def get_spot(self, underlying: str) -> Optional[float]:
-        quote = logic.yf.download(underlying, period="2d", progress=False)
-        if quote.empty or "Close" not in quote:
-            return None
-        closes = quote["Close"].dropna()
-        return float(closes.iloc[-1]) if not closes.empty else None
+        # Route through market_data_provider (INDstocks first, yfinance
+        # fallback) instead of calling yfinance directly here — see root
+        # CLAUDE.md / engine/CLAUDE.md. _format_yf_ticker leaves an already
+        # yfinance-shaped symbol (e.g. "^NSEI", "RELIANCE.NS", both used
+        # elsewhere in this module) untouched, so this is a drop-in swap.
+        return get_ltp(underlying)
 
     def get_chain(self, underlying: str, expiry: str) -> OptionChainResponse:
         frame, spot, _ = logic.fetch_option_chain(underlying, expiry)
