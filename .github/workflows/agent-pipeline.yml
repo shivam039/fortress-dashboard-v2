@@ -164,6 +164,22 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --remove-label agent:evaluating --add-label agent:review || true
           node scripts/agent/reviewer-evidence.js ".agent-room/sessions/$RID.manifest.json" "$TEST_REPORT" eval-report.json .agent-room/sessions > reviewer-report.json
           REVIEW_REPORT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('reviewer-report.json')).artifact)")
+          # FORTRESS-NEXT Epic 19: Docs Agent, advisory only - never blocks
+          # (no equivalent of auto-gates below). Flags a doc under
+          # docs/research/ or docs/product/ that references a file this PR
+          # changed but was not itself updated. See scripts/agent/
+          # docs-evidence.js for the exact heuristic and its known limits.
+          node -e "console.log(JSON.stringify(require('./.agent-room/sessions/${RID}.manifest.json').changed_files || []))" > changed-files.json
+          node scripts/agent/docs-evidence.js changed-files.json . > docs-report.json || echo '{"docs_impacted":false,"flags":[]}' > docs-report.json
+          DOCS_IMPACTED=$(node -e "console.log(JSON.parse(require('fs').readFileSync('docs-report.json')).docs_impacted)")
+          if [ "$DOCS_IMPACTED" = "true" ]; then
+            BODY=$(node -e "
+              const r = JSON.parse(require('fs').readFileSync('docs-report.json'));
+              const lines = r.flags.map(f => '- \`' + f.doc + '\` references \`' + f.referenced_path + '\` (changed: \`' + f.changed_file + '\`)');
+              console.log('### Docs Agent (advisory)\n\nThis PR changes code referenced by docs it did not update. Not blocking - verify these are still accurate:\n\n' + lines.join('\n'));
+            ")
+            gh issue comment "$ISSUE_NUMBER" --body "$BODY" || true
+          fi
           node scripts/agent/agent.js auto-gates "$RID" eval-report.json "$TEST_REPORT" "$REVIEW_REPORT"
 
       - name: Create or update pull request and stop at human merge
