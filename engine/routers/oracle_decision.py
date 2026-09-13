@@ -30,6 +30,13 @@ async def oracle_decision(body: OracleRequest, user: dict = Depends(get_current_
 
 @router.post("/outcomes/mature")
 async def mature_oracle_outcomes(body: MaturationRequest) -> Dict[str, Any]:
+    """Machine/cron endpoint (see .github/workflows/oracle-outcomes-mature.yml),
+    not a browser one — deliberately has no Depends(get_current_user), same
+    as /api/auto-scan/run and /api/bhavcopy/refresh: its actual auth
+    boundary is main.py's api_key_auth_middleware (X-API-Key), which every
+    scheduled workflow in this repo authenticates against instead of a JWT.
+    Do not add a JWT dependency here — it would break that workflow, which
+    never obtains one."""
     from oracle_outcomes.service import mature_pending
     return mature_pending(body.limit)
 

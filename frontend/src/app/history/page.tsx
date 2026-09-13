@@ -67,12 +67,23 @@ export default function HistoryPage() {
   const openRun = useCallback((scanId: number) => {
     setSelectedScanId(scanId);
     setHistoryData(null);
+    setHistoryContext(null);
     setDataError(null);
     setLoadingData(true);
-    Promise.all([historyApi.data(scanId), historyApi.context(scanId)])
-      .then(([data, context]) => { setHistoryData(data); setHistoryContext(context); })
+    // Independent requests, not Promise.all: the persisted scan rows are
+    // the critical path (a failure there is a real, page-blocking error),
+    // but the historical-evidence context is supplementary provenance —
+    // e.g. a transient paper-trade DB hiccup (PaperTradePersistenceError,
+    // surfaced as a 503) must not also take down otherwise-healthy scan
+    // history. HistoricalStockScreener already renders "not recorded" for
+    // a null context.
+    historyApi.data(scanId)
+      .then(setHistoryData)
       .catch((err: unknown) => setDataError((err as Error).message || 'Unknown error'))
       .finally(() => setLoadingData(false));
+    historyApi.context(scanId)
+      .then(setHistoryContext)
+      .catch(() => setHistoryContext(null));
   }, []);
 
   const closeRun = useCallback(() => {
