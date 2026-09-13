@@ -1464,10 +1464,19 @@ def get_history_context(scan_id: int):
     historical provenance without recomputing today's Oracle decision or
     issuing one database query per historical row.
     """
-    from utils.db import fetch_paper_trades, fetch_signal_ledger
+    from utils.db import PaperTradePersistenceError, fetch_paper_trades, fetch_signal_ledger
 
     signals = fetch_signal_ledger(scan_id=scan_id, limit=500)
-    trades = fetch_paper_trades(limit=500)
+    try:
+        trades = fetch_paper_trades(limit=500)
+    except PaperTradePersistenceError as exc:
+        # Matches routers/paper_trading.py's own handling of this error — a
+        # transient paper-trade DB hiccup must not also take signals (and
+        # the frontend's Promise.all-bundled scan-history data) down with it.
+        raise HTTPException(
+            status_code=503,
+            detail="Paper trade data is temporarily unavailable",
+        ) from exc
     linked = [trade for trade in trades if trade.get("source_scan_id") == scan_id]
     return _sanitize_json_value({"signals": signals, "paper_trades": linked})
 

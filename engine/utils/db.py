@@ -826,13 +826,27 @@ def _ensure_options_snapshots_sqlite(conn):
         PRIMARY KEY (snapshot_id, contract_json))""")
 
 
+def _json_isoformat(value: Any) -> Optional[str]:
+    """Normalize a datetime-or-None-or-string field to a plain string before
+    it goes anywhere near json.dumps or a TEXT/TIMESTAMPTZ column — the
+    OptionChainResponse Pydantic model's .dict() (unlike .json()) leaves
+    `received_at`/`provider_timestamp` as live datetime objects, which the
+    stdlib json encoder cannot serialize."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def persist_options_snapshot(payload: dict) -> str:
     """Idempotently persist a normalized successful options observation."""
-    captured = payload.get("received_at") or ""
+    captured = _json_isoformat(payload.get("received_at")) or ""
+    provider_timestamp = _json_isoformat(payload.get("provider_timestamp"))
     identity = {"underlying": payload.get("underlying_symbol"),
                 "expiry": payload.get("expiry"), "provider": payload.get("provider"),
                 "captured_at": captured}
-    snapshot_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    snapshot_id = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
     contracts = payload.get("contracts") or payload.get("chain") or []
     if _can_use_neon():
         _exec("""INSERT INTO options_snapshots
@@ -842,13 +856,13 @@ def persist_options_snapshot(payload: dict) -> str:
                     :captured_at,:freshness,CAST(:capabilities AS JSONB))
             ON CONFLICT (snapshot_id) DO NOTHING""",
             {"id": snapshot_id, **identity, "spot": payload.get("spot"),
-             "provider_timestamp": payload.get("provider_timestamp"),
+             "provider_timestamp": provider_timestamp,
              "freshness": payload.get("freshness"),
-             "capabilities": json.dumps(payload.get("capabilities") or {})})
+             "capabilities": json.dumps(payload.get("capabilities") or {}, default=str)})
         for contract in contracts:
             _exec("""INSERT INTO options_contract_snapshots (snapshot_id, contract_json)
                      VALUES (:id, CAST(:contract AS JSONB)) ON CONFLICT DO NOTHING""",
-                  {"id": snapshot_id, "contract": json.dumps(contract, sort_keys=True)})
+                  {"id": snapshot_id, "contract": json.dumps(contract, sort_keys=True, default=str)})
     else:
         with _sqlite_connection() as conn:
             _ensure_options_snapshots_sqlite(conn)
@@ -857,11 +871,11 @@ def persist_options_snapshot(payload: dict) -> str:
                  captured_at, freshness, capabilities)
                 VALUES (?,?,?,?,?,?,?,?,?)""", (snapshot_id, identity["underlying"],
                 identity["expiry"], payload.get("spot"), identity["provider"],
-                payload.get("provider_timestamp"), captured, payload.get("freshness"),
-                json.dumps(payload.get("capabilities") or {}, sort_keys=True)))
+                provider_timestamp, captured, payload.get("freshness"),
+                json.dumps(payload.get("capabilities") or {}, sort_keys=True, default=str)))
             for contract in contracts:
                 conn.execute("INSERT OR IGNORE INTO options_contract_snapshots VALUES (?,?)",
-                             (snapshot_id, json.dumps(contract, sort_keys=True)))
+                             (snapshot_id, json.dumps(contract, sort_keys=True, default=str)))
     return snapshot_id
 
 
@@ -3371,11 +3385,20 @@ def close_paper_trade(trade_id: int, closed_trade: Dict[str, Any]) -> bool:
     try:
         if _can_use_neon():
             _ensure_paper_trades_neon()
-            _exec(
-                f"UPDATE paper_trades SET {sql_common}, updated_at = NOW() WHERE trade_id = :trade_id AND status = 'open'",
-                payload,
-            )
-            return True
+            engine = get_db_engine()
+            with engine.begin() as conn:
+                result = conn.execute(
+                    text(
+                        f"UPDATE paper_trades SET {sql_common}, updated_at = NOW() "
+                        "WHERE trade_id = :trade_id AND status = 'open'"
+                    ),
+                    payload,
+                )
+                # The `AND status = 'open'` guard is what makes this idempotent
+                # (a second close, or a race with another close, must never
+                # report success) — rowcount == 0 means it was already closed
+                # or never existed, not that this call closed it.
+                return result.rowcount == 1
 
         with _sqlite_connection() as conn:
             _ensure_paper_trades_sqlite(conn)

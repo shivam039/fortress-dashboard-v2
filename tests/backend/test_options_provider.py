@@ -1,7 +1,5 @@
 from options_algo.providers import YFinanceOptionsProvider, _contract_from_row
 
-import pandas as pd
-
 
 def test_yfinance_row_normalization_preserves_missing_values():
     contract = _contract_from_row(
@@ -29,9 +27,12 @@ def test_get_spot_uses_quote_path(monkeypatch):
     monkeypatch.setattr(
         "options_algo.providers.logic.fetch_option_chain", fail_if_chain_called
     )
+    # get_spot must go through market_data_provider (INDstocks-first,
+    # yfinance-fallback) rather than calling yfinance directly, per
+    # root CLAUDE.md / engine/CLAUDE.md.
     monkeypatch.setattr(
-        "options_algo.providers.logic.yf.download",
-        lambda *args, **kwargs: pd.DataFrame({"Close": [101.25]}),
+        "options_algo.providers.get_ltp",
+        lambda symbol: 101.25,
     )
 
     assert YFinanceOptionsProvider().get_spot("RELIANCE.NS") == 101.25
