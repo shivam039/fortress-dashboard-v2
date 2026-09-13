@@ -180,3 +180,32 @@ test('evidenceGaps returns empty for a fully-covered diff', () => {
 test('onlyTrivialTestRan is false when a real command ran', () => {
   assert.equal(onlyTrivialTestRan({ commands: ['pytest -q'] }, ['engine/stock_scanner/logic.py']), false);
 });
+
+// ── Epic 20 adversarial-review fix: no more free-pass 'other' for real code ──
+
+test('classifyFile: a Python file outside engine/ is other_code, not a free-pass other', () => {
+  assert.equal(classifyFile('scripts/pricing_engine.py'), 'other_code');
+  assert.equal(classifyFile('worker/pipeline.py'), 'other_code');
+});
+
+test('classifyFile: a genuinely non-code file still classifies as other (no evidence required)', () => {
+  assert.equal(classifyFile('package-lock.json'), 'other');
+  assert.equal(classifyFile('.gitignore'), 'other');
+});
+
+test('other_code changes require test evidence, unlike other', () => {
+  const result = review({ manifest: { changed_files: ['scripts/pricing_engine.py'] } });
+  assert.equal(result.verdict, 'NOT_MERGEABLE');
+  assert.ok(result.findings.some((f) => f.includes('other_code') || f.toLowerCase().includes('unclassified code')));
+});
+
+test('other_code with matching test evidence passes', () => {
+  const result = review({ manifest: { changed_files: ['scripts/pricing_engine.py', 'tests/backend/test_pricing_engine.py'] } });
+  assert.equal(result.verdict, 'MERGEABLE');
+});
+
+test('classifyFile: security-sensitive files without "auth" in the name now classify as security_auth', () => {
+  assert.equal(classifyFile('engine/utils/token_store.py'), 'security_auth');
+  assert.equal(classifyFile('engine/utils/session_manager.py'), 'security_auth');
+  assert.equal(classifyFile('engine/utils/crypto.py'), 'security_auth');
+});
