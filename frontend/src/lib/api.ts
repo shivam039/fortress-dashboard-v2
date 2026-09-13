@@ -642,6 +642,13 @@ export interface OptionsSnapshotSummary {
   freshness: string | null;
 }
 
+export interface OptionsSnapshotComparison {
+  status: 'COMPARABLE' | 'INSUFFICIENT_HISTORY';
+  latest: OptionsSnapshotSummary | null;
+  previous: OptionsSnapshotSummary | null;
+  changes: Record<string, { current: unknown; previous: unknown; changed: boolean | null }>;
+}
+
 export const optionsApi = {
   expiries: (symbol: string) =>
     api.get<string[]>(`/api/options/expiries?symbol=${encodeURIComponent(symbol)}`),
@@ -655,6 +662,8 @@ export const optionsApi = {
     api.post<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> }>('/api/options/payoff', { legs, prices }),
   history: (symbol: string, expiry?: string) =>
     api.get<OptionsSnapshotSummary[]>(`/api/options/history?symbol=${encodeURIComponent(symbol)}${expiry ? `&expiry=${encodeURIComponent(expiry)}` : ''}`),
+  compareHistory: (symbol: string, expiry?: string) =>
+    api.get<OptionsSnapshotComparison>(`/api/options/history/compare?symbol=${encodeURIComponent(symbol)}${expiry ? `&expiry=${encodeURIComponent(expiry)}` : ''}`),
 };
 
 // ── REITs & InvITs ────────────────────────────────────────────────────────────

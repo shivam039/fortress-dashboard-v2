@@ -29,14 +29,19 @@ def payoff(legs: Sequence[StrategyLeg], underlying_prices: Sequence[float]) -> L
 
 
 def summary(legs: Sequence[StrategyLeg], price_floor: float = 0.0, price_ceiling: Optional[float] = None) -> dict:
-    """Calculate bounded risk metrics from payoff breakpoints.
+    """Calculate theoretical risk metrics and supplied-grid extrema.
 
-    ``None`` means the metric is not finite or cannot be established from the
-    supplied range; it is never represented as zero.
+    The underlying domain is ``[price_floor, infinity)``. ``max_profit`` or
+    ``max_loss`` is ``None`` when the tail is unbounded. ``grid_*`` values are
+    explicitly limited to the exploration range and are never presented as
+    theoretical limits.
     """
     if not legs:
-        return {"max_profit": None, "max_loss": None, "breakevens": []}
+        return {"max_profit": None, "max_loss": None, "breakevens": [],
+                "grid_max_profit": None, "grid_max_loss": None}
     ceiling = price_ceiling or max(leg.strike for leg in legs) * 2.0
+    if ceiling <= price_floor:
+        raise ValueError("price_ceiling must exceed price_floor")
     points = sorted({price_floor, ceiling, *(leg.strike for leg in legs)})
     values = payoff(legs, points)
     breakevens = []
@@ -48,8 +53,19 @@ def summary(legs: Sequence[StrategyLeg], price_floor: float = 0.0, price_ceiling
             breakevens.append(round(left + (right - left) * ratio, 8))
     if values[-1] == 0:
         breakevens.append(points[-1])
+    # Above the highest strike, only calls contribute slope. A positive
+    # slope is an unbounded profit tail; a negative slope is an unbounded
+    # loss tail. The lower tail is bounded by the non-negative floor.
+    upper_slope = sum(
+        (1.0 if leg.side == "BUY" else -1.0) * leg.quantity
+        for leg in legs if leg.option_type == "CE"
+    )
+    grid_profit = round(max(values), 8)
+    grid_loss = round(min(values), 8)
     return {
-        "max_profit": None if max(values) == float("inf") else round(max(values), 8),
-        "max_loss": None if min(values) == float("-inf") else round(min(values), 8),
+        "max_profit": None if upper_slope > 0 else grid_profit,
+        "max_loss": None if upper_slope < 0 else grid_loss,
         "breakevens": sorted(set(round(value, 8) for value in breakevens)),
+        "grid_max_profit": grid_profit,
+        "grid_max_loss": grid_loss,
     }
