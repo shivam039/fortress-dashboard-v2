@@ -70,6 +70,32 @@ test('real regression: issue #39 body with a backtick-fenced path classifies ins
   assert.deepEqual(plan.allowed_files, ['docs/agents/AGENT4_PIPELINE.md']);
 });
 
+test('root-level files (Dockerfile, Caddyfile, README.md, docker-compose.*.yml) satisfy the scope gate without a slash', () => {
+  // Found while auditing agent-role dispatch for the LUNA MISSES CLOSEOUT
+  // (Epic 2/3): allowedFiles previously required a '/' in every matched
+  // path, so an issue naming ONLY a root-level file (no directory prefix)
+  // could never pass the scope gate at all - it always blocked with the
+  // same "no explicit repository path" error, for both infra files
+  // (Dockerfile, Caddyfile, docker-compose.*.yml) and root docs
+  // (README.md, CLAUDE.md, ...).
+  const infraPlan = classifyIssue({
+    ...issue, number: 40, title: 'Update infra config',
+    body: 'Update Dockerfile and docker-compose.oracle-production.yml for the caddy infra config, and touch the Caddyfile too.',
+  }, { defaults: { provider: 'codex', input_budget: 8000, output_budget: 2500 }, agents: { infra: {} } });
+  assert.equal(infraPlan.state, 'CLASSIFIED');
+  assert.equal(infraPlan.selected_agent, 'infra');
+  assert.deepEqual(
+    [...infraPlan.allowed_files].sort(),
+    ['Caddyfile', 'Dockerfile', 'docker-compose.oracle-production.yml'].sort()
+  );
+
+  const docsPlan = classifyIssue({
+    ...issue, number: 41, title: 'Fix README typo', body: 'Fix a typo in README.md documentation.',
+  }, { defaults: { provider: 'codex', input_budget: 8000, output_budget: 2500 }, agents: { docs: {} } });
+  assert.equal(docsPlan.state, 'CLASSIFIED');
+  assert.deepEqual(docsPlan.allowed_files, ['README.md']);
+});
+
 test('ambiguous tasks block rather than guessing', () => {
   const plan = classifyIssue({ ...issue, title: 'Improve things', body: 'make it better' }, { defaults: { provider: 'codex' }, agents: {} });
   assert.equal(plan.state, 'BLOCKED_CLASSIFICATION');
