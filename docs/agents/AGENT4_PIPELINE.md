@@ -77,6 +77,52 @@ report with `status: PASS`; missing evidence fails closed. Reports are stored
 in the run manifest so the PR body can identify the evidence supporting each
 gate.
 
+### Reviewer evidence policy
+
+`scripts/agent/reviewer-evidence.js` classifies every file in
+`manifest.changed_files` into one category (`backend_logic`,
+`frontend_logic`, `api_contract`, `db_persistence`, `security_auth`,
+`infra_workflow`, `agent_framework`, `tests`, `docs`, or `other`) by path
+pattern — a deterministic check, not diff-content/semantic analysis. `docs`,
+`tests`, and `other` never require additional evidence. Every other category
+requires at least one changed file that looks like matching evidence (e.g.
+`backend_logic` requires a `tests/backend/*` file in the same
+`changed_files` list; `frontend_logic` requires `frontend/tests/*`,
+`frontend/e2e/*`, or a `*.test.{ts,tsx,js,jsx}` file; `security_auth`
+requires a `tests/*` file whose path also mentions `auth`/`security`).
+A category present in the diff with no matching evidence is a finding and
+the verdict is `NOT_MERGEABLE` — a green existing test suite that doesn't
+exercise the changed behavior is not treated as evidence for it. The
+reviewer also checks that a *real* test command ran: if `test-report.json`'s
+`commands` were only the generic no-op fallback (`git diff --check` — what
+`scripts/agent/test-runner.js`'s `selectTests()` falls back to when nothing
+else matches) while the diff includes a category that requires evidence,
+that is its own finding (tests were never actually executed, as distinct
+from executed-and-failed).
+
+**Test evidence waiver.** `reviewer-evidence.js` reads
+`manifest.test_waiver: { reason: "...", categories: ["backend_logic", ...] }`
+(`categories` omitted applies to any gap found). A waiver with a non-empty
+`reason` converts a would-be blocking finding into a visible note and the
+verdict becomes `MERGEABLE_WITH_NOTES` instead of `NOT_MERGEABLE` — the
+waiver and its reason stay in the review report, never silently dropped. A
+waiver with a blank/missing reason is not accepted.
+**PROVEN vs. CONFIGURED**: only the reviewer's *read* side exists and is
+tested today. No automatic writer populates `test_waiver` from Coordinator
+classification, an issue directive, or any other input — a human must set
+it directly on the manifest JSON before `auto-gates` runs. `import-result`
+(provider output) is intentionally never a valid source for it, so that an
+agent cannot self-waive its own missing evidence once a writer path is
+added; do not add one that reads it from provider-controlled input.
+
+Reviewer verdicts are `MERGEABLE`, `MERGEABLE_WITH_NOTES`,
+`MERGEABLE_WITH_MINOR_FIXES` (a human-authored review verdict, not emitted by
+`reviewer-evidence.js` itself), `NOT_MERGEABLE`, or `BLOCKED`. `BLOCKED` is
+reserved for a structurally invalid review (e.g. no changed files were
+evidenced at all) and skips the one-shot repair cycle that `NOT_MERGEABLE`
+gets; `MERGEABLE`/`MERGEABLE_WITH_NOTES`/`MERGEABLE_WITH_MINOR_FIXES` all
+proceed to the docs/PR gates.
+
 ## Production and secret safety
 
 Oracle, Caddy, DNS, Vercel/Neon production, schedulers, secrets, trading or
