@@ -23,7 +23,26 @@ def test_short_straddle_is_bounded_to_requested_price_range():
 
 
 def test_empty_strategy_does_not_fabricate_zero_risk_metrics():
-    assert summary([]) == {"max_profit": None, "max_loss": None, "breakevens": []}
+    assert summary([]) == {"max_profit": None, "max_loss": None, "breakevens": [],
+                           "grid_max_profit": None, "grid_max_loss": None}
+
+
+def test_theoretical_tails_are_not_grid_extrema():
+    assert summary([StrategyLeg("CE", 100, 10)], price_ceiling=140)["max_profit"] is None
+    assert summary([StrategyLeg("CE", 100, 10, side="SELL")], price_ceiling=140)["max_loss"] is None
+    assert summary([StrategyLeg("PE", 100, 10)], price_ceiling=140)["max_profit"] == 90.0
+    assert summary([StrategyLeg("PE", 100, 10, side="SELL")], price_ceiling=140)["max_loss"] == -90.0
+
+
+def test_vertical_spreads_have_bounded_theoretical_risk():
+    bull_call = [StrategyLeg("CE", 100, 10), StrategyLeg("CE", 110, 3, side="SELL")]
+    bear_call = [StrategyLeg("CE", 100, 10, side="SELL"), StrategyLeg("CE", 110, 3)]
+    bull_put = [StrategyLeg("PE", 100, 10, side="SELL"), StrategyLeg("PE", 110, 3)]
+    bear_put = [StrategyLeg("PE", 100, 10), StrategyLeg("PE", 110, 3, side="SELL")]
+    for legs in (bull_call, bear_call, bull_put, bear_put):
+        result = summary(legs, price_ceiling=220)
+        assert result["max_profit"] is not None
+        assert result["max_loss"] is not None
 
 
 def test_payoff_api_is_read_only_and_returns_requested_grid():
