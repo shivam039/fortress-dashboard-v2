@@ -68,8 +68,15 @@ function classifyIssue(rawIssue, config = {}) {
   const defaults = config.defaults || {};
   const selected = { ...defaults, ...((config.agents || {})[selectedAgent] || {}) };
   const sensitive = productionSensitive(text);
-  const allowedFiles = [...new Set((text.match(/(?:^|\s)([A-Za-z0-9_.-]+\/[A-Za-z0-9_./*-]+)/g) || [])
-    .map((item) => item.trim()).filter((item) => !item.includes('..')))];
+  // Leading boundary includes a backtick so a standard GitHub-Flavored
+  // Markdown inline-code path reference (e.g. `docs/agents/FILE.md`, the
+  // normal way anyone writes a file path in an issue body) is recognized -
+  // `\s` alone missed it, since the character right before the path is a
+  // backtick, not whitespace. Real-world regression: issue #39's body used
+  // exactly this style and the pipeline blocked with "no explicit
+  // repository path" despite the path being right there.
+  const allowedFiles = [...new Set((text.match(/(?:^|[\s`])([A-Za-z0-9_.-]+\/[A-Za-z0-9_./*-]+)/g) || [])
+    .map((item) => item.trim().replace(/^`/, '')).filter((item) => !item.includes('..')))];
   if (!allowedFiles.length) {
     return { state: 'BLOCKED_CLASSIFICATION', reason: 'Coordinator requires at least one explicit repository path for the scope gate.' };
   }
