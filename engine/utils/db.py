@@ -889,6 +889,31 @@ def fetch_options_snapshots(underlying: str, expiry: Optional[str] = None, limit
         WHERE underlying = :underlying""" + clause + " ORDER BY captured_at DESC LIMIT :limit", params)
 
 
+def _snapshot_contracts(snapshot_id: Optional[str]) -> dict:
+    """Return contracts keyed by stable identity for one stored snapshot."""
+    if not snapshot_id:
+        return {}
+    rows = _query(
+        "SELECT contract_json FROM options_contract_snapshots "
+        "WHERE snapshot_id = :snapshot_id",
+        {"snapshot_id": snapshot_id},
+    )
+    contracts = {}
+    for row in rows:
+        value = row.get("contract_json")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(value, dict):
+            continue
+        key = (value.get("underlying"), value.get("expiry"),
+               value.get("strike"), value.get("option_type"))
+        contracts[key] = value
+    return contracts
+
+
 def compare_options_snapshots(underlying: str, expiry: Optional[str] = None) -> dict:
     """Compare the two latest observations without treating missing data as zero."""
     rows = fetch_options_snapshots(underlying, expiry, limit=2)
@@ -901,6 +926,19 @@ def compare_options_snapshots(underlying: str, expiry: Optional[str] = None) -> 
         current, prior = latest.get(field), previous.get(field)
         changes[field] = {"current": current, "previous": prior,
                           "changed": current != prior if current is not None and prior is not None else None}
+    current_contracts = _snapshot_contracts(latest.get("snapshot_id"))
+    previous_contracts = _snapshot_contracts(previous.get("snapshot_id"))
+    current_keys, previous_keys = set(current_contracts), set(previous_contracts)
+    changes["contracts"] = {
+        "added": len(current_keys - previous_keys),
+        "removed": len(previous_keys - current_keys),
+        "changed": sum(
+            current_contracts[key] != previous_contracts[key]
+            for key in current_keys & previous_keys
+        ),
+        "current_count": len(current_keys),
+        "previous_count": len(previous_keys),
+    }
     return {"status": "COMPARABLE", "latest": latest, "previous": previous, "changes": changes}
 
 
