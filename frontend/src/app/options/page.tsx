@@ -24,6 +24,8 @@ export default function OptionsPage() {
   const [payoffResult, setPayoffResult] = useState<{ prices: number[]; payoff: number[]; summary: Record<string, unknown> } | null>(null);
   const [snapshots, setSnapshots] = useState<OptionsSnapshotSummary[]>([]);
   const [comparison, setComparison] = useState<OptionsSnapshotComparison | null>(null);
+  const [capabilities, setCapabilities] = useState<Record<string, string>>({});
+  const [providerDiagnostics, setProviderDiagnostics] = useState<Record<string, string>>({});
   type LabLeg = { option_type: 'CE' | 'PE'; strike: number; premium: number; quantity: number; side: 'BUY' | 'SELL' };
   const [labLegs, setLabLegs] = useState<LabLeg[]>([]);
   const [labRange, setLabRange] = useState(40);
@@ -99,6 +101,8 @@ export default function OptionsPage() {
       setFreshness(data.freshness || 'Unavailable');
       setLastUpdated(data.received_at || null);
       setAnalytics(data.analytics || {});
+      setCapabilities(data.capabilities || {});
+      setProviderDiagnostics(data.diagnostics || {});
       optionsApi.history(symbol, expiry).then(setSnapshots).catch(() => setSnapshots([]));
       optionsApi.compareHistory(symbol, expiry).then(setComparison).catch(() => setComparison(null));
     } catch (err: unknown) {
@@ -197,6 +201,8 @@ export default function OptionsPage() {
           <div><span className="metric-label">Highest call OI</span><div>{largest('largest_call_oi')?.strike != null ? `${largest('largest_call_oi')!.strike!.toFixed(2)} (${largest('largest_call_oi')!.oi?.toLocaleString() ?? '—'})` : 'Unavailable'}</div></div>
         </div>
         <div style={{ marginTop: '12px' }}><span className="metric-label">Highest put OI</span>{largest('largest_put_oi')?.strike != null ? `${largest('largest_put_oi')!.strike!.toFixed(2)} (${largest('largest_put_oi')!.oi?.toLocaleString() ?? '—'})` : ' Unavailable'}</div>
+        <div style={{ marginTop: '12px' }}><span className="metric-label">Runtime capability truth</span><div>{Object.entries(capabilities).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'Unavailable'}</div></div>
+        <div style={{ marginTop: '12px' }}><span className="metric-label">Provider diagnostics</span><div>{Object.entries(providerDiagnostics).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'None reported'}</div></div>
         <p className="page-subtitle" style={{ marginTop: '12px' }}>OI and PCR are descriptive indicators, not trading recommendations. ATM is the available strike nearest to spot.</p>
       </div>
 
@@ -220,7 +226,7 @@ export default function OptionsPage() {
         <p className="page-subtitle">Successful snapshots are shown for provenance. No historical value is inferred when a prior observation is unavailable.</p>
         <p className="page-subtitle">
           {comparison?.status === 'COMPARABLE'
-            ? `Compared with the previous snapshot: spot ${comparison.changes.spot?.changed ? 'changed' : 'unchanged'}, provider ${comparison.changes.provider?.changed ? 'changed' : 'unchanged'}.`
+            ? `Compared with the previous snapshot: spot ${comparison.changes.spot?.changed ? 'changed' : 'unchanged'}, provider ${comparison.changes.provider?.changed ? 'changed' : 'unchanged'}${comparison.changes.contracts ? `, contracts added ${comparison.changes.contracts.added}, removed ${comparison.changes.contracts.removed}, changed ${comparison.changes.contracts.changed}` : ''}.`
             : 'What Changed? is unavailable until two successful snapshots exist.'}
         </p>
         <DataTable
