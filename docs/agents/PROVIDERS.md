@@ -59,6 +59,26 @@ Until then, every provider is effectively `MANUAL_EXPORT` in practice —
 see PHASE 37/USAGE.md's manual-export flow, which is fully functional
 today with zero provider credentials.
 
+## Provider truth matrix (LUNA MISSES CLOSEOUT Epic 5)
+
+Four separate, non-collapsible flags per provider — do not report "supported"
+from CONFIG_SUPPORTED alone; EXECUTION_SUPPORTED is `NO` for all four,
+unconditionally, by design (see above):
+
+| Provider | CONFIG_SUPPORTED | EXECUTION_SUPPORTED | TESTED | PROVEN |
+|---|---|---|---|---|
+| Codex | YES (accepts `mode: MANUAL_EXPORT/AUTOMATED/DISABLED`) | **NO** — adapter hardcoded `UNAVAILABLE`; requesting `AUTOMATED` resolves to `BLOCKED_PROVIDER`, never runs | YES — `agent1b.test.js`'s `resolveExecutionMode: unavailable provider blocks only when AUTOMATED is requested` | NO — no real execution has ever occurred |
+| Claude (`anthropic`) | YES | **NO** — `executeAgent()` never performs a real call even when the adapter reports `SUPPORTED` and mode is `AUTOMATED`; `executed` is always `false` | YES — `agent1b.test.js`'s `resolveExecutionMode: a real credential resolves AUTOMATED only when explicitly configured` and `executeAgent never actually executes, even when AUTOMATED and SUPPORTED` (both added this pass — the `SUPPORTED`-credential path had no test before) | NO |
+| Grok (`xai`) | YES | **NO** — same as Claude; not individually re-tested this pass since the mechanism is provider-name-agnostic (`resolveExecutionMode`/`executeAgent` take a config, not per-provider code) | PARTIAL — covered by the same generic logic the Claude tests exercise, no `xai`-specific test | NO |
+| Gemini | YES | **NO** — same mechanism | PARTIAL — same as Grok | NO |
+
+**MANUAL_PROVIDER_EXECUTION is the accurate status for every provider
+today**, per this program's own framing — not a downgrade to apologize
+for, the actual current state. Claiming any provider is "supported" for
+autonomous execution because config accepts its name, or because an API
+key happens to be set, would be exactly the kind of overclaim this
+closeout exists to catch.
+
 ## Resolution order
 
 For a given agent, `scripts/agent/lib.js`'s `resolveAgentBudget()`:

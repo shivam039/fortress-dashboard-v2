@@ -10,7 +10,7 @@ const { checkScope } = require('./scope-check');
 const MANIFEST_VERSION = 1;
 const GOVERNANCE_FIELDS = new Set([
   'production_access', 'human_gate', 'allowed_files', 'forbidden_files',
-  'input_budget', 'output_budget', 'review_required', 'auto_merge',
+  'input_budget', 'output_budget', 'review_required', 'auto_merge', 'test_waiver',
 ]);
 const MANIFEST_FIELDS = [
   'manifest_version', 'run_id', 'task_id', 'issue_number', 'agent', 'provider',
@@ -23,7 +23,7 @@ const MANIFEST_FIELDS = [
   'eval_hard_failures', 'review_required', 'review_status', 'docs_required',
   'docs_status', 'repair_count', 'pr_number', 'production_impact', 'auto_merge',
   'test_artifact', 'eval_artifact', 'review_artifact', 'docs_artifact',
-  'state', 'created_at', 'updated_at',
+  'test_waiver', 'state', 'created_at', 'updated_at',
 ];
 
 function pick(source, fields) {
@@ -153,7 +153,19 @@ function reviewerGate(manifest, verdict, docsImpact = false) {
   if ((manifest.eval_hard_failures || []).length || manifest.state === 'BLOCKED_EVAL') return { ...manifest, state: 'BLOCKED_EVAL' };
   const report = verdict && typeof verdict === 'object' ? verdict : null;
   const actualVerdict = report ? report.verdict : verdict;
-  if (!['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES', 'NOT_MERGEABLE'].includes(actualVerdict)) throw new Error('invalid reviewer verdict');
+  // FORTRESS "LUNA MISSES CLOSEOUT" Epic 1: reviewer-evidence.js now also
+  // emits MERGEABLE_WITH_NOTES (a waived evidence gap - proceeds, but the
+  // waiver stays visible in review notes) and BLOCKED (a structurally
+  // invalid review, e.g. no changed files were evidenced at all - not a
+  // fixable revision, so it skips the one-shot repair loop below and goes
+  // straight to BLOCKED, same terminal state NOT_MERGEABLE reaches after
+  // its repair attempt is exhausted).
+  if (!['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES', 'MERGEABLE_WITH_NOTES', 'NOT_MERGEABLE', 'BLOCKED'].includes(actualVerdict)) {
+    throw new Error('invalid reviewer verdict');
+  }
+  if (actualVerdict === 'BLOCKED') {
+    return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, state: 'BLOCKED' };
+  }
   if (actualVerdict === 'NOT_MERGEABLE') {
     if ((manifest.repair_count || 0) >= 1) return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, state: 'BLOCKED' };
     return { ...manifest, review_status: actualVerdict, review_artifact: report?.artifact || null, repair_count: 1,
@@ -174,7 +186,7 @@ function docsGate(manifest, satisfied) {
 }
 
 function prGate(manifest) {
-  const reviewOk = ['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES'].includes(manifest.review_status);
+  const reviewOk = ['MERGEABLE', 'MERGEABLE_WITH_MINOR_FIXES', 'MERGEABLE_WITH_NOTES'].includes(manifest.review_status);
   const docsOk = ['PASS', 'NOT_REQUIRED'].includes(manifest.docs_status);
   const evalOk = ['EVAL_PASS', 'EVAL_WARN'].includes(manifest.eval_status);
   const ok = manifest.scope_status === 'PASS' && manifest.tests?.status === 'PASS' && evalOk &&
