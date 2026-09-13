@@ -1,5 +1,14 @@
 # FORTRESS-V1: Real-Market Validation Results
 
+> **Historical finding — superseded by prospective evidence collection.** This
+> report records the state observed when PR #16 was evaluated. E1/E3 scanning
+> and the prospective evidence archive now exist, so the zero-observation value
+> below must not be treated as the current production count. Query the live
+> read-only status endpoint instead:
+> `GET /api/research/prospective/status` (with the production `X-API-Key`).
+> The scheduled archive workflow is
+> `.github/workflows/research-evidence-archive.yml`.
+
 **Status: no valid R1 dataset could be built in this environment. R2/R3/R4 were not run
 against fabricated or uncertified data, per this story's explicit constraints.**
 
