@@ -21,8 +21,8 @@ test('scan history result columns use canonical help', async ({ page }) => {
   await loginWithFixture(page);
   await page.goto('/history');
   await page.getByText('Nifty 50').click();
-  await expect(page.getByRole('button', { name: 'About Symbol column' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'About Fortress Score column' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'About Symbol column' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'About Fortress Score column' }).first()).toBeVisible();
 });
 
 test('column help does not sort the table, while the label still does', async ({ page }) => {
