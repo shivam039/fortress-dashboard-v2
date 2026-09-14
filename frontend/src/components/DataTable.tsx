@@ -2,19 +2,11 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import ContextHelp from './ContextHelp';
-import { findHelpKey, type HelpKey } from '@/lib/help-definitions';
-
-export interface DataTableColumn {
-  key: string;
-  label?: string;
-  helpKey?: HelpKey;
-  sortable?: boolean;
-}
+import ColumnHeader, { ColumnSpec, resolveColumn } from '@/components/ColumnHeader';
 
 interface DataTableProps {
   data: Record<string, unknown>[];
-  columns?: Array<string | DataTableColumn>;
+  columns?: ColumnSpec[];
   emptyMessage?: string;
   maxRows?: number;
   // Called with the actual row object (after this table's own internal
@@ -79,8 +71,8 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const cols = useMemo<DataTableColumn[]>(() => {
-    if (columns && columns.length > 0) return columns.map(column => typeof column === 'string' ? { key: column } : column);
+  const cols = useMemo<ColumnSpec[]>(() => {
+    if (columns && columns.length > 0) return columns;
     if (data.length === 0) return [];
     return Object.keys(data[0]).map(key => ({ key }));
   }, [data, columns]);
@@ -102,7 +94,7 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
 
   const rows = maxRows ? sorted.slice(0, maxRows) : sorted;
 
-  if (data.length === 0) {
+  if (data.length === 0 && (!columns || columns.length === 0)) {
     return (
       <div className="empty-state">
         <div className="icon">📭</div>
@@ -129,19 +121,18 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
         <thead>
           <tr>
             {cols.map(column => {
-              const col = column.key;
-              const label = column.label ?? col.replace(/_/g, ' ');
-              const helpKey = column.helpKey ?? findHelpKey(label);
-              const sortable = column.sortable !== false;
+              const col = resolveColumn(column).key;
               return (
               <th
                 key={col}
                 className={sortCol === col ? 'sorted' : ''}
               >
-                <span className="table-header-content">
-                  <span>{label}</span>
-                  {helpKey && <ContextHelp helpKey={helpKey} />}
-                  {sortable && <button type="button" className="table-sort-button" onClick={() => handleSort(col)} aria-label={`Sort by ${label}`} aria-pressed={sortCol === col}>{sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</button>}
+                <span className="sortable-column-heading">
+                  <button type="button" className="column-sort-trigger" aria-label={`Sort by ${resolveColumn(column).label}`} onClick={() => handleSort(col)}>
+                    {resolveColumn(column).label}
+                    {sortCol === col && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+                  </button>
+                  <ColumnHeader column={column} showLabel={false} />
                 </span>
               </th>
             );})}
@@ -159,12 +150,13 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
               onClick={onRowClick ? () => onRowClick(row, i) : undefined}
             >
               {cols.map(column => {
-                const value = row[column.key];
+                const col = resolveColumn(column).key;
+                const value = row[col];
                 return (
-                <td key={column.key}>
+                <td key={col}>
                   {isTrustedHtml(value) ? (
                     <span dangerouslySetInnerHTML={{ __html: value }} />
-                  ) : isScoreCol(column.key) ? (
+                  ) : isScoreCol(col) ? (
                     <span className={`score-badge ${getScoreClass(value)}`}>
                       {formatCell(value)}
                     </span>
@@ -180,6 +172,12 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
           })}
         </tbody>
       </table>
+      {data.length === 0 && (
+        <div className="empty-state">
+          <div className="icon">📭</div>
+          <p>{emptyMessage || 'No data available.'}</p>
+        </div>
+      )}
     </div>
   );
 }
