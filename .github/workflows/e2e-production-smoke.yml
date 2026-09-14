@@ -44,6 +44,9 @@ jobs:
     defaults:
       run:
         working-directory: frontend
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /opt/pw-browsers
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Check required secrets
@@ -64,9 +67,6 @@ jobs:
       - name: Install frontend dependencies
         if: steps.guard.outputs.configured == 'true'
         run: npm ci
-      - name: Install Chromium
-        if: steps.guard.outputs.configured == 'true'
-        run: npx playwright install --with-deps chromium
       - name: Run production-safe smoke
         if: steps.guard.outputs.configured == 'true'
         env:
