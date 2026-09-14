@@ -23,8 +23,8 @@ test('representative cross-product table headings resolve to canonical help', ()
 
 test('DataTable keeps help and sorting as separate controls', () => {
   const source = fs.readFileSync(new URL('../src/components/DataTable.tsx', import.meta.url), 'utf8');
-  assert.match(source, /<ContextHelp helpKey=/);
-  assert.match(source, /className="table-sort-button"/);
+  assert.match(source, /<ColumnHeader column=/);
+  assert.match(source, /className="column-sort-trigger"/);
   assert.doesNotMatch(source, /<th[\s\S]{0,120}onClick=/);
 });
 
