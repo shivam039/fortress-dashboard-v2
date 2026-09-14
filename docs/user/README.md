@@ -8,6 +8,7 @@ as references.
 - [User Guide](USER_GUIDE.md) — screen-by-screen instructions and workflows
 - [Site Map](SITE_MAP.md) — every user-visible route and how to reach it
 - [Glossary](GLOSSARY.md) — plain-English definitions of terms used in the UI
+- [Contextual help coverage](COLUMN_HELP_COVERAGE.md) — audited shared-table column coverage and explicit gaps
 - [Walkthrough Status](WALKTHROUGH_STATUS.md) — what was tested, what was not,
   and known product-truth findings
 

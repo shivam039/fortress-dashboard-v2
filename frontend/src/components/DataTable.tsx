@@ -74,7 +74,7 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
   const cols = useMemo<ColumnSpec[]>(() => {
     if (columns && columns.length > 0) return columns;
     if (data.length === 0) return [];
-    return Object.keys(data[0]);
+    return Object.keys(data[0]).map(key => ({ key }));
   }, [data, columns]);
 
   const sorted = useMemo(() => {
@@ -151,18 +151,19 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
             >
               {cols.map(column => {
                 const col = resolveColumn(column).key;
+                const value = row[col];
                 return (
                 <td key={col}>
-                  {isTrustedHtml(row[col]) ? (
-                    <span dangerouslySetInnerHTML={{ __html: row[col] }} />
+                  {isTrustedHtml(value) ? (
+                    <span dangerouslySetInnerHTML={{ __html: value }} />
                   ) : isScoreCol(col) ? (
-                    <span className={`score-badge ${getScoreClass(row[col])}`}>
-                      {formatCell(row[col])}
+                    <span className={`score-badge ${getScoreClass(value)}`}>
+                      {formatCell(value)}
                     </span>
-                  ) : typeof row[col] === 'object' && row[col] !== null ? (
-                    renderObject(row[col])
+                  ) : typeof value === 'object' && value !== null ? (
+                    renderObject(value)
                   ) : (
-                    formatCell(row[col])
+                    formatCell(value)
                   )}
                 </td>
               );})}
