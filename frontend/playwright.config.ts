@@ -24,12 +24,12 @@ export default defineConfig({
       // mobile-only nav toggle, hidden by CSS above the 768px breakpoint —
       // it cannot pass under a Desktop Chrome viewport) — it belongs to
       // mobile-ci alone, matching that project's own testMatch below.
-      testIgnore: /smoke-production\.spec\.ts|responsive\.spec\.ts/,
+      testIgnore: /smoke-production\.spec\.ts|responsive\.spec\.ts|product-tour-mobile\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
       name: 'mobile-ci',
-      testMatch: /responsive\.spec\.ts/,
+      testMatch: /(?:responsive|product-tour-mobile)\.spec\.ts/,
       use: { ...devices['Pixel 7'] },
     },
     {

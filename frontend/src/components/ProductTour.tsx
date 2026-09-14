@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 const TOUR_COMPLETE_KEY = 'fortress-product-tour-complete';
+const TOUR_STATE_EVENT = 'fortress-product-tour-state';
 
 const STEPS = [
   { target: 'dashboard', title: 'Your Fortress overview', body: 'Dashboard summarizes your account and recent activity. Use it as the starting point for a research session.' },
@@ -17,36 +18,102 @@ const STEPS = [
   { target: 'help', title: 'Help is always available', body: 'Restart this tour from Help. The user guide and glossary explain screens, status labels, metrics, limitations, and common workflows.' },
 ] as const;
 
+type HighlightRect = Pick<DOMRect, 'top' | 'left' | 'width' | 'height'>;
+
+function subscribeToCompletion(onStoreChange: () => void): () => void {
+  const notify = () => onStoreChange();
+  window.addEventListener('storage', notify);
+  window.addEventListener(TOUR_STATE_EVENT, notify);
+  return () => {
+    window.removeEventListener('storage', notify);
+    window.removeEventListener(TOUR_STATE_EVENT, notify);
+  };
+}
+
+function completionSnapshot(): boolean {
+  return localStorage.getItem(TOUR_COMPLETE_KEY) === 'true';
+}
+
+function serverCompletionSnapshot(): boolean {
+  return false;
+}
+
+function saveCompletion(): void {
+  localStorage.setItem(TOUR_COMPLETE_KEY, 'true');
+  window.dispatchEvent(new Event(TOUR_STATE_EVENT));
+}
+
 export default function ProductTour() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [stepIndex, setStepIndex] = useState<number | null>(null);
+  const [highlight, setHighlight] = useState<HighlightRect | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
   const activeStep = stepIndex === null ? null : STEPS[stepIndex];
-  const complete = typeof window !== 'undefined' && localStorage.getItem(TOUR_COMPLETE_KEY) === 'true';
+  const complete = useSyncExternalStore(
+    subscribeToCompletion,
+    completionSnapshot,
+    serverCompletionSnapshot,
+  );
 
   const close = (markComplete: boolean) => {
-    if (markComplete) localStorage.setItem(TOUR_COMPLETE_KEY, 'true');
+    if (markComplete) saveCompletion();
     setStepIndex(null);
+    setHighlight(null);
+    requestAnimationFrame(() => helpButtonRef.current?.focus());
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeStep) return;
     const target = document.querySelector<HTMLElement>(`[data-tour="${activeStep.target}"]`);
-    if (target && target.getClientRects().length > 0) target.classList.add('tour-target-active');
-    dialogRef.current?.focus();
-    return () => target?.classList.remove('tour-target-active');
+    const updateHighlight = () => {
+      if (!target || target.getClientRects().length === 0) {
+        setHighlight(null);
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      setHighlight({ top: rect.top, left: rect.left, width: rect.width, height: rect.height });
+    };
+    updateHighlight();
+    window.addEventListener('resize', updateHighlight);
+    window.addEventListener('scroll', updateHighlight, true);
+    return () => {
+      window.removeEventListener('resize', updateHighlight);
+      window.removeEventListener('scroll', updateHighlight, true);
+    };
   }, [activeStep]);
 
   useEffect(() => {
     if (!activeStep || stepIndex === null) return;
     const currentIndex = stepIndex;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialogRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close(false);
       if (event.key === 'ArrowRight' && currentIndex < STEPS.length - 1) setStepIndex(currentIndex + 1);
       if (event.key === 'ArrowLeft' && currentIndex > 0) setStepIndex(currentIndex - 1);
+      if (event.key === 'Tab' && dialogRef.current) {
+        const focusable = Array.from(
+          dialogRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'),
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const outsideDialog = !dialogRef.current.contains(document.activeElement);
+        if (outsideDialog || (event.shiftKey && document.activeElement === first)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [activeStep, stepIndex]);
 
   const start = () => {
@@ -58,18 +125,20 @@ export default function ProductTour() {
     <>
       <div className="tour-help" data-tour="help">
         <button
+          ref={helpButtonRef}
           className="tour-help-button"
           aria-label="Help and product tour"
           aria-expanded={menuOpen}
+          aria-controls="tour-help-panel"
           onClick={() => setMenuOpen(value => !value)}
         >
           ? <span>Help</span>
         </button>
         {menuOpen && (
-          <div className="tour-help-menu" role="menu">
+          <div className="tour-help-menu" id="tour-help-panel">
             <strong>New to Fortress?</strong>
             <p>Take a short, read-only tour of the product.</p>
-            <button className="btn btn-primary btn-sm" role="menuitem" onClick={start}>
+            <button className="btn btn-primary btn-sm" onClick={start}>
               {complete ? 'Restart Tour' : 'Take a Tour'}
             </button>
           </div>
@@ -78,6 +147,13 @@ export default function ProductTour() {
 
       {activeStep && stepIndex !== null && (
         <div className="tour-overlay">
+          {highlight && (
+            <div
+              className="tour-highlight"
+              aria-hidden="true"
+              style={{ top: highlight.top, left: highlight.left, width: highlight.width, height: highlight.height }}
+            />
+          )}
           <div
             ref={dialogRef}
             className="tour-dialog"
@@ -90,7 +166,7 @@ export default function ProductTour() {
             <h2>{activeStep.title}</h2>
             <p>{activeStep.body}</p>
             <div className="tour-actions">
-              <button className="btn btn-secondary btn-sm" onClick={() => close(false)}>Skip tour</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => close(true)}>Skip tour</button>
               <span className="tour-spacer" />
               <button className="btn btn-secondary btn-sm" disabled={stepIndex === 0} onClick={() => setStepIndex(stepIndex - 1)}>Back</button>
               {stepIndex === STEPS.length - 1 ? (

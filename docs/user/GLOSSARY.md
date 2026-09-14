@@ -5,20 +5,22 @@ term is visible in the current Fortress UI, an API-backed result rendered by
 it, or necessary to interpret an exposed control. Definitions explain how to
 use the product and avoid turning descriptive data into promises.
 
-**Alphabetical jump:** [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) ·
-[F](#f) · [H](#h) · [I](#i) · [L](#l) · [M](#m) · [N](#n) · [O](#o) ·
-[P](#p) · [Q](#q) · [R](#r) · [S](#s) · [T](#t) · [U](#u) · [V](#v) ·
-[W](#w) · [Y](#y)
+**Browse by category:** [Product terms](#fortress-product-terms) ·
+[Statuses](#status-labels) · [Stock analysis](#stock-market-and-analysis) ·
+[Risk and evidence](#risk-return-and-research-evidence) ·
+[Funds and ETFs](#mutual-funds-and-etfs) ·
+[REITs and InvITs](#reits-and-invits) · [US investing](#us-investing) ·
+[Options](#options) · [Paper trading](#paper-trading-and-portfolio-records)
 
 ## Fortress product terms
 
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
-| <a id="c"></a>Confidence | A HIGH/MEDIUM/LOW label or numeric evidence-quality measure, depending on the screen. | It qualifies a score/decision; it is not probability of profit. | Oracle Decision, Data Quality |
+| Confidence | A HIGH/MEDIUM/LOW label or numeric evidence-quality measure, depending on the screen. | It qualifies a score/decision; it is not probability of profit. | Oracle Decision, Data Quality |
 | Conviction Score | A section-specific summary of how strongly available inputs align. | Used in fund and asset discovery; compare with its breakdown and flags, not across unlike models. | Fortress Score, Risk Flag |
 | Data as of | The time through which inputs were current. | A decision can be correctly displayed but based on older evidence. | Freshness |
 | Data Quality | Complete, partial, or stale description of input fitness. | Missing/stale inputs should reduce reliance on a score. | Freshness, Unavailable |
-| <a id="f"></a>Fortress Score | A rule-based score from 0 to 100 combining available signal components. | It summarizes current evidence and is neither a probability nor return forecast. | Signal, Component Score |
+| Fortress Score | A rule-based score from 0 to 100 combining available signal components. | It summarizes current evidence and is neither a probability nor return forecast. | Signal, Component Score |
 | Oracle Decision | A persisted POSITIVE, NEUTRAL, NEGATIVE, or UNAVAILABLE evidence-aware decision for a signal. | It is distinct from the raw Fortress Score and includes reasons/cautions. | Confidence, Signal |
 | Quality Gate | A rule indicating whether minimum analysis conditions were met. | A pass permits consideration; it does not guarantee quality or return. | Data Quality, Risk Flag |
 | Risk Flag | A warning generated from an identified condition or missing/weak input. | Read flags before acting on a high score. | Data Quality, Caution |
@@ -31,14 +33,14 @@ use the product and avoid turning descriptive data into promises.
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
 | ACTIVE | The account/session is enabled. | It describes account state, not a market position. | Guest Session |
-| <a id="b"></a>BULLISH / BEARISH / NEUTRAL | Descriptive upward, downward, or mixed market/signal posture. | It is context, not a guaranteed direction. | Signal, Regime |
+| BULLISH / BEARISH / NEUTRAL | Descriptive upward, downward, or mixed market/signal posture. | It is context, not a guaranteed direction. | Signal, Regime |
 | BUY / WATCH / AVOID | Possible result labels for favorable, monitor, or cautionary screening states. | They support triage and are not broker instructions. | Signal, Oracle Decision |
-| <a id="e"></a>EXECUTED / PENDING / REJECTED / CANCELLED | User-recorded order statuses. | They categorize the Orders log; a log entry alone does not prove broker execution. | Order |
+| EXECUTED / PENDING / REJECTED / CANCELLED | User-recorded order statuses. | They categorize the Orders log; a log entry alone does not prove broker execution. | Order |
 | COMPLETE / COMPLETED | A scan/history job finished its recorded workflow. | It does not mean all optional data is populated. | Failed, Scan History |
 | FAILED | A job/request could not complete. | Use the shown error/retry path; do not treat it as an investment label. | Retry |
 | INSUFFICIENT_HISTORY | Too few comparable snapshots/observations exist. | Fortress declines to infer a change or statistic. | Sample Size, Unavailable |
-| <a id="h"></a>HIGH / MEDIUM / LOW | Ordinal strength/quality bands. | Meaning depends on the labelled field; HIGH confidence is not certainty. | Confidence, Score |
-| <a id="o"></a>OPEN / CLOSED | A simulated paper position is active or has a recorded exit. | Open P&L can change; closed P&L is a completed simulation observation. | Entry, Exit |
+| HIGH / MEDIUM / LOW | Ordinal strength/quality bands. | Meaning depends on the labelled field; HIGH confidence is not certainty. | Confidence, Score |
+| OPEN / CLOSED | A simulated paper position is active or has a recorded exit. | Open P&L can change; closed P&L is a completed simulation observation. | Entry, Exit |
 | POSITIVE / NEGATIVE / NEUTRAL / UNAVAILABLE | Oracle’s supportive, cautionary, mixed, or unsupported decision labels. | They summarize evidence and never guarantee the next price move. | Oracle Decision |
 | QUEUED / RUNNING | A job is waiting or actively progressing. | Wait for completion; navigating away may not cancel backend work. | Scan Stage |
 | STALE | Data is older than the product’s freshness expectation. | Treat conclusions cautiously and verify the timestamp. | Freshness |
@@ -48,7 +50,7 @@ use the product and avoid turning descriptive data into promises.
 
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
-| <a id="a"></a>ADX — Average Directional Index | Estimates trend strength, regardless of up or down direction. | It can describe technical strength; it is not a buy/sell rule by itself. | Trend, +DI/-DI |
+| ADX — Average Directional Index | Estimates trend strength, regardless of up or down direction. | It can describe technical strength; it is not a buy/sell rule by itself. | Trend, +DI/-DI |
 | ATR — Average True Range | Estimates typical recent price movement, including gaps. | It helps describe volatility/risk and possible price range. | Volatility |
 | Benchmark | A reference index or return series. | Excess return only has meaning relative to the stated benchmark. | Excess Return |
 | CAGR | Smoothed annual growth rate between a start and end value. | Useful for comparing periods, but hides the path and drawdowns. | Return, Drawdown |
@@ -72,7 +74,7 @@ use the product and avoid turning descriptive data into promises.
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
 | Alpha | Return beyond what a selected benchmark/risk model would imply. | Its meaning depends on benchmark, period, and sample. | Beta, Excess Return |
-| <a id="b2"></a>Beta | Sensitivity to movements in a reference market; roughly 1 means similar sensitivity. | It is relative risk context, not a maximum loss estimate. | Alpha, Volatility |
+| Beta | Sensitivity to movements in a reference market; roughly 1 means similar sensitivity. | It is relative risk context, not a maximum loss estimate. | Alpha, Volatility |
 | Evidence Horizon | The future measurement window after a historical signal, such as 20 days. | Results across different horizons should not be mixed. | Forward Return |
 | Excess Return | Return minus benchmark return over the same interval. | It shows relative rather than absolute performance. | Benchmark, Alpha |
 | Forward Evidence | Outcomes measured after a signal was recorded. | It reduces hindsight bias but still does not prove future performance. | Historical Evidence |
@@ -89,7 +91,7 @@ use the product and avoid turning descriptive data into promises.
 
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
-| <a id="a2"></a>AUM — Assets Under Management | Total value managed by a fund. | It provides scale context, not a quality guarantee. | NAV |
+| AUM — Assets Under Management | Total value managed by a fund. | It provides scale context, not a quality guarantee. | NAV |
 | Category / Subcategory | Peer grouping such as equity and large cap. | Filters make comparisons more like-for-like. | Benchmark |
 | Direct / Regular | Direct plans exclude distributor commission; regular plans include distribution arrangements. | Costs can differ, though Fortress does not currently offer a plan-switch workflow. | Expense Ratio |
 | ETF — Exchange-Traded Fund | A pooled basket traded on an exchange throughout market hours. | Current UI exposes US ETFs inside US Investing, not a separate Indian ETF page. | Mutual Fund, AUM |
@@ -97,7 +99,7 @@ use the product and avoid turning descriptive data into promises.
 | Growth / IDCW | Growth reinvests gains; IDCW may distribute income subject to the scheme’s policy. | These variants are economically different and should not be compared blindly. | NAV |
 | Lump Sum | One-time investment. | It is a glossary distinction only; current UI has no lump-sum calculator. | SIP |
 | Mutual Fund | Pooled investment vehicle priced according to its scheme structure. | Mutual Fund Lab analyses returned schemes and metrics. | NAV, ETF |
-| <a id="n"></a>NAV — Net Asset Value | Per-unit value of a fund/trust’s assets minus liabilities. | Used for fund valuation and REIT/InvIT premium/discount context. | AUM, Premium/Discount |
+| NAV — Net Asset Value | Per-unit value of a fund/trust’s assets minus liabilities. | Used for fund valuation and REIT/InvIT premium/discount context. | AUM, Premium/Discount |
 | Portfolio Overlap | Proportion of holdings shared by two funds. | High overlap can reduce diversification, but current UI has no overlap workflow. | Diversification |
 | Rolling Return | Return calculated repeatedly across overlapping start dates. | It describes consistency better than one chosen start date; only relevant when supplied. | CAGR |
 | SIP — Systematic Investment Plan | Regular scheduled fund contribution. | Helps distinguish periodic investing, though current UI has no SIP calculator. | Lump Sum |
@@ -118,7 +120,7 @@ use the product and avoid turning descriptive data into promises.
 | Premium / Discount to NAV | Market price above/below estimated NAV. | It is descriptive; NAV estimates and market expectations can change. | NAV |
 | REIT — Real Estate Investment Trust | Listed vehicle holding income-producing real estate. | Fortress compares supported REIT metrics, payouts, and risks. | InvIT, Occupancy |
 | WALE — Weighted Average Lease Expiry | Average remaining lease term weighted by rent/area. | Longer WALE can imply income visibility but does not remove tenant risk. | Occupancy |
-| <a id="y"></a>Yield | Income over price/value, expressed as a percentage. | Confirm which income and period the UI uses; yield is not total return. | Distribution Yield |
+| Yield | Income over price/value, expressed as a percentage. | Confirm which income and period the UI uses; yield is not total return. | Distribution Yield |
 
 ## US investing
 
@@ -135,7 +137,7 @@ use the product and avoid turning descriptive data into promises.
 
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
-| <a id="a3"></a>Ask | Lowest displayed price a seller is offering. | Difference from bid is the spread and a liquidity clue. | Bid, Spread |
+| Ask | Lowest displayed price a seller is offering. | Difference from bid is the spread and a liquidity clue. | Bid, Spread |
 | ATM — At the Money | Strike nearest the current spot price. | Fortress identifies the nearest available strike, which may not equal spot exactly. | Strike, Spot |
 | Bid | Highest displayed price a buyer is offering. | It is not guaranteed execution and should be compared with ask. | Ask, Spread |
 | Break-even | Underlying price where modelled expiry P&L equals zero. | It follows entered legs/premiums and model assumptions. | Payoff |
@@ -168,7 +170,7 @@ use the product and avoid turning descriptive data into promises.
 
 | Term | Plain-English definition | Why it matters in Fortress | Related |
 |---|---|---|---|
-| <a id="e2"></a>Entry / Exit | Recorded opening / closing price or event for a simulated position. | Their difference, quantity, and assumptions drive realized P&L. | Return, P&L |
+| Entry / Exit | Recorded opening / closing price or event for a simulated position. | Their difference, quantity, and assumptions drive realized P&L. | Return, P&L |
 | Expectancy | Average expected result per observation based on recorded wins/losses. | It combines frequency and size but remains sample-dependent. | Win Rate |
 | Holding Period | Time between entry and exit (or current time while open). | Outcomes from different horizons may not be comparable. | Entry, Exit |
 | Notional / Exposure | Reference value represented by quantity × price (or contract convention). | It shows capital/risk scale in the simulation. | Quantity |

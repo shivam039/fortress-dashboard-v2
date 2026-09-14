@@ -1006,7 +1006,16 @@ select.input {
 .tour-progress { color: var(--accent-primary); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
 .tour-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
 .tour-spacer { flex: 1; }
-.tour-target-active { position: relative; z-index: 101; outline: 3px solid var(--accent-primary); outline-offset: 2px; }
+.tour-highlight {
+  position: fixed;
+  z-index: 101;
+  border: 3px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.22);
+  pointer-events: none;
+}
+
+.tour-dialog { position: relative; z-index: 102; }
 
 @media (max-width: 768px) {
   .tour-help { right: 12px; bottom: 12px; }
@@ -1015,7 +1024,7 @@ select.input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tour-dialog, .tour-help-menu, .tour-target-active { scroll-behavior: auto; transition: none; animation: none; }
+  .tour-dialog, .tour-help-menu, .tour-highlight { scroll-behavior: auto; transition: none; animation: none; }
 }
 
 .context-help { position: relative; display: inline-flex; vertical-align: middle; }
