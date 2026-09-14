@@ -5,6 +5,7 @@ import React, { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Sidebar from './Sidebar';
+import ProductTour from './ProductTour';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -48,6 +49,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       )}
       <Sidebar open={sidebarOpen} onNavigate={() => setSidebarOpen(false)} />
       <main className="main-content">{children}</main>
+      <ProductTour />
     </div>
   );
 }

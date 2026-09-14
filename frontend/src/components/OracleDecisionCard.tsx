@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { oracleApi, type OracleDecision } from '@/lib/api';
+import ContextHelp from './ContextHelp';
 
 export default function OracleDecisionCard({ signalId }: { signalId: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -28,7 +29,7 @@ export default function OracleDecisionCard({ signalId }: { signalId: number }) {
       {decision && state === 'ready' && (
         <div>
           <h4>{decision.symbol} · {decision.decision}</h4>
-          <p>Confidence: {decision.confidence} · Score: {decision.score ?? 'unavailable'}</p>
+          <p>Confidence <ContextHelp term="Oracle Confidence">A HIGH, MEDIUM, or LOW evidence-quality label for this decision. It is not the chance that a trade will succeed.</ContextHelp>: {decision.confidence} · Score: {decision.score ?? 'unavailable'}</p>
           <p>Data as of: {decision.data_as_of ?? 'unavailable'}</p>
           {decision.reasons.length > 0 && <><strong>Reasons</strong><ul>{decision.reasons.map(r => <li key={r.key}>{r.label}: {String(r.value)}</li>)}</ul></>}
           {decision.cautions.length > 0 && <><strong>Cautions</strong><ul>{decision.cautions.map(c => <li key={c.key}>{c.label}: {String(c.value)}</li>)}</ul></>}

@@ -8,17 +8,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import SystemStatus from './SystemStatus';
 
 const NAV_ITEMS = [
-  { href: '/dashboard', icon: '🏠', label: 'Dashboard' },
-  { href: '/screener', icon: '📊', label: 'Stock Screener' },
-  { href: '/mf-lab', icon: '📈', label: 'MF Lab' },
-  { href: '/reit-invits', icon: '🏢', label: 'REITs & InvITs' },
+  { href: '/dashboard', icon: '🏠', label: 'Dashboard', tour: 'dashboard' },
+  { href: '/screener', icon: '📊', label: 'Stock Screener', tour: 'screener' },
+  { href: '/mf-lab', icon: '📈', label: 'MF Lab', tour: 'mf-lab' },
+  { href: '/reit-invits', icon: '🏢', label: 'REITs & InvITs', tour: 'reit-invits' },
   { href: '/us-investing', icon: '🇺🇸', label: 'US Investing' },
-  { href: '/orders', icon: '📋', label: 'Orders' },
-  { href: '/picks', icon: '🎯', label: 'Picks Tracker' },
-  { href: '/paper-trading', icon: '📝', label: 'Paper Trading' },
+  { href: '/orders', icon: '📋', label: 'Orders', tour: 'orders' },
+  { href: '/picks', icon: '🎯', label: 'Picks Tracker', tour: 'picks' },
+  { href: '/paper-trading', icon: '📝', label: 'Paper Trading', tour: 'paper-trading' },
   { href: '/commodities', icon: '🌍', label: 'Commodities' },
-  { href: '/options', icon: '⚡', label: 'Options' },
-  { href: '/history', icon: '🕐', label: 'Scan History' },
+  { href: '/options', icon: '⚡', label: 'Options', tour: 'options' },
+  { href: '/history', icon: '🕐', label: 'Scan History', tour: 'history' },
   { href: '/profile', icon: '👤', label: 'Profile' },
 ];
 
@@ -49,6 +49,7 @@ export default function Sidebar({ open = false, onNavigate }: SidebarProps) {
             key={item.href}
             href={item.href}
             className={`nav-item ${pathname === item.href ? 'active' : ''}`}
+            data-tour={item.tour}
             onClick={onNavigate}
           >
             <span className="nav-icon">{item.icon}</span>

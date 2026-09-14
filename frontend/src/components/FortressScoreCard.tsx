@@ -10,6 +10,7 @@
 
 import React from 'react';
 import type { FortressSignal } from '../lib/score-evidence';
+import ContextHelp from './ContextHelp';
 
 function scoreColor(score: number): string {
   return score >= 70 ? 'var(--color-success)' : score >= 45 ? 'var(--color-warning)' : 'var(--color-danger)';
@@ -51,7 +52,9 @@ export default function FortressScoreCard({ signal }: { signal: FortressSignal }
         <span data-testid="total-score" style={{ fontSize: '2rem', fontWeight: 700, color }}>
           {signal.totalScore.toFixed(0)}
         </span>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>/ 100 Fortress Score</span>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          / 100 Fortress Score <ContextHelp term="Fortress Score">A rule-based summary of the available technical, fundamental, sentiment, and context inputs. It is not a probability or forecast.</ContextHelp>
+        </span>
       </div>
       {/* This is a rule-based conviction score, not a probability of any
           outcome — deliberately never phrased as "% chance" anywhere here. */}
