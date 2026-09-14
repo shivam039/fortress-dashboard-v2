@@ -64,7 +64,7 @@ jobs:
       - name: Install frontend dependencies
         if: steps.guard.outputs.configured == 'true'
         run: npm ci
-      - name: Install Chromium
+      - name: Install Playwright browsers
         if: steps.guard.outputs.configured == 'true'
         run: npx playwright install --with-deps chromium
       - name: Run production-safe smoke
