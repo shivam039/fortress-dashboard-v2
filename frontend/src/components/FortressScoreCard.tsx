@@ -67,7 +67,7 @@ export default function FortressScoreCard({ signal }: { signal: FortressSignal }
         <div><span style={{ color: 'var(--text-muted)' }}>Sector:</span> {signal.sector}</div>
         <div><span style={{ color: 'var(--text-muted)' }}>Relative strength:</span> {signal.relativeStrength.toFixed(1)}</div>
         <div style={{ color: signal.dataQuality === 'complete' ? 'var(--color-success)' : 'var(--color-warning)' }}>
-          <span style={{ color: 'var(--text-muted)' }}>Data Quality:</span> <ContextHelp term="Data Quality">{DATA_QUALITY_LABEL[signal.dataQuality].replace(/[●◐○]\s/, '')} — missing or stale inputs should reduce reliance on this score.</ContextHelp>
+          <span style={{ color: 'var(--text-muted)' }}>Data Quality:</span> {DATA_QUALITY_LABEL[signal.dataQuality]} <ContextHelp term="Data Quality">Missing or stale inputs should reduce reliance on this score.</ContextHelp>
         </div>
       </div>
 
