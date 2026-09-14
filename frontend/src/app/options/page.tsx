@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import DataTable from '@/components/DataTable';
 import { optionsApi, OptionsSnapshotComparison, OptionsSnapshotSummary } from '@/lib/api';
+import ContextHelp from '@/components/ContextHelp';
 import { useToast } from '@/contexts/ToastContext';
 
 export default function OptionsPage() {
@@ -156,7 +157,7 @@ export default function OptionsPage() {
             </select>
           </div>
           <div className="input-group">
-            <label>OI Threshold</label>
+            <label>OI Threshold <ContextHelp term="Open Interest">Open interest is the number of outstanding option contracts. The threshold filters out contracts below the selected OI.</ContextHelp></label>
             <input
               className="input"
               type="number"
@@ -186,7 +187,7 @@ export default function OptionsPage() {
           <span className="metric-value">{spot ? spot.toFixed(2) : '—'}</span>
         </div>
         <div className="metric-card">
-          <span className="metric-label">ATM Strike</span>
+          <span className="metric-label">ATM Strike <ContextHelp term="ATM Strike">At-the-money is the available strike nearest to the current spot price.</ContextHelp></span>
           <span className="metric-value">{atmStrike == null ? '—' : atmStrike.toFixed(2)}</span>
         </div>
       </div>
@@ -197,7 +198,7 @@ export default function OptionsPage() {
           <div><span className="metric-label">Freshness</span><div>{freshness}</div></div>
           <div><span className="metric-label">Last updated</span><div>{lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}</div></div>
           <div><span className="metric-label">Rows shown</span><div>{visibleChain.length} / {chain.length}</div></div>
-          <div><span className="metric-label">Put/Call OI</span><div>{typeof analytics.oi_pcr === 'number' ? analytics.oi_pcr.toFixed(2) : 'Unavailable'}</div></div>
+          <div><span className="metric-label">Put/Call OI <ContextHelp term="Put/Call OI">The ratio of put open interest to call open interest. It describes positioning and is not a direction forecast.</ContextHelp></span><div>{typeof analytics.oi_pcr === 'number' ? analytics.oi_pcr.toFixed(2) : 'Unavailable'}</div></div>
           <div><span className="metric-label">Highest call OI</span><div>{largest('largest_call_oi')?.strike != null ? `${largest('largest_call_oi')!.strike!.toFixed(2)} (${largest('largest_call_oi')!.oi?.toLocaleString() ?? '—'})` : 'Unavailable'}</div></div>
         </div>
         <div style={{ marginTop: '12px' }}><span className="metric-label">Highest put OI</span>{largest('largest_put_oi')?.strike != null ? `${largest('largest_put_oi')!.strike!.toFixed(2)} (${largest('largest_put_oi')!.oi?.toLocaleString() ?? '—'})` : ' Unavailable'}</div>

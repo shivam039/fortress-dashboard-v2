@@ -1,5 +1,7 @@
 # Fortress 95 Pro
 
+> New to Fortress? Start with the [Fortress user documentation](docs/user/README.md).
+
 Quantitative trading dashboard for Indian markets (NSE focus).  
 **Next.js 16 frontend + FastAPI backend.** The legacy Streamlit UI is preserved as reference only.
 
