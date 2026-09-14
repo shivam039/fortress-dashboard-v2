@@ -9,6 +9,7 @@ import type { InvestmentInstrument } from '@/lib/types';
 import ConvictionScoreCard from '@/components/ConvictionScoreCard';
 import DataFreshnessBadge from '@/components/DataFreshnessBadge';
 import WatchlistButton from '@/components/WatchlistButton';
+import ColumnHeader from '@/components/ColumnHeader';
 
 const SORT_OPTIONS = [
   { value: 'conviction_score', label: 'Conviction Score' },
@@ -224,21 +225,8 @@ export default function ReitInvitsPage() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Price ₹</th>
-                    <th>Yield</th>
-                    <th>Div 1Y (₹)</th>
-                    <th>Div 3Y (₹)</th>
-                    <th>1M Ret</th>
-                    <th>1Y Ret</th>
-                    <th>Volatility</th>
-                    <th>Score</th>
-                    <th>Signal</th>
-                    <th>Confidence</th>
-                    <th>Quality</th>
-                    <th></th>
+                    {['Symbol', 'Name', 'Type', 'Price ₹', 'Yield', 'Div 1Y (₹)', 'Div 3Y (₹)', '1M Ret', '1Y Ret', 'Volatility', 'Score', 'Signal', 'Confidence', 'Quality'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}
+                    <th aria-label="Actions"></th>
                   </tr>
                 </thead>
                 <tbody>

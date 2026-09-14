@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { paperTradingApi, type FortressSignalLedgerRow, type PaperPositionValuation, type PaperTrade, type PaperTradeMetrics } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import MetricCard from '@/components/MetricCard';
+import ColumnHeader from '@/components/ColumnHeader';
 
 export default function PaperTradingPage() {
   const { success, error } = useToast();
@@ -110,8 +111,8 @@ export default function PaperTradingPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Symbol</th><th>Score</th><th>Regime</th><th>Sector</th>
-                      <th>Entry</th><th>Stop</th><th>Target</th><th></th>
+                      {['Symbol', 'Score', 'Regime', 'Sector', 'Entry', 'Stop', 'Target'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}
+                      <th aria-label="Actions"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -150,7 +151,7 @@ export default function PaperTradingPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Symbol</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>Return</th><th>Stop</th><th>Target</th><th>Holding</th><th>Status</th><th></th>
+                      {['Symbol', 'Entry', 'Current', 'P&L', 'Return', 'Stop', 'Target', 'Holding', 'Status'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}<th aria-label="Actions"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -185,7 +186,7 @@ export default function PaperTradingPage() {
             ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table className="data-table">
-                  <thead><tr><th>Symbol</th><th>Source</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th><th>Opened</th><th>Closed</th></tr></thead>
+                  <thead><tr>{['Symbol', 'Source', 'Entry', 'Exit', 'Realized P&L', 'Opened', 'Closed'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}</tr></thead>
                   <tbody>{closed.map(t => (
                     <tr key={t.trade_id}>
                       <td>{t.symbol}</td>

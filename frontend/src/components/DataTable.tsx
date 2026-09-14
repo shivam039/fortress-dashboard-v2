@@ -2,10 +2,11 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import ColumnHeader, { ColumnSpec, resolveColumn } from '@/components/ColumnHeader';
 
 interface DataTableProps {
   data: Record<string, unknown>[];
-  columns?: string[];
+  columns?: ColumnSpec[];
   emptyMessage?: string;
   maxRows?: number;
   // Called with the actual row object (after this table's own internal
@@ -70,7 +71,7 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const cols = useMemo(() => {
+  const cols = useMemo<ColumnSpec[]>(() => {
     if (columns && columns.length > 0) return columns;
     if (data.length === 0) return [];
     return Object.keys(data[0]);
@@ -93,7 +94,7 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
 
   const rows = maxRows ? sorted.slice(0, maxRows) : sorted;
 
-  if (data.length === 0) {
+  if (data.length === 0 && (!columns || columns.length === 0)) {
     return (
       <div className="empty-state">
         <div className="icon">📭</div>
@@ -119,16 +120,22 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
       <table className="data-table">
         <thead>
           <tr>
-            {cols.map(col => (
+            {cols.map(column => {
+              const col = resolveColumn(column).key;
+              return (
               <th
                 key={col}
                 className={sortCol === col ? 'sorted' : ''}
-                onClick={() => handleSort(col)}
               >
-                {col.replace(/_/g, ' ')}
-                {sortCol === col && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+                <span className="sortable-column-heading">
+                  <button type="button" className="column-sort-trigger" aria-label={`Sort by ${resolveColumn(column).label}`} onClick={() => handleSort(col)}>
+                    {resolveColumn(column).label}
+                    {sortCol === col && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+                  </button>
+                  <ColumnHeader column={column} showLabel={false} />
+                </span>
               </th>
-            ))}
+            );})}
           </tr>
         </thead>
         <tbody>
@@ -142,7 +149,9 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
               style={onRowClick ? { cursor: 'pointer' } : undefined}
               onClick={onRowClick ? () => onRowClick(row, i) : undefined}
             >
-              {cols.map(col => (
+              {cols.map(column => {
+                const col = resolveColumn(column).key;
+                return (
                 <td key={col}>
                   {isTrustedHtml(row[col]) ? (
                     <span dangerouslySetInnerHTML={{ __html: row[col] }} />
@@ -156,12 +165,18 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
                     formatCell(row[col])
                   )}
                 </td>
-              ))}
+              );})}
             </tr>
             );
           })}
         </tbody>
       </table>
+      {data.length === 0 && (
+        <div className="empty-state">
+          <div className="icon">📭</div>
+          <p>{emptyMessage || 'No data available.'}</p>
+        </div>
+      )}
     </div>
   );
 }

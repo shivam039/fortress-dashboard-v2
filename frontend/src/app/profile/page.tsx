@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { brokersApi } from '@/lib/api';
 import DataTable from '@/components/DataTable';
+import ColumnHeader from '@/components/ColumnHeader';
 
 interface Broker {
   broker_name: string;
@@ -137,10 +138,7 @@ export default function ProfilePage() {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>Broker</th>
-                        <th>Client ID</th>
-                        <th>Status</th>
-                        <th>Action</th>
+                        {['Broker', 'Client ID', 'Status', 'Action'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}
                       </tr>
                     </thead>
                     <tbody>
