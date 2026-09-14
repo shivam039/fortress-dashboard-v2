@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import React, { useId, useState } from 'react';
-import { helpDefinitions, type HelpKey } from '@/lib/help-definitions';
+import { helpDefinitions, type HelpKey } from '../lib/help-definitions';
 
 export default function ContextHelp({ term, helpKey, children }: { term?: string; helpKey?: HelpKey; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);

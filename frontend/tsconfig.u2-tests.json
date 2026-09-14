@@ -11,6 +11,8 @@
   },
   "include": [
     "src/lib/score-evidence.ts",
+    "src/lib/help-definitions.ts",
+    "src/components/ContextHelp.tsx",
     "src/components/FortressScoreCard.tsx",
     "src/components/HistoricalEvidenceCard.tsx"
   ],
