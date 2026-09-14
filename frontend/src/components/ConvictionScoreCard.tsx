@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import ContextHelp from '@/components/ContextHelp';
 import type { ScoreBreakdown } from '@/lib/types';
 
 interface ConvictionScoreCardProps {
@@ -111,10 +112,10 @@ export default function ConvictionScoreCard({
 
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 2 }}>
-            CONVICTION
+            <ContextHelp term="Conviction Score">A section-specific summary of how strongly available inputs align. Compare with its breakdown and flags, not across unlike models.</ContextHelp>
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
-            Confidence:{' '}
+            <ContextHelp term="Confidence">A HIGH/MEDIUM/LOW label or numeric evidence-quality measure. It qualifies a score/decision; it is not probability of profit.</ContextHelp>:{' '}
             <span style={{ color: qualityColor, fontWeight: 600 }}>
               {confidence !== null ? `${confidence}%` : '—'}
             </span>

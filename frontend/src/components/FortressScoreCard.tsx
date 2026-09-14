@@ -45,7 +45,7 @@ export default function FortressScoreCard({ signal }: { signal: FortressSignal }
       style={{ background: 'var(--bg-card)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', padding: 16 }}
     >
       <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', letterSpacing: '0.05em', marginBottom: 4 }}>
-        CURRENT SIGNAL — {signal.symbol}
+        CURRENT <ContextHelp term="Signal">A recorded observation from analysis rules. This signal can feed into Oracle decisions or paper trading, but is not an order.</ContextHelp> — {signal.symbol}
       </div>
 
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
@@ -67,7 +67,7 @@ export default function FortressScoreCard({ signal }: { signal: FortressSignal }
         <div><span style={{ color: 'var(--text-muted)' }}>Sector:</span> {signal.sector}</div>
         <div><span style={{ color: 'var(--text-muted)' }}>Relative strength:</span> {signal.relativeStrength.toFixed(1)}</div>
         <div style={{ color: signal.dataQuality === 'complete' ? 'var(--color-success)' : 'var(--color-warning)' }}>
-          {DATA_QUALITY_LABEL[signal.dataQuality]}
+          <span style={{ color: 'var(--text-muted)' }}>Data Quality:</span> {DATA_QUALITY_LABEL[signal.dataQuality]} <ContextHelp term="Data Quality">Missing or stale inputs should reduce reliance on this score.</ContextHelp>
         </div>
       </div>
 
@@ -76,18 +76,26 @@ export default function FortressScoreCard({ signal }: { signal: FortressSignal }
         <ComponentBar label="Fundamental" value={signal.componentScores.fundamental} />
         <ComponentBar label="Sentiment" value={signal.componentScores.sentiment} />
         <ComponentBar label="Context" value={signal.componentScores.context} />
+        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 8 }}>
+          <ContextHelp term="Component Score">One part of the combined Fortress Score, such as technical or fundamental strength. Compare components to understand why the total score is high or low.</ContextHelp>
+        </div>
       </div>
 
       {signal.riskFlags.length > 0 && (
-        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {signal.riskFlags.map(flag => (
-            <span
-              key={flag}
-              style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: 999, background: 'var(--color-warning-bg)', color: 'var(--color-warning)', border: '1px solid rgba(245,158,11,0.3)' }}
-            >
-              ⚠ {flag}
-            </span>
-          ))}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 4 }}>
+            Risk Flags <ContextHelp term="Risk Flag">Warnings generated from identified conditions or missing/weak inputs. Read flags before acting on a high score.</ContextHelp>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {signal.riskFlags.map(flag => (
+              <span
+                key={flag}
+                style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: 999, background: 'var(--color-warning-bg)', color: 'var(--color-warning)', border: '1px solid rgba(245,158,11,0.3)' }}
+              >
+                ⚠ {flag}
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>

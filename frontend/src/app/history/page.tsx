@@ -11,6 +11,7 @@ import {
   STOCK_SECTION, sectionsFromEntries, filterEntriesBySection,
   describeUniverseCoverage, resolveInitialSection, setStoredSection,
 } from '@/lib/scan-history';
+import ContextHelp from '@/components/ContextHelp';
 import HistoricalStockScreener from '@/components/HistoricalStockScreener';
 import HistoricalGenericScan from '@/components/HistoricalGenericScan';
 
@@ -156,9 +157,11 @@ export default function HistoryPage() {
                 style={{ marginBottom: 12, cursor: 'pointer' }}
                 onClick={() => openRun(entry.scan_id)}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                   <strong>{datePart} • {timePart || ''}</strong>
-                  <span className="badge">COMPLETE</span>
+                  <span className="badge">
+                    <ContextHelp term="COMPLETE">A scan job finished its recorded workflow. It does not mean all optional data is populated.</ContextHelp>
+                  </span>
                 </div>
                 <p style={{ margin: '6px 0 0', color: 'var(--text-muted)' }}>
                   {describeUniverseCoverage(entry.universe)}

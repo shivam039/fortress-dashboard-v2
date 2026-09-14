@@ -10,6 +10,7 @@
 import React from 'react';
 import DataTable from '@/components/DataTable';
 import MetricCard from '@/components/MetricCard';
+import ContextHelp from '@/components/ContextHelp';
 import { splitStockResults } from '@/lib/scan-history';
 
 interface ScannerResultsViewProps {
@@ -56,7 +57,7 @@ export default function ScannerResultsView({ results }: ScannerResultsViewProps)
         <div className="section">
           <div className="expander">
             <div className="expander-header">
-              Filtered Out ({filtered.length}) — Hard Quality Gates
+              Filtered Out ({filtered.length}) — Hard <ContextHelp term="Quality Gate">A rule indicating whether minimum analysis conditions were met. A pass permits consideration; it does not guarantee quality or return.</ContextHelp>
             </div>
             <div className="expander-body">
               <DataTable data={filtered} />
