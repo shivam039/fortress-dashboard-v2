@@ -18,19 +18,33 @@ export default function ColumnHeader({ column, showLabel = true }: { column: Col
   const tooltipId = useId();
   const [open, setOpen] = useState(false);
 
+  if (!definition.description) return showLabel ? <span>{definition.label}</span> : null;
+
   return (
     <span className="column-heading">
       {showLabel && <span>{definition.label}</span>}
-      <span className="column-help" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <span
+        className="column-help"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setOpen(false);
+            event.stopPropagation();
+          }
+        }}
+      >
         <button
           type="button"
           className="column-help-trigger"
           aria-label={`About ${definition.label} column`}
           aria-expanded={open}
           aria-describedby={open ? tooltipId : undefined}
-          onClick={(event) => { event.stopPropagation(); setOpen(value => !value); }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setOpen(false)}
+          onClick={(event) => { event.stopPropagation(); setOpen(true); }}
         >ⓘ</button>
         {open && (
           <span className="column-help-tooltip" id={tooltipId} role="tooltip">

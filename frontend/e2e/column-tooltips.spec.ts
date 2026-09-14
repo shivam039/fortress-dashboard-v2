@@ -11,6 +11,10 @@ test('options columns expose keyboard and tap help even in the empty state', asy
   await help.click();
   await expect(page.getByRole('tooltip')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Learn more' })).toHaveAttribute('href', '/glossary#strike');
+  await page.getByRole('link', { name: 'Learn more' }).focus();
+  await expect(page.getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toBeHidden();
 });
 
 test('scan history result columns use canonical help', async ({ page }) => {

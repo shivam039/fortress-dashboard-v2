@@ -73,6 +73,28 @@ export const columnDefinitions: Record<string, ColumnDefinition> = {
   yield: definition('Yield', 'Income divided by price or value for the stated period; it is not total return.', '%', 'yield'),
   volatility: definition('Volatility', 'How widely returns vary over the table’s measurement period.', '%', 'volatility'),
   quality: definition('Quality', 'Fortress data/model quality assessment for the available inputs.', 'label', 'data-quality'),
+  scheme: definition('Scheme', 'Published mutual-fund scheme and plan name.', 'text', 'mutual-fund'),
+  category: definition('Category', 'Broad peer group used to compare similar funds or instruments.', 'category', 'category--subcategory'),
+  subcategory: definition('Sub Category', 'More specific peer group within the broad category.', 'category', 'category--subcategory'),
+  company: definition('Company', 'Published company name for this security.', 'text'),
+  strategy: definition('Strategy', 'Fortress strategy classification associated with this result; it is not an order.', 'label', 'strategy--leg'),
+  velocity: definition('Velocity', 'Recent rate of price movement used as descriptive momentum context.', 'model value', 'momentum'),
+  target10d: definition('Target 10D', 'Model reference price over a 10-trading-day horizon, not a promised outcome.', 'currency', 'paper-trade'),
+  stoploss: definition('Stop Loss', 'Recorded risk threshold; market execution at this exact price is not guaranteed.', 'currency', 'paper-trade'),
+  positionqty: definition('Position Qty', 'Illustrative quantity associated with the result; verify sizing assumptions.', 'shares/units', 'quantity'),
+  ordertype: definition('Order Type', 'Recorded buy/sell and execution classification for this order log entry.', 'label', 'order'),
+  quantity: definition('Quantity', 'Number of shares, units, or contracts recorded in this row.', 'count', 'quantity'),
+  brokername: definition('Broker Name', 'Broker associated with this user-maintained record.', 'text', 'order'),
+  createdat: definition('Created At', 'Date and time this Fortress record was created.', 'date/time'),
+  flags: definition('Flags', 'Warnings or caveats attached to this result; review them before interpreting the score.', 'list', 'risk-flag'),
+  div1y: definition('Div 1Y (₹)', 'Cash distributions per unit recorded over the trailing one-year period.', '₹ per unit', 'dpu--distribution-per-unit'),
+  div3y: definition('Div 3Y (₹)', 'Cash distributions per unit recorded over the trailing three-year period.', '₹ per unit', 'dpu--distribution-per-unit'),
+  broker: definition('Broker', 'Broker connection represented by this profile row.', 'text'),
+  clientid: definition('Client ID', 'Broker-provided account identifier; it is not a trading credential.', 'identifier'),
+  action: definition('Action', 'Available management action for this row.', 'control'),
+  metric: definition('Metric', 'Measurement being compared across the commodity columns.', 'label'),
+  underlying: definition('Underlying', 'Modelled underlying-asset price at which the option payoff is evaluated.', '₹', 'spot'),
+  expirypl: definition('Expiry P/L', 'Modelled strategy profit or loss at expiry for this underlying price.', '₹', 'payoff'),
 };
 
 export function normalizeColumnKey(value: string): string {
@@ -83,6 +105,6 @@ export function getColumnDefinition(key: string): ColumnDefinition {
   const normalized = normalizeColumnKey(key);
   return columnDefinitions[normalized] ?? definition(
     key.replace(/_/g, ' '),
-    `Value recorded for ${key.replace(/_/g, ' ')} in this Fortress table. Check the surrounding table context for its period and units.`,
+    '',
   );
 }

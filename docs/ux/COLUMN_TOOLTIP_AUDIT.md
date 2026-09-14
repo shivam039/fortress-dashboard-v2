@@ -2,9 +2,10 @@
 
 Audit date: 2026-09-14. Scope: every table declared in `frontend/src`.
 `DataTable` resolves both explicit and API-discovered columns through the
-canonical metadata registry; an honest contextual fallback covers provider
-fields that are not known until runtime. Blank action columns are labelled for
-assistive technology and intentionally have no tooltip.
+canonical metadata registry. Unknown fields keep a readable label but do not
+receive a vague or misleading tooltip; they must be added to the registry once
+their semantics are known. Blank action columns are labelled for assistive
+technology and intentionally have no tooltip.
 
 | Table | Columns inventoried | Meaning | Tooltip | Glossary | Format | Status |
 |---|---|---|---|---|---|---|
@@ -26,6 +27,6 @@ assistive technology and intentionally have no tooltip.
 
 ## Verification rule
 
-New shared-table fields automatically receive a readable label and explanation.
-Authors should add a canonical entry whenever a new financial field has stable
-units or interpretation, rather than accepting the runtime fallback permanently.
+New shared-table fields automatically receive a readable label. Authors must add
+a canonical entry whenever a new user-facing field has known semantics; the
+component intentionally does not invent an explanation for an unknown field.
