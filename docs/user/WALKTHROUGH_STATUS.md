@@ -22,11 +22,11 @@ mutation was performed.
 | Mutual Fund Lab | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | REITs & InvITs | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | US Investing / US ETFs | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
-| Commodities | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PARTIAL | NOT_PROVEN |
+| Commodities | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | Options | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | Orders | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | Picks Tracker | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
-| Profile / broker settings | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PARTIAL | NOT_PROVEN |
+| Profile / broker settings | PASS | PASS | PARTIAL | NOT_PROVEN | NOT_PROVEN | PASS | PASS | PASS | NOT_PROVEN |
 | In-product tour / Help | PASS | PASS | PASS | NOT_PROVEN | NOT_PROVEN | PASS | N/A | PASS | PARTIAL |
 
 “Functional: PARTIAL” means the production TypeScript/build contract and safe

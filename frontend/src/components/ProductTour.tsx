@@ -8,13 +8,16 @@ const TOUR_STATE_EVENT = 'fortress-product-tour-state';
 const STEPS = [
   { target: 'dashboard', title: 'Your Fortress overview', body: 'Dashboard summarizes your account and recent activity. Use it as the starting point for a research session.' },
   { target: 'screener', title: 'Find and inspect stock signals', body: 'Stock Screener searches a selected Indian-stock universe. A Fortress Score is rule-based decision support, not a probability or return forecast.' },
-  { target: 'history', title: 'Replay scans by section', body: 'Scan History first separates scanner types, then lists that section’s runs. Opening a run shows a read-only historical result.' },
+  { target: 'history', title: 'Replay scans by section', body: 'Scan History first separates scanner types, then lists that section\'s runs. Opening a run shows a read-only historical result.' },
   { target: 'picks', title: 'Separate signals from outcomes', body: 'Oracle decisions can be opened from eligible signal evidence. Picks Tracker records monitored ideas; neither is a promise about future performance.' },
   { target: 'paper-trading', title: 'Practice without real capital', body: 'Paper Trading turns eligible recorded signals into simulated positions. Opening or closing one is still a saved action, never a broker order.' },
   { target: 'mf-lab', title: 'Research mutual funds', body: 'Mutual Fund Lab compares available schemes, categories, metrics, and conviction detail. Job controls change stored analysis, so use them only when appropriate.' },
-  { target: 'reit-invits', title: 'Explore other asset classes', body: 'REITs & InvITs, US Investing, and Commodities provide separate discovery and decision-support views with asset-specific risks.' },
+  { target: 'reit-invits', title: 'Explore other asset classes', body: 'REITs & InvITs provide separate discovery and decision-support views for listed real-estate and infrastructure trusts.' },
+  { target: 'us-investing', title: 'Research US stocks and ETFs', body: 'US Investing shows available US-listed instruments with USD prices and INR conversion. USD/INR movement independently affects your returns.' },
+  { target: 'commodities', title: 'Compare commodity data', body: 'Commodities provides a snapshot of commodity analysis and decision cards. Refresh requests new provider data and triggers backend work.' },
   { target: 'options', title: 'Inspect options safely', body: 'Options shows chain snapshots and read-only expiry payoff calculations. Displayed payoff points are a range; theoretical maximum profit or loss is reported separately.' },
   { target: 'orders', title: 'Review recorded activity', body: 'Orders and Profile contain user-maintained records and broker settings. These controls can save or remove data, unlike read-only research screens.' },
+  { target: 'profile', title: 'Manage account settings', body: 'Profile shows your account details and broker connections. Connecting or disconnecting a broker updates stored credentials - handle carefully.' },
   { target: 'help', title: 'Help is always available', body: 'Restart this tour from Help. The user guide and glossary explain screens, status labels, metrics, limitations, and common workflows.' },
 ] as const;
 

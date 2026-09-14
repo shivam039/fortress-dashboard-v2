@@ -19,7 +19,7 @@ test('product tour supports next, back, skip, finish, and restart', async ({ pag
 
   await page.getByRole('button', { name: 'Help and product tour' }).click();
   await page.getByRole('button', { name: 'Restart Tour' }).click();
-  for (let step = 0; step < 9; step += 1) {
+  for (let step = 0; step < 12; step += 1) {
     await page.getByRole('button', { name: 'Next' }).click();
   }
   await page.getByRole('button', { name: 'Finish' }).click();

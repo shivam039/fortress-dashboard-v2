@@ -12,14 +12,14 @@ const NAV_ITEMS = [
   { href: '/screener', icon: '📊', label: 'Stock Screener', tour: 'screener' },
   { href: '/mf-lab', icon: '📈', label: 'MF Lab', tour: 'mf-lab' },
   { href: '/reit-invits', icon: '🏢', label: 'REITs & InvITs', tour: 'reit-invits' },
-  { href: '/us-investing', icon: '🇺🇸', label: 'US Investing' },
+  { href: '/us-investing', icon: '🇺🇸', label: 'US Investing', tour: 'us-investing' },
   { href: '/orders', icon: '📋', label: 'Orders', tour: 'orders' },
   { href: '/picks', icon: '🎯', label: 'Picks Tracker', tour: 'picks' },
   { href: '/paper-trading', icon: '📝', label: 'Paper Trading', tour: 'paper-trading' },
-  { href: '/commodities', icon: '🌍', label: 'Commodities' },
+  { href: '/commodities', icon: '🌍', label: 'Commodities', tour: 'commodities' },
   { href: '/options', icon: '⚡', label: 'Options', tour: 'options' },
   { href: '/history', icon: '🕐', label: 'Scan History', tour: 'history' },
-  { href: '/profile', icon: '👤', label: 'Profile' },
+  { href: '/profile', icon: '👤', label: 'Profile', tour: 'profile' },
 ];
 
 interface SidebarProps {
