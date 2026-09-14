@@ -2,10 +2,19 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import ContextHelp from './ContextHelp';
+import { findHelpKey, type HelpKey } from '@/lib/help-definitions';
+
+export interface DataTableColumn {
+  key: string;
+  label?: string;
+  helpKey?: HelpKey;
+  sortable?: boolean;
+}
 
 interface DataTableProps {
   data: Record<string, unknown>[];
-  columns?: string[];
+  columns?: Array<string | DataTableColumn>;
   emptyMessage?: string;
   maxRows?: number;
   // Called with the actual row object (after this table's own internal
@@ -70,10 +79,10 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const cols = useMemo(() => {
-    if (columns && columns.length > 0) return columns;
+  const cols = useMemo<DataTableColumn[]>(() => {
+    if (columns && columns.length > 0) return columns.map(column => typeof column === 'string' ? { key: column } : column);
     if (data.length === 0) return [];
-    return Object.keys(data[0]);
+    return Object.keys(data[0]).map(key => ({ key }));
   }, [data, columns]);
 
   const sorted = useMemo(() => {
@@ -119,16 +128,23 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
       <table className="data-table">
         <thead>
           <tr>
-            {cols.map(col => (
+            {cols.map(column => {
+              const col = column.key;
+              const label = column.label ?? col.replace(/_/g, ' ');
+              const helpKey = column.helpKey ?? findHelpKey(label);
+              const sortable = column.sortable !== false;
+              return (
               <th
                 key={col}
                 className={sortCol === col ? 'sorted' : ''}
-                onClick={() => handleSort(col)}
               >
-                {col.replace(/_/g, ' ')}
-                {sortCol === col && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+                <span className="table-header-content">
+                  <span>{label}</span>
+                  {helpKey && <ContextHelp helpKey={helpKey} />}
+                  {sortable && <button type="button" className="table-sort-button" onClick={() => handleSort(col)} aria-label={`Sort by ${label}`} aria-pressed={sortCol === col}>{sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</button>}
+                </span>
               </th>
-            ))}
+            );})}
           </tr>
         </thead>
         <tbody>
@@ -142,21 +158,23 @@ export default function DataTable({ data, columns, emptyMessage, maxRows, onRowC
               style={onRowClick ? { cursor: 'pointer' } : undefined}
               onClick={onRowClick ? () => onRowClick(row, i) : undefined}
             >
-              {cols.map(col => (
-                <td key={col}>
-                  {isTrustedHtml(row[col]) ? (
-                    <span dangerouslySetInnerHTML={{ __html: row[col] }} />
-                  ) : isScoreCol(col) ? (
-                    <span className={`score-badge ${getScoreClass(row[col])}`}>
-                      {formatCell(row[col])}
+              {cols.map(column => {
+                const value = row[column.key];
+                return (
+                <td key={column.key}>
+                  {isTrustedHtml(value) ? (
+                    <span dangerouslySetInnerHTML={{ __html: value }} />
+                  ) : isScoreCol(column.key) ? (
+                    <span className={`score-badge ${getScoreClass(value)}`}>
+                      {formatCell(value)}
                     </span>
-                  ) : typeof row[col] === 'object' && row[col] !== null ? (
-                    renderObject(row[col])
+                  ) : typeof value === 'object' && value !== null ? (
+                    renderObject(value)
                   ) : (
-                    formatCell(row[col])
+                    formatCell(value)
                   )}
                 </td>
-              ))}
+              );})}
             </tr>
             );
           })}

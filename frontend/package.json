@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test:scan": "tsc -p tsconfig.scan-tests.json && node --test tests/scan.test.mjs",
     "test:u2": "tsc -p tsconfig.u2-tests.json && node --test tests/score-evidence.test.mjs",
-    "test:ux1": "tsc -p tsconfig.ux1-tests.json && node --test tests/scan-history.test.mjs",
+    "test:ux1": "tsc -p tsconfig.ux1-tests.json && node --test tests/scan-history.test.mjs tests/help-definitions.test.mjs",
     "test:e2e": "playwright test --project=chromium-ci --project=mobile-ci",
     "test:e2e:smoke": "playwright test --project=deployed-smoke"
   },

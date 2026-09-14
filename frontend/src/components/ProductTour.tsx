@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import Link from 'next/link';
 
 const TOUR_COMPLETE_KEY = 'fortress-product-tour-complete';
 const TOUR_STATE_EVENT = 'fortress-product-tour-state';
@@ -144,6 +145,11 @@ export default function ProductTour() {
             <button className="btn btn-primary btn-sm" onClick={start}>
               {complete ? 'Restart Tour' : 'Take a Tour'}
             </button>
+            <div className="tour-help-links">
+              <Link href="/help/glossary" onClick={() => setMenuOpen(false)}>Glossary</Link>
+              <a href="https://github.com/shivam039/fortress-dashboard-v2/blob/main/docs/user/QUICK_START.md" target="_blank" rel="noreferrer">Quick Start</a>
+              <a href="https://github.com/shivam039/fortress-dashboard-v2/blob/main/docs/user/USER_GUIDE.md" target="_blank" rel="noreferrer">User Guide</a>
+            </div>
           </div>
         )}
       </div>

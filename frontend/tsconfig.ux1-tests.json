@@ -9,6 +9,6 @@
     "rootDir": "src",
     "plugins": []
   },
-  "include": ["src/lib/scan-history.ts"],
+  "include": ["src/lib/scan-history.ts", "src/lib/help-definitions.ts"],
   "exclude": ["node_modules"]
 }
