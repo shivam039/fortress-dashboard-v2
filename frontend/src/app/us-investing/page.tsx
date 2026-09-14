@@ -9,6 +9,7 @@ import type { InvestmentInstrument } from '@/lib/types';
 import ConvictionScoreCard from '@/components/ConvictionScoreCard';
 import DataFreshnessBadge from '@/components/DataFreshnessBadge';
 import WatchlistButton from '@/components/WatchlistButton';
+import ColumnHeader from '@/components/ColumnHeader';
 
 const SECTORS = ['All Sectors', 'Technology', 'Financials', 'Healthcare', 'Consumer Disc.', 'Consumer Staples', 'Energy', 'Broad Market', 'Innovation', 'Real Estate', 'Fixed Income', 'Commodities', 'Emerging Markets', 'Small Cap'];
 const SORT_OPTIONS = [
@@ -220,18 +221,10 @@ export default function USInvestingPage() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>Name</th>
-                    <th>Sector</th>
-                    <th>Price USD</th>
-                    {includeInr && <th>Price INR</th>}
-                    <th>1M Ret</th>
-                    <th>1Y Ret</th>
-                    <th>P/E</th>
-                    <th>Score</th>
-                    <th>Confidence</th>
-                    <th>Flags</th>
-                    <th></th>
+                    {['Symbol', 'Name', 'Sector', 'Price USD'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}
+                    {includeInr && <th><ColumnHeader column="Price INR" /></th>}
+                    {['1M Ret', '1Y Ret', 'P/E', 'Score', 'Confidence', 'Flags'].map(column => <th key={column}><ColumnHeader column={column} /></th>)}
+                    <th aria-label="Actions"></th>
                   </tr>
                 </thead>
                 <tbody>

@@ -7,6 +7,7 @@ import { commoditiesApi } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
 import DataTable from '@/components/DataTable';
 import MetricCard from '@/components/MetricCard';
+import ColumnHeader from '@/components/ColumnHeader';
 
 const LABEL_COLOR: Record<string, string> = {
   'STRONG BUY': '#00c853',
@@ -204,9 +205,9 @@ export default function CommoditiesPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 }}>
                 <thead>
                   <tr>
-                    <th style={{ textAlign: 'left', padding: 8, fontSize: '0.78rem', color: 'var(--text-muted)' }}>Metric</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: '0.78rem', color: 'var(--text-muted)' }}><ColumnHeader column="Metric" /></th>
                     {data.map(row => (
-                      <th key={String(row['Commodity'])} style={{ padding: 8, fontSize: '0.78rem', color: 'var(--text-muted)' }}>{String(row['Commodity'])}</th>
+                      <th key={String(row['Commodity'])} style={{ padding: 8, fontSize: '0.78rem', color: 'var(--text-muted)' }}><ColumnHeader column={{ key: String(row['Commodity']), description: `Values for ${String(row['Commodity'])} in the comparison metric shown on this row.` }} /></th>
                     ))}
                   </tr>
                 </thead>
